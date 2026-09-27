@@ -47,7 +47,7 @@ export function blockedPath(url: string) {
   let value = url.split('?')[0]
   for (let i = 0; i < 3; i++) { try { value = decodeURIComponent(value) } catch { return true } }
   value = value.replaceAll('\\', '/').toLowerCase()
-  return /(?:^|\/)(?:api\.txt|\.env(?:\.[^/]*)?|\.git|\.local|server)(?:\/|$)/.test(value)
+  return /(?:^|\/)(?:api\.txt|jev\.txt|\.env(?:\.[^/]*)?|\.git|\.local|server)(?:\/|$)/.test(value)
     || value.includes('/@fs/') && !value.includes('/node_modules/')
 }
 

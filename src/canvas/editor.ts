@@ -16,6 +16,8 @@ const defaultMagic: MagicShapeProps = {
   xMin: -Math.PI * 2, xMax: Math.PI * 2, yMin: -1.35, yMax: 1.35, geometry: 'triangle', fontSize: 28,
 }
 const clone = <T,>(value: T): T => structuredClone(value)
+const ASSET_SRC = /^data:image\/(png|jpeg|webp|gif);base64,[a-z\d+/=\s]+$/i
+const MAX_ASSET_CHARS = 56_000_000
 const isShape = (record: DocumentRecord | undefined): record is TLShape => record?.typeName === 'shape'
 type DocumentState = { records: Map<string, DocumentRecord>; pageId: string }
 type HistoryMark = { state: DocumentState; undoLength: number; redo: DocumentState[] }
@@ -251,6 +253,20 @@ export class Editor {
     })
   }
   createAssets(assets: AssetRecord[]) {
+    // same rules as normalizeSnapshot, so a bad image fails now instead of when the notebook reloads
+    const replaced = new Set(assets.map(asset => asset?.id))
+    let total = 0
+    for (const record of this.records.values()) if (record.typeName === 'asset' && !replaced.has(record.id)) total += String((record as AssetRecord).props?.src ?? '').length
+    for (const asset of assets) {
+      const props = asset?.props, existing = typeof asset?.id === 'string' ? this.records.get(asset.id) : undefined
+      if (typeof asset?.id !== 'string' || !asset.id || asset.id.length > 300 || asset.id === '__proto__' || (existing && existing.typeName !== 'asset') ||
+          asset.typeName !== 'asset' || asset.type !== 'image' || typeof props?.src !== 'string' || !ASSET_SRC.test(props.src)) {
+        throw new Error('Only embedded PNG, JPEG, WebP, or GIF images can be added to the board.')
+      }
+      if ([props.w, props.h].some(n => n !== undefined && (typeof n !== 'number' || !Number.isFinite(n) || n <= 0 || n > 1e6))) throw new Error('This image has an invalid size.')
+      total += props.src.length
+    }
+    if (total > MAX_ASSET_CHARS) throw new Error('This notebook has no room for more images. Start a new notebook for this.')
     return this.run(() => { for (const asset of assets) { this.beforeMutation(); this.records.set(asset.id, clone(asset)); this.changed(true) } return this })
   }
   sendToBack(ids: TLShapeId[]) {

@@ -21,14 +21,29 @@ export type BoardObject = {
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
   showGrid?: boolean; showAxes?: boolean; vertices?: Point[]; angles?: number[]; sides?: number; crop?: ImageCrop
 }
+/** A free board area offered to the model; placementOption picks one. */
+export type PlacementOption = { id: 'A' | 'B' | 'C'; bounds: Bounds; note?: string }
+/** A free spot the client found for a typed command; the server ranks these into placementOptions. */
+export type PlacementCandidate = { id: string; bounds: Bounds; description: string; features?: Record<string, number> }
+/** Book titles only; the model never sees book text. */
+export type LibraryContext = {
+  openBook: { id: string; title: string } | null
+  books: { id: string; title: string; pages: number }[]
+  pendingImport?: { name: string; pages: number } | null
+}
 export type BoardContext = {
   focus: Focus | null; pointer: Point | null; selectedIds: string[];
   lastCreatedIds: string[]; viewport: Bounds; objects: BoardObject[];
   gesture?: { active: boolean; bounds: Bounds; start: Point; current: Point } | null;
   contentSelection?: ContentSelection | null; dictationMode?: DictationMode; focusMode?: FocusMode
+  library?: LibraryContext; placementOptions?: PlacementOption[]
 }
+export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import'
+/** A rendered raster for create_image; src is a data:image/(png|jpeg) base64 URL. */
+export type BoardImage = { src: string; w: number; h: number; mimeType: 'image/png' | 'image/jpeg'; name: string }
 export type BoardOperation = {
-  type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo';
+  type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo'
+    | 'insert_library' | 'library_action' | 'create_image';
   target?: string; ids?: string[]; placement?: 'focus' | 'pointer' | 'auto';
   expression?: string; latex?: string; text?: string; title?: string;
   geometry?: GeometryKind; vertices?: Point[]; angles?: number[]; sides?: number;
@@ -40,8 +55,12 @@ export type BoardOperation = {
   dx?: number; dy?: number; fitFocus?: boolean; fontSize?: number;
   followPointer?: boolean;
   field?: ContentField; start?: number; end?: number; replacement?: string; find?: string; replace?: string
+  // insert_library carries references only; the app resolves it into create_image
+  book?: string; page?: string; item?: string; query?: string; placementOption?: PlacementOption['id']; action?: LibraryAction
+  // create_image is made by the app, never by the model
+  image?: BoardImage; locked?: boolean; meta?: Record<string, unknown>
 }
 export type BoardResult = { ok: boolean; message: string; ids: string[]; objects?: BoardObject[] }
-export type BoardCommand = { operations: BoardOperation[]; message: string }
+export type BoardCommand = { operations: BoardOperation[]; message: string; placementOptions?: PlacementOption[] }
 export type AppSettings = { name: string; paper: 'dots' | 'grid' | 'plain' | 'ruled'; mode: 'infinite' | 'page'; backgroundColor: string; focusMode?: FocusMode }
 export const DEFAULT_SETTINGS: AppSettings = { name: 'Untitled notebook', paper: 'plain', mode: 'infinite', backgroundColor: '#ffffff', focusMode: 'reference' }

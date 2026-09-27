@@ -5,6 +5,8 @@ dist/
 !.env.example
 api.txt
 API.txt
+jev.txt
+JEV.txt
 .local/
 *.log
 test-results/

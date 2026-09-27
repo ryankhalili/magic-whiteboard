@@ -180,9 +180,26 @@ function drawPaper(context: CanvasRenderingContext2D, bounds: Bounds, settings: 
   context.stroke()
 }
 
-/** Export every object, including locked homework images, with the board's paper treatment. */
-export async function renderBoardPng(editor: Editor, settings: AppSettings): Promise<{ blob: Blob; bounds: Box }> {
-  const bounds = getExportBounds(editor, settings)
+/** Current page objects whose bounds touch the region, locked pages included. */
+export function regionShapeIds(editor: Editor, bounds: Bounds): TLShapeId[] {
+  return editor.getCurrentPageShapes().filter(shape => {
+    const box = editor.getShapePageBounds(shape)
+    return !!box && box.maxX > bounds.x && box.maxY > bounds.y && box.x < bounds.x + bounds.w && box.y < bounds.y + bounds.h
+  }).map(shape => shape.id)
+}
+
+/** The selected objects plus a margin, or null when nothing is selected. */
+export function regionFromSelection(editor: Editor, padding = 24): Bounds | null {
+  const boxes = editor.getSelectedShapes().map(shape => editor.getShapePageBounds(shape))
+    .filter((box): box is Box => !!box && [box.x, box.y, box.w, box.h].every(Number.isFinite))
+  if (!boxes.length) return null
+  const all = Box.Common(boxes)
+  return { x: all.x - padding, y: all.y - padding, w: all.w + padding * 2, h: all.h + padding * 2 }
+}
+
+/** One region of the board as a PNG: the paper, then the objects (by default everything that touches it). */
+export async function renderRegionPng(editor: Editor, settings: AppSettings, bounds: Bounds, ids: TLShapeId[] = regionShapeIds(editor, bounds)): Promise<Blob> {
+  if (![bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite) || bounds.w <= 0 || bounds.h <= 0) throw new Error('The export area is invalid.')
   // Export very large boards without exceeding iPad canvas memory limits.
   const pixelRatio = Math.min(2, MAX_EXPORT_EDGE / bounds.w, MAX_EXPORT_EDGE / bounds.h,
     Math.sqrt(MAX_EXPORT_PIXELS / (bounds.w * bounds.h)))
@@ -193,7 +210,6 @@ export async function renderBoardPng(editor: Editor, settings: AppSettings): Pro
   if (!context) throw new Error('Image export is unavailable in this browser.')
   context.scale(canvas.width / bounds.w, canvas.height / bounds.h)
   drawPaper(context, bounds, settings)
-  const ids = [...editor.getCurrentPageShapeIds()]
   if (ids.length) {
     const exported = await editor.toImage(ids, {
       format: 'png', bounds, padding: 0, background: false, pixelRatio, darkMode: false,
@@ -202,7 +218,30 @@ export async function renderBoardPng(editor: Editor, settings: AppSettings): Pro
     try { context.drawImage(await loadImage(url), 0, 0, bounds.w, bounds.h) }
     finally { URL.revokeObjectURL(url) }
   }
-  return { blob: await canvasBlob(canvas), bounds }
+  return canvasBlob(canvas)
+}
+
+/** Export every object, including locked homework images, with the board's paper treatment. */
+export async function renderBoardPng(editor: Editor, settings: AppSettings): Promise<{ blob: Blob; bounds: Box }> {
+  const bounds = getExportBounds(editor, settings)
+  return { blob: await renderRegionPng(editor, settings, bounds, [...editor.getCurrentPageShapeIds()]), bounds }
+}
+
+/** Board pixels at 96 dpi become points at 72 dpi, kept under the PDF page size limit. */
+export function pdfPageSize(bounds: Bounds): [number, number] {
+  const maxPdfEdge = 14_400
+  const pdfScale = Math.min(0.75, maxPdfEdge / bounds.w, maxPdfEdge / bounds.h)
+  return [bounds.w * pdfScale, bounds.h * pdfScale]
+}
+
+async function pngPdf(blob: Blob, title: string, [width, height]: [number, number]): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create()
+  pdf.setTitle(title)
+  pdf.setCreator('Magic Whiteboard')
+  const image = await pdf.embedPng(await blob.arrayBuffer())
+  const page = pdf.addPage([width, height])
+  page.drawImage(image, { x: 0, y: 0, width, height })
+  return pdf.save()
 }
 
 export async function exportBoard(editor: Editor, format: 'png' | 'pdf', settings: AppSettings): Promise<void> {
@@ -211,18 +250,26 @@ export async function exportBoard(editor: Editor, format: 'png' | 'pdf', setting
     downloadBlob(blob, `${baseName(settings.name)}.png`)
     return
   }
-  const pdf = await PDFDocument.create()
-  pdf.setTitle(settings.name)
-  pdf.setCreator('Magic Whiteboard')
-  const image = await pdf.embedPng(await blob.arrayBuffer())
   // An infinite board uses a content-sized sheet; page mode is a true portrait A4 page.
-  const maxPdfEdge = 14_400
-  const pdfScale = Math.min(0.75, maxPdfEdge / bounds.w, maxPdfEdge / bounds.h)
-  const [width, height] = settings.mode === 'page' ? [595.28, 841.89] : [bounds.w * pdfScale, bounds.h * pdfScale]
-  const page = pdf.addPage([width, height])
-  page.drawImage(image, { x: 0, y: 0, width, height })
-  const bytes = await pdf.save()
+  const bytes = await pngPdf(blob, settings.name, settings.mode === 'page' ? [595.28, 841.89] : pdfPageSize(bounds))
   downloadBlob(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }), `${baseName(settings.name)}.pdf`)
+}
+
+/** One PDF page of exactly this area of the board, paper and locked pages included. */
+export async function buildRegionPdf(editor: Editor, bounds: Bounds, settings: AppSettings): Promise<Uint8Array> {
+  if (![bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite) || Math.abs(bounds.x) > 1e7 || Math.abs(bounds.y) > 1e7) {
+    throw new Error('The export area is invalid.')
+  }
+  if (bounds.w < 8 || bounds.h < 8) throw new Error('The area to export is too small.')
+  const region = { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+  const ids = regionShapeIds(editor, region)
+  if (!ids.length) throw new Error('Nothing on the board is inside that area.')
+  return pngPdf(await renderRegionPng(editor, settings, region, ids), settings.name, pdfPageSize(region))
+}
+
+export async function exportRegionPdf(editor: Editor, bounds: Bounds, settings: AppSettings, name?: string): Promise<void> {
+  const bytes = await buildRegionPdf(editor, bounds, settings)
+  downloadBlob(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }), `${baseName(name ?? `${settings.name} area`)}.pdf`)
 }
 
 export function saveProject(editor: Editor, settings: AppSettings): void {

@@ -5,11 +5,14 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
 import { z } from 'zod'
-import { boardTools, contextInstructions, contextSchema, requestSchema } from './board-tools'
+import { contextSchema, requestSchema, runBoardCommand } from './board-tools'
 import { DEFAULT_TEXT_MODEL, textModelSettings } from './model-config'
 import { readBoardCommand } from './command-response'
 import { accessToken, authorized, blockedPath, grantAccess, isLocalBrowser, pairingCode, RateLimiter, sameOrigin, validPairCode } from './security'
 import { realtimeConfig } from './realtime-config'
+import { jevModel, readJevKey } from './jev'
+import { rankItems, registerRankRoute, type RankUsage } from './rank'
+import type { RankRequest } from '../shared/ranking'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const app = express()
@@ -26,7 +29,7 @@ try {
   const candidate = (await readFile(path.join(root, '.local', 'preview-host.txt'), 'utf8')).trim()
   if (/^[a-z0-9]+(?:-[a-z0-9]+)*\.trycloudflare\.com$/.test(candidate)) previewHost = candidate
 } catch { /* No temporary iPad preview is running. */ }
-let usage = { commands: 0, inputTokens: 0, outputTokens: 0, voiceSecondsReserved: 0 }
+let usage = { commands: 0, inputTokens: 0, outputTokens: 0, voiceSecondsReserved: 0, jevCalls: 0, jevInputTokens: 0 }
 try { usage = { ...usage, ...JSON.parse(await readFile(usagePath, 'utf8')) } } catch { /* First launch. */ }
 let writeQueue = Promise.resolve()
 function persistUsage() {
@@ -63,6 +66,7 @@ app.get('/api/status', async (req, res) => {
   const allowed = local || authorized(req)
   res.json({
     configured: Boolean(await readKey()), authorized: allowed, pairingRequired: !allowed,
+    jev: { configured: Boolean(await readJevKey(root)), model: jevModel() },
     ...(local ? { pairingCode } : {}), models: { text: textModel, realtime: realtimeModel },
     limits: { sessionMinutes: 5, inactivitySeconds: 90, commandLimit: MAX_COMMANDS, voiceMinutesLimit: MAX_VOICE_SECONDS / 60 },
     ...(allowed ? { usage: { ...usage, note: 'Local usage counters, not a dollar balance. OpenAI billing is authoritative.' } } : {}),
@@ -90,6 +94,15 @@ app.use('/api', (req, res, next) => {
   next()
 })
 
+function countJev({ calls, inputTokens }: RankUsage) {
+  usage.jevCalls += calls; usage.jevInputTokens += inputTokens; persistUsage()
+}
+// ranks placement or library candidates inside a command, with a short budget so a slow Jev never holds it up
+async function rankForCommand(req: RankRequest, timeoutMs = 1500) {
+  return rankItems(req, { key: await readJevKey(root), timeoutMs, onUsage: countJev })
+}
+registerRankRoute(app, { readKey: () => readJevKey(root), onUsage: countJev })
+
 app.post('/api/command', async (req, res) => {
   const parsed = requestSchema.safeParse(req.body)
   if (!parsed.success) { res.status(400).json({ error: 'The board request is incomplete or too large.' }); return }
@@ -100,22 +113,14 @@ app.post('/api/command', async (req, res) => {
   usage.commands++; persistUsage()
   try {
     const client = new OpenAI({ apiKey: key, maxRetries: 0, timeout: 25_000 })
-    const response = await client.responses.create({
-      ...textModelSettings(textModel), instructions: contextInstructions(parsed.data.context),
-      input: [...(parsed.data.history ?? []).slice(-8).map(m => ({ role: m.role, content: m.text })), {
-        role: 'user', content: parsed.data.image ? [
-          { type: 'input_text', text: parsed.data.text },
-          { type: 'input_image', image_url: parsed.data.image, detail: 'low' },
-        ] : parsed.data.text,
-      }],
-      tools: [{ ...boardTools[0], strict: false }],
-      tool_choice: { type: 'function', name: 'apply_board_operations' },
-      parallel_tool_calls: false, store: false,
+    // placement candidates are ranked (Jev or local, 1.5 s budget) into options A, B, C inside this same request
+    const { response, placementOptions } = await runBoardCommand({ responses: { create: body => client.responses.create(body) } }, parsed.data, {
+      settings: textModelSettings(textModel), rank: rankRequest => rankForCommand(rankRequest),
     })
     usage.inputTokens += response.usage?.input_tokens ?? 0
     usage.outputTokens += response.usage?.output_tokens ?? 0
     persistUsage()
-    try { res.json(readBoardCommand(response)) }
+    try { res.json({ ...readBoardCommand(response), ...(placementOptions ? { placementOptions } : {}) }) }
     catch (error) { res.status(502).json({ error: (error as Error).message }) }
   } catch (error) { res.status(502).json({ error: friendlyError(error) }) }
 })
@@ -186,7 +191,7 @@ if (process.argv.includes('--production')) {
   const { createServer: createViteServer } = await import('vite')
   const vite = await createViteServer({
     root, server: { middlewareMode: true, hmr: { server: httpServer }, allowedHosts: previewHost ? [previewHost] : [],
-      fs: { deny: ['**/api.txt', '**/.env', '**/.env.*', '**/.git/**', '**/.local/**', '**/server/**', '**/*.{crt,pem,key}'] },
+      fs: { deny: ['**/api.txt', '**/jev.txt', '**/.env', '**/.env.*', '**/.git/**', '**/.local/**', '**/server/**', '**/*.{crt,pem,key}'] },
     }, appType: 'spa',
   })
   app.use(vite.middlewares)

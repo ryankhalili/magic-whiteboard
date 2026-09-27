@@ -1,5 +1,5 @@
-import { createShapeId, type Editor, type TLShape, type TLShapeId, type TLShapePartial, type TLCreateShapePartial } from '../canvas/editor'
-import type { BoardContext, BoardObject, BoardOperation, BoardResult, Bounds } from '../../shared/board'
+import { createAssetId, createShapeId, type AssetRecord, type Editor, type TLImageShape, type TLShape, type TLShapeId, type TLShapePartial, type TLCreateShapePartial } from '../canvas/editor'
+import type { BoardContext, BoardImage, BoardObject, BoardOperation, BoardResult, Bounds, PlacementOption } from '../../shared/board'
 import { DEFAULT_MAGIC_PROPS, type MagicShape, type MagicShapeProps } from './MagicShape'
 import { autoYRange, validateDomain, validateExpression } from './expression'
 import { applyContentEdit, applyLatexContentEdit } from './contentEdit'
@@ -8,9 +8,13 @@ import { containsBounds, shapePageBounds } from './spatial'
 import { resolveGeometry } from '../../shared/geometry'
 import { validateColor, validateCrop, validateOpacity, validateStrokeWidth } from '../../shared/appearance'
 import { validateLatex } from './latex'
+import { pdfPageInfo } from '../files/pdfPages'
+import { parseLibraryQuery } from '../library/search'
+import type { LibraryQuery } from '../library/types'
 
 const kinds: Record<string, MagicShapeProps['kind']> = { create_plot: 'plot', create_math: 'math', create_text: 'text', create_geometry: 'geometry' }
-const operationTypes = new Set([...Object.keys(kinds), 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo'])
+// insert_library and library_action are resolved by the app before they reach the board
+const operationTypes = new Set([...Object.keys(kinds), 'create_image', 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo'])
 const stringProps = ['expression', 'latex', 'text', 'title', 'color', 'geometry', 'fill'] as const
 const numericProps = ['xMin', 'xMax', 'yMin', 'yMax', 'fontSize', 'fillOpacity', 'strokeWidth'] as const
 
@@ -64,9 +68,13 @@ export function getPlacementBounds(operation: BoardOperation, context: BoardCont
     requireLiteralSize(region, kind)
     return validateBounds({ ...region })
   }
-  const point = operation.placement === 'pointer' && context.pointer ? context.pointer
-    : operation.placement !== 'auto' && context.focus ? { x: context.focus.bounds.x + context.focus.bounds.w / 2, y: context.focus.bounds.y + context.focus.bounds.h / 2 }
-      : { x: context.viewport.x + context.viewport.w / 2, y: context.viewport.y + context.viewport.h / 2 }
+  // a ranked free area chosen by the model, only offered when nothing is circled
+  const option = !region && !context.focus && operation.placement !== 'pointer' && operation.placementOption
+    ? context.placementOptions?.find(o => o.id === operation.placementOption && isFiniteBox(o.bounds)) : undefined
+  const point = option ? { x: option.bounds.x + option.bounds.w / 2, y: option.bounds.y + option.bounds.h / 2 }
+    : operation.placement === 'pointer' && context.pointer ? context.pointer
+      : operation.placement !== 'auto' && context.focus ? { x: context.focus.bounds.x + context.focus.bounds.w / 2, y: context.focus.bounds.y + context.focus.bounds.h / 2 }
+        : { x: context.viewport.x + context.viewport.w / 2, y: context.viewport.y + context.viewport.h / 2 }
   // Literal pointer/auto placement retains its existing containment behavior.
   // Reference batches use actual prior object extents, including rotations and
   // earlier transforms in this transaction, rather than a diagonal index offset.
@@ -87,6 +95,114 @@ export function getPlacementBounds(operation: BoardOperation, context: BoardCont
   validateBounds(bounds)
   requireInside(region, bounds)
   return bounds
+}
+
+const isFiniteBox = (b: Bounds | undefined | null): b is Bounds => !!b && [b.x, b.y, b.w, b.h].every(Number.isFinite) && b.w > 0 && b.h > 0
+
+// fnv style 53 bit hash, so the same page or problem always maps to the same asset
+function hashKey(text: string) {
+  let a = 0xdeadbeef, b = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) { const c = text.charCodeAt(i); a = Math.imul(a ^ c, 2654435761); b = Math.imul(b ^ c, 1597334677) }
+  a = Math.imul(a ^ (a >>> 16), 2246822507) ^ Math.imul(b ^ (b >>> 13), 3266489909)
+  b = Math.imul(b ^ (b >>> 16), 2246822507) ^ Math.imul(a ^ (a >>> 13), 3266489909)
+  return (4294967296 * (2097151 & b) + (a >>> 0)).toString(16).padStart(14, '0')
+}
+/** Deterministic asset id for a rendered library image, so inserting it again reuses the bytes. */
+export const libraryAssetId = (key: string) => createAssetId(`lib-${hashKey(key)}`)
+
+const IMAGE_SRC = /^data:image\/(png|jpeg);base64,[A-Za-z\d+/=]+$/
+function validateImage(image: BoardImage | undefined): BoardImage {
+  if (!image || typeof image.src !== 'string' || !IMAGE_SRC.test(image.src)) throw new Error('Only PNG or JPEG images can be added this way.')
+  if (![image.w, image.h].every(n => typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= 1e6)) throw new Error('This image has an invalid size.')
+  return { src: image.src, w: image.w, h: image.h, mimeType: image.src.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', name: String(image.name ?? 'Image').slice(0, 300) || 'Image' }
+}
+function plainMeta(meta: unknown): Record<string, unknown> {
+  if (meta === undefined) return {}
+  let copy: unknown
+  try { const text = JSON.stringify(meta); copy = text && text.length <= 8000 ? JSON.parse(text) : null } catch { copy = null }
+  if (!copy || typeof copy !== 'object' || Array.isArray(copy)) throw new Error('The image details are invalid.')
+  return copy as Record<string, unknown>
+}
+
+export type LibraryImageKind = 'page' | 'item' | 'crop'
+/** Board size of an inserted page or problem, and the work space to keep free below it. */
+export function libraryImageSize(image: { w: number; h: number }, kind: LibraryImageKind): { w: number; h: number; workBelow: number } {
+  const aspect = image.w > 0 && image.h > 0 && Number.isFinite(image.h / image.w) ? Math.min(40, Math.max(1 / 40, image.h / image.w)) : 1.3
+  let w = kind === 'page' ? 700 : Math.min(640, Math.max(80, (image.w || 0) / 2))
+  let h = w * aspect
+  // very thin or very tall images still get a size the board accepts
+  if (h < 16) { h = 16; w = Math.min(10000, 16 / aspect) }
+  if (h > 10000) { h = 10000; w = Math.max(16, 10000 / aspect) }
+  return { w, h, workBelow: kind === 'page' ? 0 : Math.max(260, 1.2 * h) }
+}
+
+/**
+ * Where an image goes when the teacher has pointed or circled: reference mode puts it at the top left of the
+ * area at its natural size; literal mode fits it inside the region. null when nothing is focused.
+ */
+export function focusImageBounds(size: { w: number; h: number }, context: BoardContext): Bounds | null {
+  const region = literalRegion(context)
+  if (region) {
+    const scale = Math.min(1, region.w / size.w, region.h / size.h)
+    const w = size.w * scale, h = size.h * scale
+    if (w < 16 || h < 16) throw new Error('The circled area is too small for this. Circle a larger area.')
+    return { x: region.x, y: region.y, w, h }
+  }
+  const focus = context.focus
+  if (!focus || !isFiniteBox({ ...focus.bounds, w: Math.max(1, focus.bounds.w), h: Math.max(1, focus.bounds.h) })) return null
+  return { x: focus.bounds.x, y: focus.bounds.y, w: size.w, h: size.h }
+}
+
+/** The free spot for a model's placementOption: the option itself when the image fits there, else the spot nearest it. */
+export function spotForOption(option: PlacementOption, spots: readonly { bounds: Bounds }[], size: { w: number; h: number }): Bounds {
+  let best: Bounds | null = null, distance = Infinity
+  for (const spot of spots) {
+    const d = Math.hypot(spot.bounds.x - option.bounds.x, spot.bounds.y - option.bounds.y)
+    if (d < distance) { distance = d; best = spot.bounds }
+  }
+  return best ? { x: best.x, y: best.y, w: size.w, h: size.h } : { x: option.bounds.x, y: option.bounds.y, w: size.w, h: size.h }
+}
+
+/** The library request an insert_library operation refers to, or null when it names nothing. */
+export function libraryQueryFromOperation(operation: BoardOperation): LibraryQuery | null {
+  const book = typeof operation.book === 'string' && operation.book.trim() ? operation.book.trim().slice(0, 200) : undefined
+  const withBook = (query: LibraryQuery): LibraryQuery => book && !query.book ? { ...query, book } : query
+  const page = typeof operation.page === 'string' ? operation.page.trim() : ''
+  if (page) {
+    const label = page.replace(/^(?:pages?|pgs?\.?|p\.?)\s*/i, '').trim()
+    if (!/^(\d{1,4}|[ivxlcdm]{1,8})$/i.test(label)) return null
+    return withBook({ kind: 'page', label: /^\d/.test(label) ? String(Number(label)) : label.toLowerCase(), raw: `page ${label}` })
+  }
+  const item = typeof operation.item === 'string' ? operation.item.trim() : ''
+  if (item) {
+    const parsed = parseLibraryQuery(item)
+    if (parsed && parsed.kind === 'item') return withBook(parsed)
+    const lone = /^(?:#|no\.?|number)?\s*(\d{1,3}(?:\.\d{1,3}){0,2})$/i.exec(item)
+    if (lone) return withBook({ kind: 'item', label: lone[1], raw: item })
+    return withBook(parsed ?? { kind: 'topic', terms: item, raw: item })
+  }
+  const query = typeof operation.query === 'string' ? operation.query.trim() : ''
+  if (query) return withBook(parseLibraryQuery(query) ?? { kind: 'topic', terms: query, raw: query })
+  return null
+}
+
+const KIND_TITLES: Record<string, string> = {
+  example: 'Example', exercise: 'Exercise', problem: 'Problem', checkpoint: 'Checkpoint', section: 'Section', theorem: 'Theorem',
+  definition: 'Definition', question: 'Question', figure: 'Figure', table: 'Table',
+}
+/** What an inserted library image is, from meta.library, for the model and the object list. */
+function libraryObject(meta: Record<string, unknown>): { kind: string; title: string } | null {
+  const value = meta.library
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const info = value as Record<string, unknown>
+  const book = typeof info.title === 'string' ? info.title : 'Textbook'
+  const index = typeof info.pageIndex === 'number' && Number.isInteger(info.pageIndex) ? info.pageIndex : null
+  const page = typeof info.pageLabel === 'string' && info.pageLabel ? `page ${info.pageLabel}` : index !== null ? `file page ${index + 1}` : 'a page'
+  if (info.kind === 'page') return { kind: 'textbook_page', title: `${book}, ${page}`.slice(0, 200) }
+  if (info.kind === 'crop') return { kind: 'textbook_item', title: `Part of ${page}, ${book}`.slice(0, 200) }
+  const name = typeof info.itemKind === 'string' ? KIND_TITLES[info.itemKind] ?? 'Item' : 'Item'
+  const label = typeof info.itemLabel === 'string' && info.itemLabel ? ` ${info.itemLabel}` : ''
+  return { kind: 'textbook_item', title: `${name}${label} (${page})`.slice(0, 200) }
 }
 
 function propsFromOperation(operation: BoardOperation, original: MagicShapeProps): MagicShapeProps {
@@ -134,7 +250,7 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
   return p
 }
 
-type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[]; layers: { ids: TLShapeId[]; front: boolean }[] }
+type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[]; layers: { ids: TLShapeId[]; front: boolean }[]; assets: AssetRecord[]; locked: TLShapeId[] }
 
 export class BoardController {
   private lastIds: string[] = []
@@ -157,8 +273,15 @@ export class BoardController {
         } else if (shape.props.kind === 'math') object.latex = shape.props.latex
         else if (shape.props.kind === 'text') object.text = shape.props.text
         else { object.geometry = shape.props.geometry; object.text = shape.props.text }
-      } else if (shape.type === 'image') object.crop = shape.props.crop
-      else if (shape.type === 'draw') { object.color = shape.props.color; object.strokeWidth = shape.props.strokeWidth }
+      } else if (shape.type === 'image') {
+        object.crop = shape.props.crop
+        const pdf = pdfPageInfo(shape), book = pdf ? null : libraryObject(shape.meta)
+        if (pdf) {
+          object.kind = 'pdf_page'
+          object.title = `Worksheet page ${pdf.page} of ${pdf.pages}: ${pdf.name}`.slice(0, 200)
+          if (pdf.text) object.text = pdf.text
+        } else if (book) { object.kind = book.kind; object.title = book.title }
+      } else if (shape.type === 'draw') { object.color = shape.props.color; object.strokeWidth = shape.props.strokeWidth }
       return object
     })
   }
@@ -169,10 +292,34 @@ export class BoardController {
     const creates = new Map<TLShapeId, TLCreateShapePartial>(), updates = new Map<TLShapeId, TLShapePartial>(), deletes = new Set<TLShapeId>(), touched = new Set<TLShapeId>()
     const context = { ...baseContext, selectedIds: [...baseContext.selectedIds], lastCreatedIds: this.lastCreatedIds.length ? this.lastCreatedIds : baseContext.lastCreatedIds }
     const layers: Plan['layers'] = []
+    const assets = new Map<string, AssetRecord>(), locked: TLShapeId[] = []
     const region = literalRegion(context)
     let createdCount = 0
     for (const operation of operations) {
       if (!operation || !operationTypes.has(operation.type)) throw new Error('That whiteboard action is not supported.')
+      if (operation.type === 'create_image') {
+        const image = validateImage(operation.image)
+        if (!operation.bounds) throw new Error('An image needs a place on the board.')
+        const b = validateBounds({ x: operation.bounds.x, y: operation.bounds.y, w: operation.bounds.w, h: operation.bounds.h })
+        requireInside(region, b)
+        const meta = plainMeta(operation.meta)
+        const assetId = typeof meta.assetKey === 'string' && meta.assetKey ? libraryAssetId(meta.assetKey) : createAssetId()
+        if (!this.editor.getAsset(assetId) && !assets.has(assetId)) assets.set(assetId, {
+          id: assetId, typeName: 'asset', type: 'image', meta: {},
+          props: { name: image.name, src: image.src, w: image.w, h: image.h, mimeType: image.mimeType, isAnimated: false },
+        })
+        const id = createShapeId(), isLocked = operation.locked === true
+        const shape: TLCreateShapePartial<TLImageShape> = { id, type: 'image', x: b.x, y: b.y, rotation: 0, isLocked, opacity: 1,
+          props: { assetId, w: b.w, h: b.h, altText: image.name }, meta: { ...meta, marginaliaBackground: false } }
+        creates.set(id, shape)
+        virtual.set(id, { ...shape, index: 0, parentId: this.editor.getCurrentPageId() } as TLImageShape)
+        createdCount++
+        // a locked page is written on, not selected
+        if (isLocked) { locked.push(id); context.selectedIds = [] }
+        else { touched.add(id); context.selectedIds = [id] }
+        context.lastCreatedIds = [id]
+        continue
+      }
       if (operation.axisMode !== undefined && !['equal', 'auto'].includes(operation.axisMode)) throw new Error('Axis mode must be equal or auto.')
       if (operation.opacity !== undefined) validateOpacity(operation.opacity)
       if (operation.layer !== undefined && !['front', 'back'].includes(operation.layer)) throw new Error('Choose front or back for the object layer.')
@@ -307,7 +454,9 @@ export class BoardController {
       if (operation.layer && operation.type !== 'delete_objects') layers.push({ ids: context.selectedIds, front: operation.layer === 'front' })
       context.lastCreatedIds = context.selectedIds.length ? context.selectedIds : context.lastCreatedIds.filter(id => virtual.has(id))
     }
-    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], touched: [...touched], nextLast: context.lastCreatedIds, layers }
+    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], touched: [...touched], nextLast: context.lastCreatedIds, layers,
+      assets: [...assets.values()].filter(asset => [...creates.values()].some(shape => shape.type === 'image' && shape.props?.assetId === asset.id)),
+      locked: locked.filter(id => creates.has(id)) }
   }
 
   applyOperations(operations: BoardOperation[]): BoardResult {
@@ -321,15 +470,17 @@ export class BoardController {
     const mark = this.editor.markHistoryStoppingPoint('magic-command')
     try {
       this.editor.run(() => {
+        if (plan.assets.length) this.editor.createAssets(plan.assets)
         if (plan.creates.length) this.editor.createShapes(plan.creates)
         if (plan.updates.length) this.editor.updateShapes(plan.updates)
         if (plan.deletes.length) this.editor.deleteShapes(plan.deletes)
         for (const layer of plan.layers) this.editor[layer.front ? 'bringToFront' : 'sendToBack'](layer.ids)
         if (plan.touched.length) this.editor.select(...plan.touched)
+        else if (plan.locked.length) this.editor.selectNone()
       })
       this.editor.markHistoryStoppingPoint('after-magic-command')
       this.lastIds = plan.nextLast
-      return { ok: true, message: 'Whiteboard updated.', ids: plan.touched, objects: this.getObjects() }
+      return { ok: true, message: 'Whiteboard updated.', ids: [...plan.touched, ...plan.locked], objects: this.getObjects() }
     } catch (error) {
       this.editor.bailToMark(mark)
       return { ok: false, message: error instanceof Error ? error.message : 'The whiteboard could not apply that change.', ids: [] }

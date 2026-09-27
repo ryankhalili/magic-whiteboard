@@ -15,7 +15,8 @@ type Props = {
 }
 
 export function objectLabel(object: BoardObject): string {
-  const name = object.kind === 'plot' ? 'Graph' : object.kind === 'math' ? 'Equation' : object.kind === 'geometry' ? 'Shape' : object.kind === 'image' ? 'Image' : object.kind === 'draw' ? 'Handwriting' : 'Text'
+  const name = object.kind === 'plot' ? 'Graph' : object.kind === 'math' ? 'Equation' : object.kind === 'geometry' ? 'Shape' : object.kind === 'image' ? 'Image' : object.kind === 'draw' ? 'Handwriting'
+    : object.kind === 'textbook_page' ? 'Book page' : object.kind === 'textbook_item' ? 'Book excerpt' : object.kind === 'pdf_page' ? 'PDF page' : 'Text'
   const source = object.title || object.expression || object.latex || object.text
   return source ? `${name}: ${source.replace(/\s+/g, ' ').slice(0, 35)}` : name
 }
