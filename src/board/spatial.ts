@@ -1,4 +1,4 @@
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, TLShape } from '../canvas/editor'
 import type { Bounds } from '../../shared/board'
 
 export function containsBounds(outer: Bounds, inner: Bounds) {
@@ -10,7 +10,7 @@ export function containsBounds(outer: Bounds, inner: Bounds) {
 /** Computes bounds from the candidate shape, including uncommitted transforms. */
 export function shapePageBounds(editor: Editor, shape: TLShape): Bounds {
   const props = shape.props as { w?: number; h?: number }
-  const box = typeof props.w === 'number' && typeof props.h === 'number'
+  const box = shape.type !== 'draw' && typeof props.w === 'number' && typeof props.h === 'number'
     ? { x: 0, y: 0, w: props.w, h: props.h } : editor.getShapeGeometry(shape).bounds
   const parent = shape.parentId?.startsWith('shape:') ? editor.getShapeParentTransform(shape) : null
   const cosine = Math.cos(shape.rotation), sine = Math.sin(shape.rotation)

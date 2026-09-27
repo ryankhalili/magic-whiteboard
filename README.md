@@ -1,6 +1,6 @@
 # Magic Whiteboard
 
-A magic whiteboard prototype: indicate a place on the canvas, ask for a graph or equation, and refine the same editable object by speaking or typing. Built for desktop development and testing on a physical iPad. The default is plain white paper with consistent text styling; equations, graphs, text, and geometry sit directly on the board with transparent backgrounds.
+A magic whiteboard prototype: indicate a place on the canvas, ask for a graph or equation, and refine the same editable object by speaking or typing. Built for desktop development and testing on a physical iPad. Its scene model, drawing tools, selection, transforms, camera, and history are application-owned implementations; no tldraw SDK is installed or required. The default is plain white paper with consistent text styling; equations, graphs, text, and geometry sit directly on the board with transparent backgrounds.
 
 ## Run locally
 
@@ -53,9 +53,11 @@ The connection provides continuous audio input, turn detection, transcripts, and
 
 Use **Notebooks** to create, rename, and switch between separate boards. Each notebook has its own canvas, title, paper, and layout settings. The previous single-board prototype is retained as the first notebook, using its existing storage key.
 
-Canvas changes are checkpointed locally, and switching waits for the current checkpoint to finish. A failed save keeps the current notebook open and reports the problem. Notebook metadata has a recovery backup, and canvas checkpoints are stored in IndexedDB separately from tldraw's normal persistence. There is no notebook deletion control in this version.
+Canvas changes are checkpointed locally, and switching waits for the current checkpoint to finish. A failed save keeps the current notebook open and reports the problem. Notebook metadata has a recovery backup, and canvas checkpoints are stored in IndexedDB. Earlier prototype notebooks are migrated from these checkpoints or read-only legacy storage, including supported encoded handwriting and embedded image data. Unreadable or unsupported documents produce an error before replacement; their saved copies remain intact, and you can switch to another notebook. There is no notebook deletion control in this version.
 
 Notebooks belong to the current browser profile and website address on this device. Another browser, device, or newly generated preview hostname has a separate local library. Download an editable `.marginalia.json` file to transfer a notebook or keep a backup. There is no shared cloud document store yet. **Open notebook file** replaces the active board; create a new notebook first if you want to keep the current one separately.
+
+Before replacing an earlier SDK checkpoint, the app preserves its original schema, encoded handwriting, images and other records in an immutable `pre-owned-canvas:<notebook id>` archive in the checkpoint database. Repeated migration attempts do not replace that first archive. Migration stops if the archive cannot be saved. This copy is reserved for recovery; it does not appear as another notebook or automatically make an old app understand the new checkpoint format. `loadOriginalNotebookSnapshot(id)` reads the untouched original for a future rollback or recovery export.
 
 The `.marginalia.json` file extension and existing browser-storage keys are retained for compatibility with notebooks saved before the Magic Whiteboard name change.
 
@@ -65,7 +67,7 @@ The `.marginalia.json` file extension and existing browser-storage keys are reta
 - A4 mode uses a fixed 794 × 1123 canvas region; infinite mode expands around the content. Choose plain, dotted, grid, or ruled paper and a background color.
 - PNG and PDF exports include the entire current board and its locked image background. A4 mode crops to the page; infinite mode includes all content with a small margin.
 - PDF output contains a high-resolution flattened rendering. Graph expressions and equations remain editable in the app and in downloaded `.marginalia.json` project files.
-- Project files contain the tldraw document, embedded images, and board settings. They never include server credentials. Project import validates the document before replacing the active board.
+- Project files contain editable scene records, embedded images, and board settings. They never include server credentials. Project import validates and migrates the document before replacing the active board. The legacy `.marginalia.json` format remains supported.
 - Local browser storage holds each notebook. Download an editable project backup before switching browsers/devices, changing preview addresses, or clearing website data.
 
 Image input is limited to 12 MB; large photographs are resized to at most 2400 pixels on their longest side. Project import is limited to 40 MB. PDF import is not included in this version.
@@ -100,17 +102,18 @@ The API key stays on the server. `api.txt`, `.env` files, and local usage record
 ## Architecture
 
 - React 19 and TypeScript provide the application shell.
-- tldraw 5.4.2 provides selection, ink, camera controls, object transforms, history, and persistence.
+- An independently written scene editor provides selection, pressure-sensitive ink, camera controls, object transforms, transactions, and undo/redo. React and browser SVG/HTML render the scene; the editor uses no third-party canvas SDK.
 - Custom `magic` shapes store their expressions, LaTeX, geometry, labels, ranges, and object IDs.
 - mathjs parses supported scalar expressions; sampled SVG paths render graphs. Model output is not evaluated as JavaScript.
 - KaTeX displays math; MathLive supplies direct equation editing and a math keyboard. `pdf-lib` packages board images into PDFs.
-- A local notebook manifest tracks per-notebook metadata. Isolated tldraw persistence keys and serialized IndexedDB checkpoints preserve separate boards and await a durable save before switching.
+- A local notebook manifest tracks per-notebook metadata. Serialized IndexedDB checkpoints preserve separate boards and await a durable save before switching; legacy storage keys remain readable for migration.
+- Native pointer interactions complete before a voice command or Undo changes the scene, preventing an old drag from overwriting a newer AI edit.
 - An Express backend calls the Responses API for typed commands and negotiates WebRTC Realtime sessions for voice.
 - The assistant receives selection, spatial focus, pointer, viewport, relevant objects, and recent conversation context. Typed commands can also include a board image; Realtime's `inspect_board` tool requests one on demand. Validated operations update the existing objects and preserve undo behavior.
 
-Useful implementation entry points are `src/board/`, `src/notebooks/`, `src/files/boardFiles.ts`, `src/files/capture.ts`, `shared/board.ts`, `server/board-tools.ts`, and `server/index.ts`.
+Useful implementation entry points are `src/canvas/`, `src/board/`, `src/notebooks/`, `src/files/boardFiles.ts`, `src/files/capture.ts`, `shared/board.ts`, `server/board-tools.ts`, and `server/index.ts`.
 
-The installed tldraw package has its own [license](https://github.com/tldraw/tldraw/blob/main/LICENSE.md). Review its deployment requirements before distributing a production app. Other dependencies retain their respective licenses.
+The original application code is proprietary; see [LICENSE](LICENSE). Remaining libraries use permissive software licenses, and bundled math fonts use SIL OFL. Preserve [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), also served by the app. The [commercial distribution audit](research/COMMERCIALIZATION.md) records exact versions, font terms, the removed SDK, and the remaining `@arnog/colors` copyright-notice provenance gap. Removing the SDK eliminates that SDK's commercial-license requirement; this engineering audit is not a blanket clearance of API service terms, third-party uploads, or future added assets.
 
 ## Scope and next steps
 
@@ -126,7 +129,8 @@ Automated tests cover command validation, geometry, file validation, notebook mi
 
 ## Verified in this prototype
 
-- TypeScript and production build succeed; 130 automated tests pass. The production dependency audit reports no known vulnerabilities. The build still warns about a large main JavaScript bundle.
+- TypeScript and production build succeed; 180 automated tests pass. The production dependency audit reports no known vulnerabilities. The main JavaScript bundle is approximately 1.78 MB before compression; further splitting would improve initial loading.
+- The independent canvas was exercised in Chrome for pressure-aware pencil rendering, selection, dragging, resizing, undo/redo, equation character editing, and PNG export with math fonts. Automated tests cover interruption of pointer gestures by AI commands and legacy notebook migration, including a real exported fixture with encoded handwriting and an image background.
 - Direct math editing deletes and inserts individual symbols; text entry and graph expression editing were exercised in Chrome. A real API request changed `x^2+4` to `x^2+7` without creating another object.
 - Separate notebooks retain their individual contents across switching and page reloads, including text edited immediately before switching. The plain whiteboard PNG export was visually checked.
 - Real API commands create a two-cycle sine graph and modify the same existing graph.

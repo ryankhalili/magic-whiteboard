@@ -1,4 +1,4 @@
-import { Box, type Editor, type TLShapeId } from 'tldraw'
+import { Box, type Editor, type TLShapeId } from '../canvas/editor'
 import type { Focus } from '../../shared/board'
 
 const MAX_CAPTURE_EDGE = 1024

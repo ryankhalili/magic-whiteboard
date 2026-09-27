@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, TLShape } from '../src/canvas/editor'
 import { finishPointerFollow, focusFromGesture, movePointerFollow, startPointerFollow } from '../src/board/interactions'
 
 describe('magic pointer interactions', () => {

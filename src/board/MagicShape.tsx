@@ -1,4 +1,5 @@
-import { BaseBoxShapeUtil, HTMLContainer, SVGContainer, T, useEditor, useIsEditing, type TLShape } from 'tldraw'
+import { useEditor, useIsEditing } from '../canvas/context'
+import type { TLShape, MagicShapeProps } from '../canvas/editor'
 import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react'
 import katex from 'katex'
 import katexCss from 'katex/dist/katex.min.css?inline'
@@ -6,13 +7,7 @@ import { niceTicks, samplePlot } from './expression'
 import { InlineEditor } from './InlineEditor'
 import { getAxisMode, getPlotLayout } from './plotLayout'
 
-export type MagicShapeProps = {
-  w: number; h: number; kind: 'plot' | 'math' | 'text' | 'geometry'; expression: string; latex: string;
-  text: string; title: string; color: string; xMin: number; xMax: number; yMin: number; yMax: number;
-  geometry: 'triangle' | 'right_triangle' | 'rectangle' | 'ellipse' | 'arrow'; fontSize: number
-}
-
-declare module '@tldraw/tlschema' { interface TLGlobalShapePropsMap { magic: MagicShapeProps } }
+export type { MagicShapeProps } from '../canvas/editor'
 export type MagicShape = TLShape<'magic'>
 export const DEFAULT_MAGIC_PROPS: MagicShapeProps = {
   w: 420, h: 300, kind: 'plot', expression: 'sin(x)', latex: '', text: '', title: '', color: '#111111',
@@ -118,7 +113,7 @@ function TextGraphic({ shape }: { shape: MagicShape }) {
   return <div style={{ width: p.w, height: p.h, boxSizing: 'border-box', padding: 8, fontSize: p.fontSize, lineHeight: 1.4, color: p.color, fontFamily: 'Arial, Helvetica, sans-serif', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'hidden' }}>{p.text}</div>
 }
 
-function MagicShapeComponent({ shape }: { shape: MagicShape }) {
+export function MagicShapeView({ shape }: { shape: MagicShape }) {
   const isEditing = useIsEditing(shape.id)
   const [preview, setPreview] = useState<{ field: 'latex' | 'text' | 'expression'; value: string } | null>(null)
   useEffect(() => {
@@ -133,11 +128,11 @@ function MagicShapeComponent({ shape }: { shape: MagicShape }) {
   useEffect(() => { setPreview(null) }, [shape.props.latex, shape.props.text, shape.props.expression])
   const visible = preview ? { ...shape, props: { ...shape.props, [preview.field]: preview.value } } : shape
   const overflow = shape.meta?.literalBounds ? 'hidden' : 'visible'
-  if (isEditing && shape.props.kind === 'plot') return <HTMLContainer style={{ pointerEvents: 'all', overflow: 'visible' }}><svg width={shape.props.w} height={shape.props.h} style={{ overflow }}><PlotGraphic shape={visible} hideExpression/></svg><InlineEditor shape={shape} preview={preview}/></HTMLContainer>
-  if (isEditing && shape.props.kind !== 'geometry') return <HTMLContainer style={{ pointerEvents: 'all', overflow: 'visible' }}><InlineEditor shape={shape} preview={preview}/></HTMLContainer>
-  if (shape.props.kind === 'math') return <HTMLContainer style={{ pointerEvents: 'all' }}><LiveMathGraphic shape={visible} allowResize={!preview}/></HTMLContainer>
-  if (shape.props.kind === 'text') return <HTMLContainer style={{ pointerEvents: 'all' }}><TextGraphic shape={visible}/></HTMLContainer>
-  return <SVGContainer style={{ overflow }}><svg width={visible.props.w} height={visible.props.h} viewBox={`0 0 ${visible.props.w} ${visible.props.h}`} style={{ overflow }}>{visible.props.kind === 'plot' ? <PlotGraphic shape={visible}/> : <GeometryGraphic shape={visible}/>}</svg></SVGContainer>
+  if (isEditing && shape.props.kind === 'plot') return <div className="magic-shape-content" style={{ pointerEvents: 'all', overflow: 'visible' }}><svg width={shape.props.w} height={shape.props.h} style={{ overflow }}><PlotGraphic shape={visible} hideExpression/></svg><InlineEditor shape={shape} preview={preview}/></div>
+  if (isEditing && shape.props.kind !== 'geometry') return <div className="magic-shape-content" style={{ pointerEvents: 'all', overflow: 'visible' }}><InlineEditor shape={shape} preview={preview}/></div>
+  if (shape.props.kind === 'math') return <div className="magic-shape-content"><LiveMathGraphic shape={visible} allowResize={!preview}/></div>
+  if (shape.props.kind === 'text') return <div className="magic-shape-content"><TextGraphic shape={visible}/></div>
+  return <svg width={visible.props.w} height={visible.props.h} viewBox={`0 0 ${visible.props.w} ${visible.props.h}`} style={{ overflow }}>{visible.props.kind === 'plot' ? <PlotGraphic shape={visible}/> : <GeometryGraphic shape={visible}/>}</svg>
 }
 
 let exportCssPromise: Promise<string> | null = null
@@ -161,19 +156,7 @@ async function getExportCss(): Promise<string> {
   return exportCssPromise
 }
 
-export class MagicShapeUtil extends BaseBoxShapeUtil<MagicShape> {
-  static override type = 'magic' as const
-  static override props = {
-    w: T.positiveNumber, h: T.positiveNumber, kind: T.literalEnum('plot', 'math', 'text', 'geometry'),
-    expression: T.string, latex: T.string, text: T.string, title: T.string, color: T.string,
-    xMin: T.number, xMax: T.number, yMin: T.number, yMax: T.number,
-    geometry: T.literalEnum('triangle', 'right_triangle', 'rectangle', 'ellipse', 'arrow'), fontSize: T.positiveNumber,
-  }
-  override getDefaultProps(): MagicShapeProps { return { ...DEFAULT_MAGIC_PROPS } }
-  override canEdit(shape: MagicShape) { return shape.props.kind !== 'geometry' }
-  override component(shape: MagicShape) { return <MagicShapeComponent shape={shape}/> }
-  override getIndicatorPath(shape: MagicShape) { const path = new Path2D(); path.rect(0, 0, shape.props.w, shape.props.h); return path }
-  override async toSvg(shape: MagicShape) {
+export async function magicShapeToSvg(shape: MagicShape) {
     if (shape.props.kind === 'plot' || shape.props.kind === 'geometry') {
       const graphic = shape.props.kind === 'plot' ? <PlotGraphic shape={shape}/> : <GeometryGraphic shape={shape}/>
       if (shape.meta?.literalBounds) return <svg width={shape.props.w} height={shape.props.h} overflow="hidden">{graphic}</svg>
@@ -185,5 +168,4 @@ export class MagicShapeUtil extends BaseBoxShapeUtil<MagicShape> {
         {shape.props.kind === 'math' ? <MathGraphic shape={shape}/> : <TextGraphic shape={shape}/>}
       </div>
     </foreignObject>
-  }
 }

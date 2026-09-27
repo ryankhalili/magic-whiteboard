@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, TLShape } from '../src/canvas/editor'
 import type { BoardContext } from '../shared/board'
 import { autoYRange, samplePlot, validateDomain, validateExpression } from '../src/board/expression'
 import { createBoardController, getPlacementBounds, resolveTargetIds } from '../src/board/controller'

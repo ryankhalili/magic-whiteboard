@@ -1,5 +1,5 @@
 {
-  "name": "marginalia-magic-board",
+  "name": "magic-whiteboard",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -21,7 +21,6 @@
     "pdf-lib": "^1.17.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tldraw": "5.4.2",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -36,5 +35,6 @@
     "typescript": "^5.9.0",
     "vite": "^7.3.0",
     "vitest": "^4.1.11"
-  }
+  },
+  "license": "UNLICENSED"
 }

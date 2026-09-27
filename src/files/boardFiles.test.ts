@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Box, type Editor } from 'tldraw'
+import { Box, type Editor } from '../canvas/editor'
 import { DEFAULT_SETTINGS } from '../../shared/board'
 import { getExportBounds, parseProjectFile } from './boardFiles'
 

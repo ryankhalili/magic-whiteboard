@@ -58,7 +58,7 @@ function persistenceKey(id: string) {
   return id === LEGACY_NOTEBOOK_ID ? LEGACY_PERSISTENCE_KEY : `marginalia-board-${id}`
 }
 
-/** Read metadata only; canvas contents remain in tldraw's per-notebook IndexedDB stores. */
+/** Read metadata only; canvas contents remain in per-notebook IndexedDB checkpoints. */
 export function parseNotebookManifest(text: string | null): NotebookManifest | null {
   if (!text || text.length > 2_000_000) return null
   try {

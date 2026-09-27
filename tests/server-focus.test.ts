@@ -90,6 +90,30 @@ describe('assistant instructions for spatial intent', () => {
     expect(BOARD_INSTRUCTIONS).toContain('Never use uniform scale to fix x/y unit distortion.')
     expect(BOARD_INSTRUCTIONS).toContain("'Make this rectangle/graph wider' changes physical width instead")
   })
+  it('keeps an explicit equal-unit graph creation separate from a selected equation', () => {
+    const parsed = requestSchema.parse({
+      text: 'Plot y = x here with equal units.',
+      context: {
+        ...context, focusMode: 'reference',
+        focus: { kind: 'region', bounds: { x: 700, y: 100, w: 24, h: 300 }, targetIds: [] },
+        selectedIds: ['shape:equation'], lastCreatedIds: ['shape:equation'],
+        objects: [{ id: 'shape:equation', kind: 'math', bounds: { x: 100, y: 100, w: 220, h: 90 }, rotation: 0, latex: 'x+1' }],
+      },
+    })
+    const instructions = contextInstructions(parsed.context)
+    const example = instructions.match(/says 'Plot y = x here with equal units\.' => (\{[^\n]+?\})\./)?.[1]
+    expect(example).toBeDefined()
+    const command = commandSchema.parse({ operations: [JSON.parse(example!)], message: '' })
+    expect(command.operations).toEqual([{
+      type: 'create_plot', placement: 'focus', expression: 'x',
+      xMin: -10, xMax: 10, yMin: -10, yMax: 10, axisMode: 'equal',
+    }])
+    expect(instructions).toContain('an axis modifier never overrides an explicit creation request')
+    expect(instructions).toContain('Never apply axisMode to a math, text, or geometry object.')
+    const schema = boardTools[0].parameters as any
+    expect(schema.properties.operations.items.properties.axisMode.description).toContain('include this property on create_plot')
+    expect(schema.properties.operations.items.properties.axisMode.description).toContain('Use update_object only when changing an existing plot')
+  })
   it('uses the current product name in the assistant identity', () => {
     expect(BOARD_INSTRUCTIONS.startsWith('You are Magic Whiteboard,')).toBe(true)
     expect(BOARD_INSTRUCTIONS).not.toContain('Marginalia')

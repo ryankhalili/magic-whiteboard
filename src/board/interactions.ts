@@ -1,4 +1,4 @@
-import type { Editor, TLShapeId } from 'tldraw'
+import type { Editor, TLShapeId } from '../canvas/editor'
 import type { BoardContext, Bounds, Focus, Point } from '../../shared/board'
 
 export type PointerFollow = { ids: string[]; offsets: Map<string, Point>; historyMark: string; constraint?: Bounds }

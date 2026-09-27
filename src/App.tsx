@@ -1,22 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import katex from 'katex'
-import { Tldraw, DefaultColorStyle, DefaultSizeStyle, useValue, type Editor, type TLShapeId } from 'tldraw'
+import { DefaultColorStyle, DefaultSizeStyle, type Editor, type TLShapeId } from './canvas/editor'
+import { WhiteboardCanvas } from './canvas/WhiteboardCanvas'
 import { ArrowUp, Check, ChevronDown, CircleHelp, Download, Eraser, FileImage, FileUp, Hand, ImagePlus, Keyboard, LoaderCircle, Maximize, Mic, MicOff, Minus, MousePointer2, Pencil, Plus, Redo2, RotateCcw, RotateCw, Save, Scan, Settings2, Sparkles, Trash2, Type, Sigma, Undo2, Volume2, VolumeX, X } from 'lucide-react'
-import { createBoardController, getPlacementBounds, MagicShapeUtil } from './board'
+import { createBoardController, getPlacementBounds, MagicShapeView } from './board'
 import { finishPointerFollow, focusFromGesture, movePointerFollow, startPointerFollow, type PointerFollow } from './board/interactions'
 import { createRealtimeClient, checkVoiceConnection, type ContentPreview } from './ai/realtime'
 import { NotebookSwitcher, useNotebookLibrary, saveNotebookSnapshot, loadNotebookSnapshot, type NotebookLibrary } from './notebooks'
 import { sendBoardCommand, pairDevice } from './ai/commands'
-import { exportBoard, importImageFile, loadProject, saveProject } from './files/boardFiles'
+import { exportBoard, importImageFile, installBoardImageExporter, loadProject, saveProject } from './files/boardFiles'
 import { captureBoardContext } from './files/capture'
 import { DEFAULT_SETTINGS, type AppSettings, type BoardContext, type BoardOperation, type BoardResult, type Bounds, type Focus, type Point } from '../shared/board'
 
 type Tool = 'magic' | 'select' | 'draw' | 'eraser' | 'hand' | 'text' | 'math'
 type Message = { id: number; role: 'user' | 'assistant' | 'event'; text: string }
 type ApiStatus = { configured: boolean; authorized: boolean; pairingRequired: boolean; pairingCode?: string; models?: { text: string; realtime: string } }
-const SHAPE_UTILS = [MagicShapeUtil]
 const COLORS = ['#202124', '#2563eb', '#dc2626', '#15803d', '#7c3aed']
-const TL_COLORS = ['black', 'blue', 'red', 'green', 'violet'] as const
+const INK_COLORS = ['black', 'blue', 'red', 'green', 'violet'] as const
 let messageId = 0
 
 export default function App() {
@@ -46,9 +46,17 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const projectInput = useRef<HTMLInputElement>(null)
   const importAsBackground = useRef(true)
   const snapshotReady = useRef(false)
+  const snapshotFailed = useRef(false)
   const snapshotLoad = useRef<Promise<void>>(Promise.resolve())
   const snapshotTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const [settings, setSettings] = useState<AppSettings>(() => notebook.settings)
+  const settings = notebook.settings
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  const setSettings = useCallback((update: React.SetStateAction<AppSettings>) => {
+    const next = typeof update === 'function' ? update(settingsRef.current) : update
+    settingsRef.current = next
+    library.updateNotebookSettings(notebook.id, next)
+  }, [library.updateNotebookSettings, notebook.id])
   const focusModeRef = useRef<'reference' | 'literal'>(notebook.settings.focusMode ?? 'reference')
   focusModeRef.current = settings.focusMode ?? 'reference'
   const [tool, setTool] = useState<Tool>('magic')
@@ -121,9 +129,10 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }, [])
   const execute = useCallback((ops: BoardOperation[]): BoardResult => {
     if (!controller.current) return { ok: false, message: 'The board is still loading.', ids: [] }
+    const editor = editorRef.current!
+    editor.completeInteraction()
     // Finish an earlier drag before the next edit changes its geometry or history.
     stopFollowing()
-    const editor = editorRef.current!
     const followMark = ops.some(o => o.followPointer) ? editor.markHistoryStoppingPoint('Follow pointer instruction') : null
     const result = controller.current.applyOperations(ops)
     if (result.ok) {
@@ -141,8 +150,6 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     return result
   }, [notify, stopFollowing, getContext])
 
-  useEffect(() => { library.updateNotebookSettings(notebook.id, settings) }, [settings, notebook.id, library.updateNotebookSettings])
-  useEffect(() => { setSettings(previous => JSON.stringify(previous) === JSON.stringify(notebook.settings) ? previous : notebook.settings) }, [notebook.settings])
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(''), 4200); return () => clearTimeout(id) }, [toast])
   useEffect(() => { fetch('/api/status').then(r => r.json()).then(setApi).catch(() => setError('The local AI server is not reachable. Drawing still works.')) }, [])
   useEffect(() => () => voiceRef.current?.disconnect(), [])
@@ -163,7 +170,13 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (busy) throw new Error('Wait for the current instruction or import to finish before switching notebooks.')
     await snapshotLoad.current
     const ed = editorRef.current
+    if (snapshotFailed.current) {
+      voiceRef.current?.disconnect()
+      stopFollowing()
+      return // Keep the unreadable saved notebook intact; allow opening another notebook.
+    }
     if (!ed || !snapshotReady.current) throw new Error('Wait for the notebook to finish opening before switching.')
+    ed.completeInteraction()
     voiceRef.current?.disconnect()
     stopFollowing()
     clearTimeout(snapshotTimer.current)
@@ -174,6 +187,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   const onMount = useCallback((editor: Editor) => {
     editorRef.current = editor
+    installBoardImageExporter(editor)
     controller.current = createBoardController(editor, getContext)
     editor.user.updateUserPreferences({ colorScheme: 'light' })
     editor.setCurrentTool('select')
@@ -182,9 +196,10 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     let disposed = false, frame = 0
     let unlisten = () => {}, unpersist = () => {}
     snapshotReady.current = false
+    snapshotFailed.current = false
     setReady(false)
     const initialize = async () => {
-      const saved = await loadNotebookSnapshot(notebook.id)
+      const saved = await loadNotebookSnapshot(notebook.id, notebook.persistenceKey)
       if (disposed) return
       if (saved) editor.loadSnapshot(saved)
       editor.setEditingShape(null); editor.setCurrentTool('select')
@@ -208,7 +223,15 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       }, { scope: 'document' })
       await saveNotebookSnapshot(notebook.id, editor.getSnapshot())
     }
-    snapshotLoad.current = initialize().catch(error => { if (!disposed) { setSaveState('Could not restore notebook'); setError((error as Error).message) } })
+    snapshotLoad.current = initialize().catch(error => {
+      if (!disposed) {
+        // A restored board whose first checkpoint failed still needs a successful
+        // save before switching; only a failed restore can skip saving safely.
+        snapshotFailed.current = !snapshotReady.current
+        setSaveState(snapshotReady.current ? 'Not saved' : 'Could not restore notebook')
+        setError((error as Error).message)
+      }
+    })
     return () => {
       disposed = true; unlisten(); unpersist(); cancelAnimationFrame(frame); clearTimeout(snapshotTimer.current)
       if (snapshotReady.current) void saveNotebookSnapshot(notebook.id, editor.getSnapshot()).catch(() => {})
@@ -249,14 +272,14 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }, [chooseTool, stopFollowing, setFocus, execute])
 
   const editor = editorRef.current
-  const objects = useValue('Notebook objects', () => ready ? controller.current?.getObjects() || [] : [], [ready, editor])
-  const selectedIds = useValue('Notebook selection', () => editor?.getSelectedShapeIds() || [], [editor])
+  const objects = useMemo(() => ready ? controller.current?.getObjects() || [] : [], [ready, editor, tick])
+  const selectedIds = editor?.getSelectedShapeIds() || []
   const selected = objects.find(o => selectedIds.includes(o.id as TLShapeId))
   const selectedRecord = selected ? editor?.getShape(selected.id as TLShapeId) : undefined
   const shapeCount = objects.length
-  const camera = useValue('Notebook camera', () => editor?.getCamera(), [editor])
+  const camera = editor?.getCamera()
   const zoom = camera?.z || 1
-  const editingShapeId = useValue('Notebook editing shape', () => editor?.getEditingShapeId(), [editor])
+  const editingShapeId = editor?.getEditingShapeId()
   useEffect(() => {
     setDraft(selected?.expression || selected?.latex || selected?.text || '')
     setRangeMin(String(selected?.xMin ?? -10)); setRangeMax(String(selected?.xMax ?? 10))
@@ -521,7 +544,6 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       previewBounds = getPlacementBounds({ type: `create_${kind}` as BoardOperation['type'], bounds: contentPreview.bounds }, previewContext, kind)
     } catch { /* Wait for validated final bounds when a partial instruction cannot fit. */ }
   }
-  void tick
 
   return <div className="app-shell">
     <header className="app-header">
@@ -537,7 +559,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) { importAsBackground.current = true; void importImage(f) } }}>
       <div className="paper-pattern"/>
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
-      <Tldraw shapeUtils={SHAPE_UTILS} persistenceKey={notebook.persistenceKey} onMount={onMount} hideUi licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}/>
+      <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
       {!ready && <div className="notebook-loading">Opening notebook…</div>}
       {['magic', 'text', 'math'].includes(tool) && <div className={`magic-surface ${following ? 'is-following' : ''}`} onPointerDown={magicDown} onPointerUp={magicUp} onDoubleClick={editAtPointer} onPointerCancel={() => { gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([]) }}/>} 
       <svg className="gesture-overlay" aria-hidden="true">{path.length > 1 && <path d={path.map((p, i) => { const v = pageToLocal(p); return `${i ? 'L' : 'M'} ${v.x} ${v.y}` }).join(' ')} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>}</svg>
@@ -548,7 +570,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       <nav className="tool-rail" aria-label="Drawing tools">
         {([{ id: 'magic', label: 'Magic pen', key: 'M', icon: Sparkles }, { id: 'draw', label: 'Pencil', key: 'P', icon: Pencil }, { id: 'select', label: 'Select & move', key: 'V', icon: MousePointer2 }, { id: 'text', label: 'Text', key: 'T', icon: Type }, { id: 'math', label: 'Math', key: 'Q', icon: Sigma }, { id: 'eraser', label: 'Eraser', key: 'E', icon: Eraser }, { id: 'hand', label: 'Pan', key: 'H', icon: Hand }] as const).map(({ id, label, key, icon: Icon }) => <button key={id} aria-label={label} aria-pressed={tool === id} title={`${label} (${key})`} className={tool === id ? 'active' : ''} onClick={() => chooseTool(id)}><Icon size={21}/><span className="tool-tip">{label}<kbd>{key}</kbd></span></button>)}
         <div className="rail-divider"/>
-        <div className="color-stack">{COLORS.map((c, i) => <button aria-label={`Ink color ${TL_COLORS[i]}`} key={c} className={color === c ? 'chosen' : ''} style={{ '--ink': c } as React.CSSProperties} onClick={() => { setColor(c); editor?.setStyleForNextShapes(DefaultColorStyle, TL_COLORS[i]); if (selectedRecord?.type === 'magic') execute([{ type: 'update_object', target: selected!.id, color: c }]); else editor?.setStyleForSelectedShapes(DefaultColorStyle, TL_COLORS[i]) }}/>)}</div>
+        <div className="color-stack">{COLORS.map((c, i) => <button aria-label={`Ink color ${INK_COLORS[i]}`} key={c} className={color === c ? 'chosen' : ''} style={{ '--ink': c } as React.CSSProperties} onClick={() => { setColor(c); editor?.setStyleForNextShapes(DefaultColorStyle, INK_COLORS[i]); if (selectedRecord?.type === 'magic') execute([{ type: 'update_object', target: selected!.id, color: c }]); else editor?.setStyleForSelectedShapes(DefaultColorStyle, INK_COLORS[i]) }}/>)}</div>
         <div className="rail-divider"/><button title={`${inkSize === 's' ? 'Thin' : 'Medium'} ink · click to change`} aria-label="Change ink width" onClick={() => { const size = inkSize === 's' ? 'm' : 's'; setInkSize(size); editor?.setStyleForNextShapes(DefaultSizeStyle, size); notify(`${size === 's' ? 'Thin' : 'Medium'} ink selected.`) }}><span className="stroke-preview" style={{ height: inkSize === 's' ? 2 : 3 }}/></button>
       </nav>
       {['math','text'].includes(tool) && <div className="tool-instruction">Tap anywhere to write {tool === 'math' ? 'an equation' : 'text'}.</div>}
@@ -570,7 +592,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
       {menu === 'paper' && <div className="popover paper-popover"><div className="popover-heading">Page settings<button aria-label="Close page settings" onClick={()=>setMenu(null)}><X size={16}/></button></div><span className="field-caption">Layout</span><div className="segmented"><button className={settings.mode === 'infinite' ? 'selected' : ''} onClick={() => changeMode('infinite')}>Infinite</button><button className={settings.mode === 'page' ? 'selected' : ''} onClick={() => changeMode('page')}>A4 page</button></div><span className="field-caption">Paper</span><div className="paper-swatches">{(['plain','dots', 'grid', 'ruled'] as const).map(p => <button aria-label={`${p} paper`} title={p} key={p} className={`swatch-${p} ${settings.paper === p ? 'selected' : ''}`} onClick={() => setSettings(s => ({ ...s, paper: p }))}/>)}</div><div className="paper-colors">{['#ffffff', '#f8f9fa', '#fffde7', '#eef5ff'].map(c => <button key={c} aria-label={`Paper color ${c}`} style={{ background: c }} className={settings.backgroundColor === c ? 'selected' : ''} onClick={() => setSettings(s => ({ ...s, backgroundColor: c }))}/>)}</div><button className="menu-row" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/>Set image background</button><button className="menu-row" onClick={() => { importAsBackground.current = false; imageInput.current?.click() }}><FileImage size={17}/>Insert movable image</button><button className="menu-row" onClick={() => projectInput.current?.click()}><FileUp size={17}/>Open notebook file</button><button className="menu-row" onClick={() => { save(); setMenu(null) }}><Save size={17}/>Save editable notebook</button>{editor?.getCurrentPageShapes().some(s => s.meta.marginaliaBackground === true) && <button className="menu-row" onClick={removeBackground}><Trash2 size={17}/>Remove background</button>}</div>}
       {menu === 'export' && <div className="popover export-popover"><div className="popover-heading">Export<button aria-label="Close export" onClick={()=>setMenu(null)}><X size={16}/></button></div><button className="menu-row" onClick={() => void doExport('png')}><FileImage size={18}/><span>PNG image<small>Include the whole board</small></span></button><button className="menu-row" onClick={() => void doExport('pdf')}><Download size={18}/><span>PDF<small>{settings.mode === 'page' ? 'A4 portrait page' : 'Fitted to your canvas'}</small></span></button><button className="menu-row" onClick={() => {save();setMenu(null)}}><Save size={18}/><span>Editable notebook<small>Keep the objects and images</small></span></button></div>}
-      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><small>Voice uses your API credit. Five-minute session limit. Typed instructions work without a microphone.</small></div>}
+      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><small>Voice uses your API credit. Five-minute session limit. Typed instructions work without a microphone.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
 
       {api?.pairingRequired && !api.authorized && <form className="pair-banner" onSubmit={e=>{e.preventDefault();void pair()}}><div><b>Connect your iPad to AI</b><span>On your laptop, open Help & iPad connection to find the code.</span></div><input aria-label="Pairing code" placeholder="6-digit code" value={pairCode} onChange={e => setPairCode(e.target.value)} inputMode="numeric" maxLength={6}/><button disabled={pairing}>{pairing?'Connecting…':'Connect'}</button></form>}
       <div className="canvas-footer"><span className="canvas-status">{settings.mode === 'page' ? 'A4 portrait' : 'Infinite canvas'}<span className="footer-separator">·</span>{shapeCount} {shapeCount === 1 ? 'object' : 'objects'}</span><div className="history-buttons"><button aria-label="Undo" title="Undo" onClick={() => execute([{type:'undo'}])}><Undo2 size={17}/></button><button aria-label="Redo" title="Redo" onClick={() => execute([{type:'redo'}])}><Redo2 size={17}/></button></div><div className="zoom-controls"><button aria-label="Zoom out" onClick={() => editor?.zoomOut()}><Minus size={15}/></button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => editor?.zoomIn()}><Plus size={15}/></button><button aria-label="Fit canvas" title="Fit canvas" onClick={() => settings.mode === 'page' ? editor?.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 }) : editor?.zoomToFit()}><Maximize size={15}/></button></div></div>

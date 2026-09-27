@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Box, type Editor } from 'tldraw'
+import { Box, type Editor } from '../canvas/editor'
 import { getCaptureBounds } from './capture'
 
 const boxes: Record<string, Box> = { stroke1: new Box(90, 90, 70, 80), stroke2: new Box(150, 150, 60, 70) }

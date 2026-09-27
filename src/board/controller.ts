@@ -1,4 +1,4 @@
-import { createShapeId, type Editor, type TLShape, type TLShapeId, type TLShapePartial, type TLCreateShapePartial } from 'tldraw'
+import { createShapeId, type Editor, type TLShape, type TLShapeId, type TLShapePartial, type TLCreateShapePartial } from '../canvas/editor'
 import type { BoardContext, BoardObject, BoardOperation, BoardResult, Bounds } from '../../shared/board'
 import { DEFAULT_MAGIC_PROPS, type MagicShape, type MagicShapeProps } from './MagicShape'
 import { autoYRange, validateDomain, validateExpression } from './expression'
@@ -156,7 +156,7 @@ export class BoardController {
       if (ids.length > 1 && destination) {
         const corners = ids.flatMap(id => {
           const shape = virtual.get(id)!, props = shape.props as { w?: number; h?: number }
-          const box = typeof props.w === 'number' && typeof props.h === 'number'
+          const box = shape.type !== 'draw' && typeof props.w === 'number' && typeof props.h === 'number'
             ? { x: 0, y: 0, w: props.w, h: props.h } : this.editor.getShapeGeometry(shape).bounds
           const parent = shape.parentId?.startsWith('shape:') && this.editor.getShape(id) ? this.editor.getShapeParentTransform(shape) : null
           return [[box.x, box.y], [box.x + box.w, box.y], [box.x, box.y + box.h], [box.x + box.w, box.y + box.h]].map(([x, y]) => {
@@ -199,10 +199,10 @@ export class BoardController {
         }
         // A transform is anchored on the shape's center, so rotation does not make it jump.
         const boxProps = next.props as { w?: number; h?: number }
-        const localGeometry = typeof boxProps.w !== 'number' || typeof boxProps.h !== 'number' ? this.editor.getShapeGeometry(shape).bounds : null
+        const localGeometry = shape.type === 'draw' || typeof boxProps.w !== 'number' || typeof boxProps.h !== 'number' ? this.editor.getShapeGeometry(shape).bounds : null
         const localX = localGeometry?.x ?? 0, localY = localGeometry?.y ?? 0
-        const oldWidth = typeof boxProps.w === 'number' ? boxProps.w : localGeometry!.w
-        const oldHeight = typeof boxProps.h === 'number' ? boxProps.h : localGeometry!.h
+        const oldWidth = localGeometry?.w ?? boxProps.w!
+        const oldHeight = localGeometry?.h ?? boxProps.h!
         let width = oldWidth, height = oldHeight
         let cx = next.x + Math.cos(next.rotation) * (localX + oldWidth / 2) - Math.sin(next.rotation) * (localY + oldHeight / 2)
         let cy = next.y + Math.sin(next.rotation) * (localX + oldWidth / 2) + Math.cos(next.rotation) * (localY + oldHeight / 2)
@@ -232,7 +232,7 @@ export class BoardController {
         if (operation.rotateBy !== undefined) next.rotation += operation.rotateBy * Math.PI / 180
         next.rotation = ((next.rotation % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
         if (width !== oldWidth || height !== oldHeight) {
-          if (typeof boxProps.w !== 'number' || typeof boxProps.h !== 'number') throw new Error('Resize this drawing with its selection handles. Voice resizing currently supports boxed objects.')
+          if (shape.type === 'draw' || typeof boxProps.w !== 'number' || typeof boxProps.h !== 'number') throw new Error('Resize this drawing with its selection handles. Voice resizing currently supports boxed objects.')
           validateBounds({ x: cx, y: cy, w: width, h: height }); boxProps.w = width; boxProps.h = height
         }
         next.x = cx - Math.cos(next.rotation) * (localX + width / 2) + Math.sin(next.rotation) * (localY + height / 2)

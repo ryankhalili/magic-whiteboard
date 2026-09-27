@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useEditor } from 'tldraw'
+import { useEditor } from '../canvas/context'
 import type { MathfieldElement } from 'mathlive'
 import type { MagicShape } from './MagicShape'
 import { autoYRange, validateExpression } from './expression'

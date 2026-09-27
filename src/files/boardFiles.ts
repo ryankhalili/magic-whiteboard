@@ -1,7 +1,9 @@
 import {
-  AssetRecordType, Box, createShapeId, createTLStore, loadSnapshot,
+  AssetRecordType, Box, createShapeId,
   type Editor, type TLEditorSnapshot, type TLImageShape, type TLShapeId,
-} from 'tldraw'
+} from '../canvas/editor'
+import { normalizeSnapshot } from '../canvas/migration'
+import { exportTimeout } from './exportTimeout'
 import { PDFDocument } from 'pdf-lib'
 import { DEFAULT_SETTINGS, type AppSettings, type Bounds } from '../../shared/board'
 
@@ -10,6 +12,14 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024
 const MAX_PROJECT_BYTES = 40 * 1024 * 1024
 const MAX_EXPORT_EDGE = 8192
 const MAX_EXPORT_PIXELS = 24_000_000
+
+/** Keep the renderer lazy so plain project validation never initializes browser UI code. */
+export function installBoardImageExporter(editor: Editor): void {
+  editor.setImageExporter(async (instance, ids, options) => {
+    const { renderShapesToImage } = await exportTimeout(import('./imageExporter'), 'loading the image renderer')
+    return renderShapesToImage(instance, ids, options)
+  })
+}
 
 type ProjectFile = {
   format: 'marginalia'; version: 1; savedAt: string;
@@ -273,16 +283,13 @@ export function parseProjectFile(text: string): ProjectFile {
     backgroundColor: typeof input.backgroundColor === 'string' && /^#[\da-f]{6}$/i.test(input.backgroundColor)
       ? input.backgroundColor : DEFAULT_SETTINGS.backgroundColor,
   }
-  return { format: 'marginalia', version: 1, savedAt: String(project.savedAt || ''), settings, snapshot: snapshot as unknown as TLEditorSnapshot }
+  return { format: 'marginalia', version: 1, savedAt: String(project.savedAt || ''), settings, snapshot: normalizeSnapshot(snapshot) }
 }
 
-/** Validate in a disposable tldraw store before replacing the user's current board. */
+/** Validate the complete data file before replacing the user's current board. */
 export async function loadProject(editor: Editor, file: File): Promise<AppSettings> {
   if (file.size > MAX_PROJECT_BYTES) throw new Error('Choose a project smaller than 40 MB.')
   const project = parseProjectFile(await file.text())
-  const validationStore = createTLStore({ schema: editor.store.schema })
-  try { loadSnapshot(validationStore, project.snapshot) }
-  catch { throw new Error('The project contains incompatible or damaged board data. Your current board has not changed.') }
   const previous = editor.getSnapshot()
   try { editor.loadSnapshot(project.snapshot) }
   catch {
