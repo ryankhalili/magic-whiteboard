@@ -146,7 +146,7 @@ describe('assistant instructions for spatial intent', () => {
     expect(schema.properties.operations.items.properties.axisMode.description).toContain('Use update_object only when changing an existing plot')
   })
   it('uses the current product name in the assistant identity', () => {
-    expect(BOARD_INSTRUCTIONS.startsWith('You are Magic Whiteboard,')).toBe(true)
+    expect(BOARD_INSTRUCTIONS.startsWith('You are Chalkpal,')).toBe(true)
     expect(BOARD_INSTRUCTIONS).not.toContain('Marginalia')
   })
 })

@@ -323,7 +323,7 @@ function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & 
 
   const receiveApi = useCallback((value: ExcalidrawImperativeAPI) => { engineReady.current = false; setApi(value) }, [])
 
-  return <div ref={container} className={`whiteboard-canvas excalidraw-host${editing ? ' is-editing' : ''}`} role="application" aria-label="Magic Whiteboard canvas"
+  return <div ref={container} className={`whiteboard-canvas excalidraw-host${editing ? ' is-editing' : ''}`} role="application" aria-label="Chalkpal canvas"
     onContextMenuCapture={event => { if (!(event.target as Element).closest(inputSelector)) { event.preventDefault(); event.stopPropagation() } }}
     onPointerDownCapture={event => {
       if ((event.target as Element).closest(inputSelector)) return

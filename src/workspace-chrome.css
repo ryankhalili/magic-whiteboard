@@ -1,0 +1,84 @@
+/* One grid for the notebook header; shared edges and centerline for canvas controls. */
+.app-shell { --workspace-edge: 24px; --header-height: 68px; }
+.app-header {
+  height: var(--header-height);
+  padding: 0 var(--workspace-edge);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
+  gap: 16px;
+}
+.header-left { min-width: 0; gap: 16px; }
+.brand { display: block; font-size: 20px; font-weight: 700; letter-spacing: -.6px; }
+.document-title { min-width: 0; width: 100%; gap: 2px; }
+.document-title input { width: 100%; max-width: none; padding: 4px 8px; font-size: 14px; text-overflow: ellipsis; }
+.document-title > span { font-size: 10px; line-height: 16px; }
+.header-actions { justify-self: end; gap: 4px; }
+.header-actions > button, .notebook-switcher-toggle { height: 36px; justify-content: center; }
+.header-actions > button { padding: 8px 10px; }
+.header-actions > button > svg, .notebook-switcher-toggle > svg { flex-shrink: 0; }
+.notebook-switcher-toggle { padding: 8px; }
+.board-stage { height: calc(100dvh - var(--header-height)); }
+.board-options { left: var(--workspace-edge); top: 16px; gap: 8px; min-height: 32px; }
+.board-options > button { min-height: 32px; padding: 6px 8px; }
+.work-area-control { min-height: 32px; padding: 0 10px; gap: 8px; }
+.tool-rail { left: var(--workspace-edge); top: 72px; }
+.empty-board { left: 50%; top: 40%; width: min(600px, calc(100% - 160px)); }
+.empty-board h1 { margin: 0 0 12px; }
+.empty-board p { margin: 0; }
+.example-actions { gap: 12px; margin-top: 24px; }
+.example-actions button { min-height: 36px; }
+.command-dock { bottom: 64px; width: min(680px, calc(100% - 160px)); }
+.command-bar { height: 56px; gap: 10px; padding: 8px 9px 8px 16px; }
+.send-command, .voice-button { width: 38px; height: 38px; flex-shrink: 0; }
+.command-caption { margin: 8px 4px 0; min-height: 16px; line-height: 16px; }
+.voice-first { bottom: 64px; width: min(500px, calc(100% - 160px)); }
+.canvas-footer {
+  left: var(--workspace-edge); right: var(--workspace-edge); bottom: 16px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px;
+  min-height: 32px;
+}
+.canvas-footer button { width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 6px; }
+.canvas-footer button:hover { background: #f3f4f6; }
+.history-buttons { position: static; transform: none; gap: 8px; }
+.zoom-controls { justify-self: end; gap: 4px; margin-right: 0; }
+
+@media (max-width: 1800px) {
+  .header-actions .secondary-action span { display: none; }
+}
+@media (max-width: 1360px) {
+  .header-actions .plain-button span { display: none; }
+}
+@media (max-width: 1100px) {
+  .app-shell { --workspace-edge: 20px; --header-height: 108px; }
+  .app-header {
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 240px);
+    grid-template-rows: 52px 44px; gap: 0 16px; padding-top: 4px; padding-bottom: 8px;
+  }
+  .document-title { align-items: flex-end; }
+  .document-title input { text-align: right; padding-right: 0; }
+  .header-actions { grid-column: 1 / -1; justify-self: end; }
+  .canvas-status { gap: 6px; }
+}
+@media (max-width: 760px) {
+  .app-shell { --workspace-edge: 12px; }
+  .header-left { gap: 8px; }
+  .brand { font-size: 18px; }
+  .notebook-switcher-toggle span { display: none; }
+  .document-title input { font-size: 13px; }
+  .header-actions { justify-self: stretch; justify-content: flex-end; gap: 4px; }
+  .header-actions > button { min-width: 36px; padding: 8px; }
+  .header-actions > .hide-small { display: none; }
+  .board-options { gap: 2px; top: 12px; }
+  .work-area-control { padding: 0 6px; gap: 4px; }
+  .tool-rail { top: 60px; }
+  .empty-board { left: 50%; width: calc(100% - 132px); top: 38%; }
+  .empty-board h1 { font-size: 22px; }
+  .empty-board p { font-size: 12px; }
+  .example-actions { gap: 8px; margin-top: 18px; }
+  .command-dock { width: calc(100% - 24px); bottom: 60px; }
+  .voice-first { width: calc(100% - 100px); }
+  .canvas-footer { bottom: 12px; gap: 4px; }
+  .canvas-status .footer-separator { display: inline; }
+  .history-buttons, .zoom-controls { gap: 2px; }
+  .canvas-footer button { width: 28px; }
+}
