@@ -36,6 +36,8 @@ An isolated local app used a fake OpenAI HTTP provider through the SDK's `OPENAI
 
 Free model metadata requests using the configured project key returned HTTP 200 for `gpt-realtime-mini`, `gpt-6-luna`, and `gpt-image-2.5-flare`. This confirms model visibility, not successful paid image generation. Actual image generation was not purchased during these checks.
 
+After deployment, the real Chrome **Check voice connection** control passed negotiation, board-context creation/replacement, and server-confirmed shutdown. The microphone was not activated. The restored temporary HTTPS preview returned HTTP 200.
+
 ## Remaining verification
 
 The long-session test is simulated; it does not establish hours of uninterrupted real audio or iPad/Pencil behavior. Network outages, exhausted credit, expired keys, and unrecoverable instructions can still require user action. Real images should be tested through the new explicit approval control. Local allowances are cumulative counters, not OpenAI billing enforcement.
