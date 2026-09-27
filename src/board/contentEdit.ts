@@ -1,4 +1,5 @@
 import type { BoardOperation } from '../../shared/board'
+import { needsLatexCommandSeparator, normalizeLatexInput } from './latex'
 
 /** Text ranges are UTF-16 source offsets, never MathLive visual atom positions. */
 export function applyContentEdit(source: string, operation: Pick<BoardOperation, 'start' | 'end' | 'replacement' | 'find' | 'replace'>): string {
@@ -17,4 +18,16 @@ export function applyContentEdit(source: string, operation: Pick<BoardOperation,
   const { start, end } = operation
   if (!Number.isInteger(start) || !Number.isInteger(end) || start! < 0 || end! < start! || end! > source.length) throw new Error('The selected text range is invalid. Select it again.')
   return source.slice(0, start) + operation.replacement + source.slice(end)
+}
+
+/** AI fragments may carry math wrappers. Explicit source ranges remain exact. */
+export function applyLatexContentEdit(source: string, operation: Pick<BoardOperation, 'start' | 'end' | 'replacement' | 'find' | 'replace'>): string {
+  const edit = { ...operation }
+  const append = edit.find === undefined && edit.start === undefined && edit.end === undefined
+  if (append && typeof edit.replacement === 'string') edit.replacement = normalizeLatexInput(edit.replacement)
+  const base = append ? normalizeLatexInput(source) : source
+  // Only implicit append joins two independent fragments. A range edit may be
+  // intentionally changing \cos to \cosh, and must not acquire a separator.
+  if (append && typeof edit.replacement === 'string' && needsLatexCommandSeparator(base, edit.replacement)) edit.replacement = ' ' + edit.replacement
+  return applyContentEdit(base, edit)
 }

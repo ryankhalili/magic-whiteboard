@@ -1,10 +1,25 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Editor, colorValue, getStrokeWidth, strokePoints, type TLShape } from './editor'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { flushSync } from 'react-dom'
+import { CaptureUpdateAction, Excalidraw, getFreeDrawSvgPath } from '@excalidraw/excalidraw'
+import type { AppState, BinaryFileData, BinaryFiles, ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
+import { Editor, colorValue, getStrokeWidth, type TLShape } from './editor'
 import { EditorProvider, useValue } from './context'
-import { CanvasInteractions, selectionFrame, type CanvasPointer, type InteractionView, type ResizeHandle } from './interactions'
+import { legacyText } from './content'
+import { editorToExcalidrawScene, sceneToEditorChanges } from './excalidrawScene'
+import { shapeOpacity } from './content'
+import { isLiveContentShape, liveContentKey, renderLiveContentImage } from './liveContentImage'
+import { flushSourceEdits } from '../board/liveSource'
+import { getContentPreviewTarget, isContentPreviewTarget, type ContentPreviewTarget } from './contentPreview'
+import { disconnectedInkBounds } from './disconnectedInk'
 import { inkOutlinePath } from './ink'
-import { legacyText, shapeOpacity } from './content'
+import { installNativeInkRenderer } from './nativeInkRenderer'
+import '@excalidraw/excalidraw/index.css'
 import './canvas.css'
+
+// Fonts are served and copied by the Vite asset plugin, including offline/local builds.
+;(window as Window & { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = `${import.meta.env.BASE_URL}excalidraw/`
+installNativeInkRenderer(getFreeDrawSvgPath)
 
 export type WhiteboardCanvasProps = {
   onMount?: (editor: Editor) => void | (() => void)
@@ -15,50 +30,247 @@ export type WhiteboardCanvasProps = {
 
 const inputSelector = 'input,textarea,select,button,[contenteditable=true],math-field,.marginalia-inline-editor,.ML__keyboard,.ML__keyboard-container'
 const interfaceSelector = `${inputSelector},aside,nav,.command-dock,.popover,.board-options,.canvas-footer,.empty-board,.object-inspector,.history-panel,.notebook-switcher`
+const uiOptions = { canvasActions: { changeViewBackgroundColor: false, clearCanvas: false, loadScene: false, saveToActiveFile: false, saveAsImage: false, export: false as const, toggleTheme: false }, tools: { image: false } }
+const initialData = { appState: { viewBackgroundColor: 'transparent', currentItemRoughness: 0, currentItemStrokeColor: '#202124', currentItemStrokeWidth: 3, currentItemFontFamily: 2, openSidebar: null } }
+const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i])
+const nativeTool = (tool: string): 'freedraw' | 'eraser' | 'hand' | 'selection' => tool.startsWith('draw') ? 'freedraw' : tool.startsWith('eraser') ? 'eraser' : tool.startsWith('hand') ? 'hand' : 'selection'
 
-function pointer(event: PointerEvent | React.PointerEvent, handle?: string): CanvasPointer {
-  return { id: event.pointerId, x: event.clientX, y: event.clientY, pointerType: event.pointerType, pressure: event.pressure, button: event.button, shift: event.shiftKey, handle: handle as CanvasPointer['handle'] }
-}
-function elementTarget(event: Event | React.SyntheticEvent): Element | null {
-  return event.target instanceof Element ? event.target : null
-}
-function shapeTransform(editor: Editor, shape: TLShape): string {
-  const matrix = editor.getShapePageTransform(shape), origin = matrix.applyToPoint({ x: 0, y: 0 }), x = matrix.applyToPoint({ x: 1, y: 0 }), y = matrix.applyToPoint({ x: 0, y: 1 })
-  return `matrix(${x.x - origin.x},${x.y - origin.y},${y.x - origin.x},${y.y - origin.y},${origin.x},${origin.y})`
-}
-
-const DefaultShape = memo(function DefaultShape({ shape, editor }: { shape: TLShape; editor: Editor }) {
+const LegacyShape = memo(function LegacyShape({ shape }: { shape: TLShape }) {
   if (shape.type === 'draw') {
-    const width = getStrokeWidth(shape.props)
-    const strokes = shape.props.segments?.length ? shape.props.segments.map(segment => segment.points) : [strokePoints(shape.props)]
-    return <svg className="whiteboard-ink" width={Math.max(1, shape.props.w || 1)} height={Math.max(1, shape.props.h || 1)} aria-label="Pen stroke">{strokes.map((points, index) => <path key={index} d={inkOutlinePath(points, width)} fill={colorValue(shape.props.color || 'black')}/>)}</svg>
-  }
-  if (shape.type === 'image') {
-    const asset = shape.props.assetId ? editor.getAsset(shape.props.assetId) : null
-    return asset?.props.src ? <img className="whiteboard-image" src={asset.props.src} width={shape.props.w} height={shape.props.h} alt={shape.props.altText || asset.props.name || 'Imported image'} draggable={false}/> : <div className="whiteboard-missing-image" style={{ width: shape.props.w, height: shape.props.h }}>Image unavailable</div>
+    const bounds = disconnectedInkBounds(shape)
+    return <svg width={bounds.w} height={bounds.h} viewBox={`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`} style={{ position: 'absolute', left: bounds.x, top: bounds.y, overflow: 'visible' }}>
+      <g fill={colorValue(shape.props.color)}>{shape.props.segments?.map((segment, index) => <path key={index} d={inkOutlinePath(segment.points, getStrokeWidth(shape.props))}/>)}</g>
+    </svg>
   }
   if (shape.type === 'text') return <div style={{ width: shape.props.w || 300, minHeight: shape.props.h || 30, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: colorValue(shape.props.color || 'black'), fontSize: Number(shape.props.fontSize) || 24, fontFamily: 'Arial, sans-serif' }}>{legacyText(shape.props)}</div>
-  if (shape.type === 'geo') {
-    const w = shape.props.w || 100, h = shape.props.h || 100, color = colorValue(shape.props.color || 'black'), geometry = shape.props.geo
-    const text = legacyText(shape.props)
-    return <svg width={w} height={h} style={{ overflow: 'visible' }}><g fill={shape.props.fill === 'solid' ? color : 'none'} stroke={color} strokeWidth={2.5}>
-      {geometry === 'ellipse' ? <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2}/> : geometry === 'triangle' ? <path d={`M${w / 2},0L${w},${h}L0,${h}Z`}/> : geometry === 'diamond' ? <path d={`M${w / 2},0L${w},${h / 2}L${w / 2},${h}L0,${h / 2}Z`}/> : <rect width={w} height={h}/>}
-    </g>{text && <text x={w / 2} y={h / 2} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize={20}>{text}</text>}</svg>
-  }
-  return null
+  if (shape.type !== 'geo') return null
+  const w = shape.props.w || 100, h = shape.props.h || 100, color = colorValue(shape.props.color || 'black'), geometry = shape.props.geo
+  const text = legacyText(shape.props)
+  return <svg width={w} height={h} style={{ overflow: 'visible' }}><g fill={shape.props.fill === 'solid' ? color : 'none'} stroke={color} strokeWidth={2.5}>
+    {geometry === 'ellipse' ? <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2}/> : geometry === 'triangle' ? <path d={`M${w / 2},0L${w},${h}L0,${h}Z`}/> : geometry === 'diamond' ? <path d={`M${w / 2},0L${w},${h / 2}L${w / 2},${h}L0,${h / 2}Z`}/> : <rect width={w} height={h}/>}
+  </g>{text && <text x={w / 2} y={h / 2} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize={20}>{text}</text>}</svg>
 })
 
+/** Excalidraw owns pointer interactions; Editor owns the portable document and shared AI/ink history. */
 function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & { editor: Editor }) {
   const container = useRef<HTMLDivElement>(null)
-  const [view, setView] = useState<InteractionView>({ marquee: null, active: null })
-  const interactions = useMemo(() => new CanvasInteractions(editor, setView), [editor])
-  useValue('Canvas revision', () => editor.getRevision(), [editor])
-  const camera = editor.getCamera(), shapes = editor.getCurrentPageShapesSorted()
-  const selected = editor.getSelectedShapes().filter(shape => !editor.isShapeOrAncestorLocked(shape))
-  const frame = selectionFrame(editor, selected)
+  const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null)
+  const receiving = useRef(false)
+  const engineReady = useRef(false)
+  const pendingPush = useRef(false)
+  const disposed = useRef(false)
+  const pointer = useRef<PointerEvent | null>(null)
+  const pointerActive = useRef(false)
+  const gestureGeneration = useRef(0)
+  const renderedImages = useRef(new Map<string, { key: string; file: BinaryFileData }>())
+  const imageJobs = useRef(new Map<string, string>())
+  const failedImages = useRef(new Map<string, string>())
+  const [imageRevision, setImageRevision] = useState(0)
+  const [renderError, setRenderError] = useState('')
+  const [sceneError, setSceneError] = useState('')
+  const [previewTarget, setPreviewTarget] = useState<ContentPreviewTarget | null>(null)
+  const previewTargetRef = useRef<ContentPreviewTarget | null>(null)
+  const syncRef = useRef<() => void>(() => {})
+  const ingestRef = useRef<(elements: readonly ExcalidrawElement[], state: AppState, files: BinaryFiles) => void>(() => {})
+  const revision = useValue('Canvas revision', () => editor.getRevision(), [editor])
   const editing = editor.getEditingShapeId()
-  const tool = editor.getCurrentToolId().split('.')[0]
-  const z = camera.z
+  const camera = editor.getCamera()
+  const customShapes = editor.getCurrentPageShapesSorted().filter(isLiveContentShape)
+  const nativeFiles = new Map(api?.getSceneElements().filter(element => element.type === 'image').map(element => [element.id, element.fileId]) ?? [])
+
+  useEffect(() => {
+    const preview = (event: Event) => {
+      const next = getContentPreviewTarget(editor, (event as CustomEvent).detail, previewTargetRef.current)
+      previewTargetRef.current = next
+      setPreviewTarget(next)
+    }
+    window.addEventListener('marginalia-content-preview', preview)
+    return () => window.removeEventListener('marginalia-content-preview', preview)
+  }, [editor])
+  useLayoutEffect(() => {
+    const preview = previewTargetRef.current
+    if (preview && !isContentPreviewTarget(editor.getShape(preview.id), preview)) {
+      previewTargetRef.current = null
+      setPreviewTarget(null)
+    }
+  }, [editor, revision])
+  useLayoutEffect(() => {
+    // Substitute the transparent native proxy while the same live DOM object
+    // displays streamed content, then restore its bitmap on clear/commit.
+    syncRef.current()
+    // Native element replacement does not change our document revision. Refresh
+    // the file-ID observation so the restored DOM copy cannot remain doubled.
+    setImageRevision(value => value + 1)
+  }, [previewTarget])
+
+  useEffect(() => {
+    if (!editing) return
+    // Keep source controls clear of the persistent inspector and command bar.
+    const frame = requestAnimationFrame(() => {
+      const bounds = editor.getShapePageBounds(editing), viewport = editor.getViewportScreenBounds()
+      if (!bounds) return
+      const inspector = container.current?.parentElement?.querySelector('.object-inspector')?.getBoundingClientRect()
+      const left = 86, top = 85, right = inspector ? inspector.left - viewport.x - 20 : viewport.w - 30, bottom = viewport.h - 150
+      const width = Math.max(160, right - left), height = Math.max(120, bottom - top)
+      const current = editor.getCamera()
+      const z = Math.max(.1, Math.min(current.z, width / (bounds.w + 40), height / (bounds.h + 70)))
+      if (z !== current.z || (bounds.x + current.x) * z < left || (bounds.x + bounds.w + current.x) * z > right || (bounds.y + current.y) * z < top || (bounds.y + bounds.h + current.y) * z + 45 > bottom) {
+        editor.setCamera({ x: (left + width / 2) / z - bounds.center.x, y: (top + height / 2) / z - bounds.center.y, z })
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [editing, editor])
+
+  const ingest = useCallback((elements: readonly ExcalidrawElement[], state: AppState, files: BinaryFiles) => {
+    if (disposed.current || receiving.current) return
+    // Excalidraw initializes its own scene asynchronously. Its first empty scene must never
+    // replace the notebook that the application may already have restored from IndexedDB.
+    if (!engineReady.current) {
+      if (state.isLoading) return
+      engineReady.current = true
+      pendingPush.current = true
+      queueMicrotask(() => { if (!disposed.current) syncRef.current() })
+      return
+    }
+    if (pendingPush.current) return
+    receiving.current = true
+    try {
+      const changes = sceneToEditorChanges(editor, elements, files)
+      editor.run(() => {
+        if (changes.assets.length) editor.createAssets(changes.assets)
+        if (changes.creates.length) editor.createShapes(changes.creates)
+        if (changes.updates.length) editor.updateShapes(changes.updates)
+        if (changes.deletes.length) editor.deleteShapes(changes.deletes)
+        const selected = Object.keys(state.selectedElementIds).filter(id => state.selectedElementIds[id])
+        if (!sameIds(editor.getSelectedShapeIds(), selected)) editor.select(...selected)
+        const camera = editor.getCamera()
+        if (camera.x !== state.scrollX || camera.y !== state.scrollY || camera.z !== state.zoom.value) editor.setCamera({ x: state.scrollX, y: state.scrollY, z: state.zoom.value })
+      })
+    } catch (error) {
+      setSceneError(`Canvas import was not applied. ${error instanceof Error ? error.message.slice(0, 500) : 'The imported content is unsupported.'}`)
+      // Validation happens before mutation; editor.run also rolls back any
+      // downstream failure. Discard the foreign scene and keep our saved source.
+      pendingPush.current = true
+      queueMicrotask(() => {
+        if (!disposed.current) { syncRef.current(); setImageRevision(value => value + 1) }
+      })
+    } finally { receiving.current = false }
+  }, [editor])
+  ingestRef.current = ingest
+
+  const sync = useCallback(() => {
+    pendingPush.current = false
+    if (!api || !engineReady.current || api.getAppState().isLoading || disposed.current || receiving.current) return
+    const current = api.getSceneElements()
+    const renderedFiles = new Map<string, BinaryFileData>()
+    for (const shape of editor.getCurrentPageShapes().filter(isLiveContentShape)) {
+      const entry = renderedImages.current.get(shape.id)
+      if (entry && entry.key === liveContentKey(shape) && editor.getEditingShapeId() !== shape.id && !isContentPreviewTarget(shape, previewTargetRef.current)) renderedFiles.set(shape.id, entry.file)
+    }
+    const scene = editorToExcalidrawScene(editor, current, renderedFiles)
+    const files = api.getFiles()
+    const addedFiles = Object.values(scene.files).filter(file => files[file.id]?.dataURL !== file.dataURL)
+    const state = api.getAppState(), camera = editor.getCamera(), styles = editor.getStyleForNextShapes()
+    const selectedIds = editor.getSelectedShapeIds().filter(id => scene.elements.some(element => element.id === id))
+    const currentIds = Object.keys(state.selectedElementIds).filter(id => state.selectedElementIds[id])
+    const color = colorValue(styles.color), width = getStrokeWidth({ size: styles.size })
+    const appState: Partial<AppState> = {}
+    if (state.scrollX !== camera.x || state.scrollY !== camera.y || state.zoom.value !== camera.z) Object.assign(appState, { scrollX: camera.x, scrollY: camera.y, zoom: { value: camera.z } })
+    if (!sameIds(currentIds, selectedIds)) appState.selectedElementIds = Object.fromEntries(selectedIds.map(id => [id, true]))
+    if (state.currentItemStrokeColor !== color) appState.currentItemStrokeColor = color
+    if (state.currentItemStrokeWidth !== width) appState.currentItemStrokeWidth = width
+    if (state.activeEmbeddable) appState.activeEmbeddable = null
+    const changedElements = scene.elements.length !== current.length || scene.elements.some((element, index) => element !== current[index])
+    receiving.current = true
+    try {
+      if (addedFiles.length) api.addFiles(addedFiles)
+      if (changedElements || Object.keys(appState).length) api.updateScene({ ...(changedElements ? { elements: scene.elements } : {}), appState: appState as AppState, captureUpdate: CaptureUpdateAction.NEVER })
+      const tool = nativeTool(editor.getCurrentToolId())
+      if (state.activeTool.type !== tool) api.setActiveTool({ type: tool })
+      // Application history includes both native gestures and AI commands. Never retain a second undo stack.
+      api.history.clear()
+    } finally { receiving.current = false }
+  }, [api, editor])
+  syncRef.current = sync
+
+  const finishGesture = useCallback(() => {
+    if (!api || disposed.current) return
+    // A pending push means the application has newer state. updateScene's appState commit is
+    // asynchronous, so reading it immediately after that push would restore stale selection/camera.
+    if (!pendingPush.current) ingestRef.current(api.getSceneElements(), api.getAppState(), api.getFiles())
+    editor.markHistoryStoppingPoint('After canvas gesture')
+    pointerActive.current = false
+    pointer.current = null
+    queueMicrotask(() => { if (!disposed.current) { syncRef.current(); setImageRevision(value => value + 1) } })
+  }, [api, editor])
+
+  useEffect(() => {
+    const shapes = editor.getCurrentPageShapes().filter(isLiveContentShape)
+    const ids = new Set(shapes.map(shape => shape.id))
+    for (const id of renderedImages.current.keys()) if (!ids.has(id)) renderedImages.current.delete(id)
+    if (pointerActive.current) return
+    // A bounded render queue avoids decoding many math/font SVGs at once on a tablet.
+    for (const shape of shapes) {
+      const key = liveContentKey(shape)
+      if (renderedImages.current.get(shape.id)?.key === key || imageJobs.current.has(shape.id) || failedImages.current.get(shape.id) === key) continue
+      if (imageJobs.current.size >= 2) break
+      imageJobs.current.set(shape.id, key)
+      void renderLiveContentImage(shape).then(file => {
+        const latest = editor.getShape(shape.id)
+        if (disposed.current || !latest || !isLiveContentShape(latest) || liveContentKey(latest) !== key) return
+        renderedImages.current.set(shape.id, { key, file })
+        failedImages.current.delete(shape.id)
+        setRenderError('')
+        if (!pointerActive.current) syncRef.current()
+      }).catch(error => {
+        if (!disposed.current) {
+          failedImages.current.set(shape.id, key)
+          setRenderError(`Could not prepare a canvas image. Your editable content is preserved. ${error instanceof Error ? error.message : ''}`)
+        }
+      }).finally(() => {
+        imageJobs.current.delete(shape.id)
+        if (!disposed.current) setImageRevision(value => value + 1)
+      })
+    }
+  }, [editor, revision, imageRevision])
+
+  useEffect(() => {
+    disposed.current = false
+    if (!api) return
+    syncRef.current()
+    const unsubscribe = editor.subscribe(() => {
+      if (receiving.current || pendingPush.current) return
+      pendingPush.current = true
+      queueMicrotask(() => { if (pendingPush.current && !disposed.current) syncRef.current() })
+    })
+    const removeDown = api.onPointerDown((_tool, _state, event) => {
+      pointer.current = event.nativeEvent
+      pointerActive.current = true
+      gestureGeneration.current++
+    })
+    const removeUp = api.onPointerUp(() => {
+      // Excalidraw finalizes a freehand stroke after emitting pointerup.
+      const generation = gestureGeneration.current
+      queueMicrotask(() => { if (!disposed.current && pointerActive.current && generation === gestureGeneration.current) finishGesture() })
+    })
+    editor.setInteractionCompleter(() => {
+      if (pointerActive.current && pointer.current) {
+        const last = pointer.current
+        // Finish the native gesture before AI, Undo, exports, or notebook switching read the scene.
+        // Native window listeners remove themselves, so the physical pointerup cannot replay stale geometry.
+        flushSync(() => window.dispatchEvent(new PointerEvent('pointerup', { pointerId: last.pointerId, pointerType: last.pointerType, clientX: last.clientX, clientY: last.clientY, button: last.button, pressure: last.pressure, bubbles: true })))
+      }
+      finishGesture()
+      // Invalidate pointerup's queued completion before the caller applies an AI edit or Undo.
+      gestureGeneration.current++
+    })
+    return () => {
+      disposed.current = true
+      pendingPush.current = false
+      gestureGeneration.current++
+      unsubscribe(); removeDown(); removeUp(); editor.setInteractionCompleter(null)
+    }
+  }, [api, editor, finishGesture])
 
   useLayoutEffect(() => {
     const element = container.current
@@ -68,91 +280,81 @@ function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & 
     const resize = new ResizeObserver(measure)
     resize.observe(element)
     window.addEventListener('resize', measure)
-    window.addEventListener('scroll', measure, true)
-    return () => { resize.disconnect(); window.removeEventListener('resize', measure); window.removeEventListener('scroll', measure, true) }
+    return () => { resize.disconnect(); window.removeEventListener('resize', measure) }
   }, [editor])
 
   useEffect(() => {
-    const containerElement = container.current
-    if (!containerElement) return
-    const stage = containerElement.parentElement || containerElement
-    editor.setInteractionCompleter(() => interactions.complete())
-    const onWheel = (event: WheelEvent) => {
-      if (elementTarget(event)?.closest(interfaceSelector)) return
+    const stage = container.current?.parentElement
+    if (!stage) return
+    // The app's magic/text/math overlay sits above Excalidraw. Forward wheel camera controls there.
+    const wheel = (event: WheelEvent) => {
+      if (!(event.target instanceof Element) || event.target.closest(interfaceSelector) || container.current?.contains(event.target)) return
       event.preventDefault()
-      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? containerElement.clientHeight : 1
-      interactions.wheel({ x: event.clientX, y: event.clientY, deltaX: event.deltaX * unit, deltaY: event.deltaY * unit, zoom: event.ctrlKey || event.metaKey, shift: event.shiftKey })
+      const camera = editor.getCamera(), factor = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? stage.clientHeight : 1
+      if (event.ctrlKey || event.metaKey) {
+        const anchor = editor.screenToPage({ x: event.clientX, y: event.clientY }), bounds = editor.getViewportScreenBounds()
+        const z = Math.min(8, Math.max(.1, camera.z * Math.exp(-event.deltaY * factor * .01)))
+        editor.setCamera({ x: (event.clientX - bounds.x) / z - anchor.x, y: (event.clientY - bounds.y) / z - anchor.y, z })
+      } else editor.setCamera({ ...camera, x: camera.x - (event.shiftKey ? event.deltaY : event.deltaX) * factor / camera.z, y: camera.y - (event.shiftKey ? 0 : event.deltaY) * factor / camera.z })
     }
-    const keyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || elementTarget(event)?.closest(inputSelector)) return
-      if (event.code === 'Space') { event.preventDefault(); interactions.setSpacePressed(true); containerElement.classList.add('whiteboard-space-pan'); return }
-      if (event.code === 'Escape') { interactions.cancel(); editor.setEditingShape(null).selectNone(); return }
-      if ((event.ctrlKey || event.metaKey) && ['KeyZ', 'KeyY'].includes(event.code)) {
-        event.preventDefault(); interactions.complete()
-        if (event.code === 'KeyY' || event.shiftKey) editor.redo(); else editor.undo()
+    const move = (event: PointerEvent) => { if (pointerActive.current && pointer.current?.pointerId === event.pointerId) pointer.current = event }
+    const up = () => {
+      const generation = gestureGeneration.current
+      if (pointerActive.current) queueMicrotask(() => { if (!disposed.current && generation === gestureGeneration.current && pointerActive.current) finishGesture() })
+    }
+    const cancel = () => { if (pointerActive.current) editor.completeInteraction() }
+    stage.addEventListener('wheel', wheel, { passive: false })
+    window.addEventListener('pointermove', move, true)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('blur', cancel)
+    return () => { stage.removeEventListener('wheel', wheel); window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel); window.removeEventListener('blur', cancel) }
+  }, [editor, finishGesture])
+
+  const receiveApi = useCallback((value: ExcalidrawImperativeAPI) => { engineReady.current = false; setApi(value) }, [])
+
+  return <div ref={container} className={`whiteboard-canvas excalidraw-host${editing ? ' is-editing' : ''}`} role="application" aria-label="Magic Whiteboard canvas"
+    onContextMenuCapture={event => { if (!(event.target as Element).closest(inputSelector)) { event.preventDefault(); event.stopPropagation() } }}
+    onPointerDownCapture={event => {
+      if ((event.target as Element).closest(inputSelector)) return
+      if (editing) {
+        event.preventDefault(); event.stopPropagation(); flushSourceEdits(); editor.setEditingShape(null)
+        const hit = editor.getShapeAtPoint(editor.screenToPage({ x: event.clientX, y: event.clientY }), { hitInside: true, filter: shape => !editor.isShapeOrAncestorLocked(shape) })
+        if (hit) editor.select(hit.id); else editor.selectNone()
         return
       }
-      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyA') {
-        event.preventDefault(); editor.select(...editor.getCurrentPageShapes().filter(shape => !editor.isShapeOrAncestorLocked(shape) && shape.type !== 'group').map(shape => shape.id)); return
-      }
-      const selected = editor.getSelectedShapes().filter(shape => !editor.isShapeOrAncestorLocked(shape))
-      if (!selected.length || editor.getEditingShapeId()) return
-      if (event.code === 'Delete' || event.code === 'Backspace') {
-        event.preventDefault(); interactions.complete(); editor.markHistoryStoppingPoint('Delete selection'); editor.deleteShapes(selected.map(shape => shape.id)); editor.markHistoryStoppingPoint('After delete'); return
-      }
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
-        event.preventDefault(); interactions.complete()
-        const step = event.shiftKey ? 10 : 1, dx = event.code === 'ArrowLeft' ? -step : event.code === 'ArrowRight' ? step : 0, dy = event.code === 'ArrowUp' ? -step : event.code === 'ArrowDown' ? step : 0
-        if (!event.repeat) editor.markHistoryStoppingPoint('Nudge selection')
-        editor.updateShapes(selected.map(shape => ({ id: shape.id, type: shape.type, x: shape.x + dx, y: shape.y + dy })))
-      }
-    }
-    const keyUp = (event: KeyboardEvent) => {
-      if (event.code === 'Space') { interactions.setSpacePressed(false); containerElement.classList.remove('whiteboard-space-pan') }
-      if (event.code.startsWith('Arrow') && !elementTarget(event)?.closest(inputSelector)) editor.markHistoryStoppingPoint('After nudge')
-    }
-    const blur = () => { interactions.cancel(); containerElement.classList.remove('whiteboard-space-pan') }
-    stage.addEventListener('wheel', onWheel, { passive: false })
-    window.addEventListener('keydown', keyDown)
-    window.addEventListener('keyup', keyUp)
-    window.addEventListener('blur', blur)
-    return () => { editor.setInteractionCompleter(null); stage.removeEventListener('wheel', onWheel); window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); window.removeEventListener('blur', blur); interactions.cancel() }
-  }, [editor, interactions])
-
-  const handles: Array<[ResizeHandle, number, number]> = frame ? [['nw', 0, 0], ['n', frame.w / 2, 0], ['ne', frame.w, 0], ['e', frame.w, frame.h / 2], ['se', frame.w, frame.h], ['s', frame.w / 2, frame.h], ['sw', 0, frame.h], ['w', 0, frame.h / 2]] : []
-  const showHandles = frame && !editing && tool === 'select' && view.active !== 'marquee'
-  return <div ref={container} className={`whiteboard-canvas tool-${tool}${view.active ? ` is-${view.active}` : ''}`} role="application" aria-label="Magic Whiteboard canvas" tabIndex={0}
-    onPointerDown={event => {
-      if (elementTarget(event)?.closest(inputSelector) && !elementTarget(event)?.closest('[data-resize-handle]')) return
-      const handle = elementTarget(event)?.closest('[data-resize-handle]')?.getAttribute('data-resize-handle') || undefined
-      if (interactions.pointerDown(pointer(event, handle))) {
-        event.preventDefault()
-        event.currentTarget.focus({ preventScroll: true })
-        event.currentTarget.setPointerCapture(event.pointerId)
-      }
+      if (pendingPush.current) syncRef.current()
+      editor.markHistoryStoppingPoint('Canvas gesture')
+      pointer.current = event.nativeEvent
+      pointerActive.current = true
+      gestureGeneration.current++
     }}
-    onPointerMove={event => {
-      const coalesced = event.nativeEvent.getCoalescedEvents?.() || []
-      if (coalesced.length) coalesced.forEach(sample => interactions.pointerMove(pointer(sample)))
-      else interactions.pointerMove(pointer(event))
+    onDoubleClickCapture={event => {
+      if ((event.target as Element).closest(inputSelector)) return
+      const hit = editor.getShapeAtPoint(editor.screenToPage({ x: event.clientX, y: event.clientY }), { hitInside: true, margin: 12 / editor.getZoomLevel(), filter: shape => !editor.isShapeOrAncestorLocked(shape) })
+      if (hit?.type === 'magic' && hit.props.kind !== 'geometry') {
+        event.preventDefault(); event.stopPropagation(); editor.completeInteraction(); editor.select(hit.id); editor.setEditingShape(hit.id); editor.setCurrentTool('select.editing_shape')
+      } else { event.preventDefault(); event.stopPropagation() }
     }}
-    onPointerUp={event => { interactions.pointerUp(pointer(event)); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) }}
-    onPointerCancel={() => interactions.cancel()}
-    onLostPointerCapture={event => { if (event.buttons) interactions.cancel() }}
-    onDoubleClick={event => { if (!elementTarget(event)?.closest(inputSelector)) interactions.doubleClick({ x: event.clientX, y: event.clientY }) }}
-    onContextMenu={event => { if (!elementTarget(event)?.closest(inputSelector)) event.preventDefault() }}>
-    <div className="whiteboard-world" style={{ transform: `translate(${camera.x * z}px,${camera.y * z}px) scale(${z})` }}>
-      {shapes.filter(shape => shape.type !== 'group').map(shape => <div key={shape.id} className={`whiteboard-shape shape-${shape.type}${shape.isLocked ? ' is-locked' : ''}${editing === shape.id ? ' is-editing' : ''}`} data-shape-id={shape.id}
-        style={{ transform: shapeTransform(editor, shape), width: Math.max(1, shape.props.w || 1), height: Math.max(1, shape.props.h || 1), opacity: shapeOpacity(editor, shape) } as CSSProperties}>
-        {shape.type === 'magic' ? renderShape?.(shape, editor) : <DefaultShape shape={shape} editor={editor}/>}
+    onKeyDownCapture={event => {
+      if ((event.target as Element).closest(inputSelector)) return
+      // The application toolbar owns the tool set. Preserve native selection/clipboard/navigation shortcuts.
+      if (!event.ctrlKey && !event.metaKey && /^[a-z0-9]$/i.test(event.key)) { event.preventDefault(); event.stopPropagation(); return }
+      if (event.key === 'Escape') { editor.setEditingShape(null); editor.selectNone() }
+      if (!event.repeat && (['Delete', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key) || ((event.ctrlKey || event.metaKey) && ['d', 'x', 'v', 'g', '[', ']'].includes(event.key.toLowerCase())))) editor.markHistoryStoppingPoint('Canvas keyboard edit')
+    }}
+    onKeyUpCapture={event => { if (!(event.target as Element).closest(inputSelector) && ['Delete', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) queueMicrotask(finishGesture) }}>
+    <Excalidraw excalidrawAPI={receiveApi} initialData={initialData} onChange={ingest} UIOptions={uiOptions}
+      theme="light" zenModeEnabled gridModeEnabled={false} handleKeyboardGlobally={false} autoFocus={false} aiEnabled={false}
+      validateEmbeddable={false}/>
+    {editing && <div className="whiteboard-editing-shield" aria-hidden="true"/>}
+    <div className="whiteboard-live-content" style={{ transform: `translate(${camera.x * camera.z}px,${camera.y * camera.z}px) scale(${camera.z})` }}>
+      {customShapes.map(shape => <div key={shape.id} className={`whiteboard-live-shape${editing === shape.id ? ' is-editing' : ''}${isContentPreviewTarget(shape, previewTarget) ? ' is-previewing' : ''}${editing !== shape.id && !isContentPreviewTarget(shape, previewTarget) && renderedImages.current.get(shape.id)?.key === liveContentKey(shape) && nativeFiles.get(shape.id) === renderedImages.current.get(shape.id)?.file.id ? ' is-rendered' : ''}`} data-shape-id={shape.id}
+        style={{ transform: editor.getShapePageTransform(shape).toCssString(), width: shape.props.w || 100, height: shape.props.h || 100, opacity: shapeOpacity(editor, shape) }}>
+        {shape.type === 'magic' ? renderShape?.(shape, editor) : <LegacyShape shape={shape}/>}
       </div>)}
-      {showHandles && <div className="whiteboard-selection" style={{ transform: `translate(${frame.x}px,${frame.y}px) rotate(${frame.rotation}rad)`, width: frame.w, height: frame.h, borderWidth: 1 / z }}>
-        <div className="whiteboard-rotation-stem" style={{ left: frame.w / 2, height: 25 / z, top: -25 / z, width: 1 / z }}/>
-        <button tabIndex={-1} aria-label="Rotate selection" className="whiteboard-handle rotate" data-resize-handle="rotate" style={{ left: frame.w / 2, top: -29 / z, width: 10 / z, height: 10 / z, borderWidth: 1 / z }}/>
-        {handles.map(([name, x, y]) => <button tabIndex={-1} key={name} aria-label={`Resize ${name}`} className={`whiteboard-handle handle-${name}`} data-resize-handle={name} style={{ left: x, top: y, width: 9 / z, height: 9 / z, borderWidth: 1 / z }}/>) }
-      </div>}
-      {view.marquee && <div className="whiteboard-marquee" style={{ left: view.marquee.x, top: view.marquee.y, width: view.marquee.w, height: view.marquee.h, borderWidth: 1 / z }}/>} 
     </div>
+    {(sceneError || renderError) && <div className="canvas-render-error" role="alert">{sceneError || renderError}<button type="button" onClick={() => { setSceneError(''); setRenderError('') }}>Dismiss</button></div>}
     {children}
     <span className="whiteboard-accessibility">Use the pencil to draw, Select to move objects, and two fingers to zoom. Hold Space to pan. Double-click text or an equation to edit.</span>
   </div>
@@ -162,9 +364,6 @@ export function WhiteboardCanvas({ onMount, ...props }: WhiteboardCanvasProps) {
   const [editor] = useState(() => new Editor())
   const mount = useRef(onMount)
   mount.current = onMount
-  useEffect(() => {
-    const cleanup = mount.current?.(editor)
-    return () => { cleanup?.() }
-  }, [editor])
+  useEffect(() => mount.current?.(editor), [editor])
   return <EditorProvider editor={editor}><CanvasScene {...props} editor={editor}/></EditorProvider>
 }

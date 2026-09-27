@@ -3,7 +3,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { Box, type Editor, type TLShapeId } from '../canvas/editor'
 import { colorValue, getStrokeWidth, strokePoints } from '../canvas/geometry'
 import { inkOutlinePath } from '../canvas/ink'
+import { isDisconnectedInk } from '../canvas/disconnectedInk'
+import { nativeInkSvgPath } from '../canvas/nativeInkRenderer'
 import { legacyText, shapeOpacity } from '../canvas/content'
+import { ImageGraphic } from '../canvas/ImageGraphic'
 import type { ImageExportOptions, ImageExportResult, TLShape } from '../canvas/types'
 import { magicShapeToSvg } from '../board/MagicShape'
 import { exportTimeout } from './exportTimeout'
@@ -14,9 +17,10 @@ async function graphic(editor: Editor, shape: TLShape): Promise<ReactNode> {
   if (shape.type === 'image') {
     const asset = editor.getAsset(shape.props.assetId)
     if (!asset) throw new Error('A screenshot asset is missing. Open a saved project backup before exporting.')
-    return <image href={asset.props.src} width={shape.props.w} height={shape.props.h} preserveAspectRatio="none"/>
+    return <ImageGraphic src={asset.props.src} props={shape.props}/>
   }
   if (shape.type === 'draw') {
+    if (!isDisconnectedInk(shape)) return <path fill={colorValue(shape.props.color)} d={nativeInkSvgPath(shape.props)}/>
     const segments = shape.props.segments?.length ? shape.props.segments.map(segment => segment.points) : [strokePoints(shape.props)]
     return <g fill={colorValue(shape.props.color)}>
       {segments.map((points, index) => <path key={index} d={inkOutlinePath(points, getStrokeWidth(shape.props))}/>) }

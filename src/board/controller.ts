@@ -2,16 +2,17 @@ import { createShapeId, type Editor, type TLShape, type TLShapeId, type TLShapeP
 import type { BoardContext, BoardObject, BoardOperation, BoardResult, Bounds } from '../../shared/board'
 import { DEFAULT_MAGIC_PROPS, type MagicShape, type MagicShapeProps } from './MagicShape'
 import { autoYRange, validateDomain, validateExpression } from './expression'
-import { applyContentEdit } from './contentEdit'
+import { applyContentEdit, applyLatexContentEdit } from './contentEdit'
 import { getAxisMode, getPlotLayout } from './plotLayout'
 import { containsBounds, shapePageBounds } from './spatial'
-import katex from 'katex'
+import { resolveGeometry } from '../../shared/geometry'
+import { validateColor, validateCrop, validateOpacity, validateStrokeWidth } from '../../shared/appearance'
+import { validateLatex } from './latex'
 
-const geometryTypes = new Set(['triangle', 'right_triangle', 'rectangle', 'ellipse', 'arrow'])
 const kinds: Record<string, MagicShapeProps['kind']> = { create_plot: 'plot', create_math: 'math', create_text: 'text', create_geometry: 'geometry' }
 const operationTypes = new Set([...Object.keys(kinds), 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo'])
-const stringProps = ['expression', 'latex', 'text', 'title', 'color', 'geometry'] as const
-const numericProps = ['xMin', 'xMax', 'yMin', 'yMax', 'fontSize'] as const
+const stringProps = ['expression', 'latex', 'text', 'title', 'color', 'geometry', 'fill'] as const
+const numericProps = ['xMin', 'xMax', 'yMin', 'yMax', 'fontSize', 'fillOpacity', 'strokeWidth'] as const
 
 function validateBounds(bounds: Bounds): Bounds {
   if (![bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite) || Math.abs(bounds.x) > 1e7 || Math.abs(bounds.y) > 1e7 || bounds.w < 16 || bounds.h < 16 || bounds.w > 10000 || bounds.h > 10000) throw new Error('Object bounds need a finite position and a size from 16 to 10,000 pixels.')
@@ -50,7 +51,7 @@ export function resolveTargetIds(operation: BoardOperation, context: BoardContex
   return ids
 }
 
-export function getPlacementBounds(operation: BoardOperation, context: BoardContext, kind: MagicShapeProps['kind'], index = 0): Bounds {
+export function getPlacementBounds(operation: BoardOperation, context: BoardContext, kind: MagicShapeProps['kind'], index = 0, priorCreatedBounds: readonly Bounds[] = []): Bounds {
   const region = literalRegion(context)
   if (operation.bounds) {
     const bounds = validateBounds(operation.bounds)
@@ -66,7 +67,24 @@ export function getPlacementBounds(operation: BoardOperation, context: BoardCont
   const point = operation.placement === 'pointer' && context.pointer ? context.pointer
     : operation.placement !== 'auto' && context.focus ? { x: context.focus.bounds.x + context.focus.bounds.w / 2, y: context.focus.bounds.y + context.focus.bounds.h / 2 }
       : { x: context.viewport.x + context.viewport.w / 2, y: context.viewport.y + context.viewport.h / 2 }
-  const bounds = validateBounds({ x: point.x - size.w / 2 + index * 24, y: point.y - size.h / 2 + index * 24, ...size })
+  // Literal pointer/auto placement retains its existing containment behavior.
+  // Reference batches use actual prior object extents, including rotations and
+  // earlier transforms in this transaction, rather than a diagonal index offset.
+  const bounds = { x: point.x - size.w / 2 + (region ? index * 24 : 0), y: point.y - size.h / 2 + (region ? index * 24 : 0), ...size }
+  if (!region && priorCreatedBounds.length) {
+    const angle = (operation.rotation ?? 0) * Math.PI / 180
+    const rotatedWidth = Math.abs(Math.cos(angle)) * size.w + Math.abs(Math.sin(angle)) * size.h
+    const rotatedHeight = Math.abs(Math.sin(angle)) * size.w + Math.abs(Math.cos(angle)) * size.h
+    const top = point.y - rotatedHeight / 2
+    let left = point.x - rotatedWidth / 2
+    const initialLeft = left
+    for (const prior of [...priorCreatedBounds].sort((a, b) => a.x - b.x)) {
+      const sameRow = top < prior.y + prior.h && top + rotatedHeight > prior.y
+      if (sameRow && left < prior.x + prior.w + 24 && left + rotatedWidth + 24 > prior.x) left = prior.x + prior.w + 24
+    }
+    bounds.x += left - initialLeft
+  }
+  validateBounds(bounds)
   requireInside(region, bounds)
   return bounds
 }
@@ -85,8 +103,27 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
     if (value !== undefined) { if (!Number.isFinite(value)) throw new Error(`${key} must be a finite number.`); p[key] = value }
   }
   if (p.fontSize < 8 || p.fontSize > 160) throw new Error('Font size must be between 8 and 160.')
-  if (!/^#[0-9a-f]{3,8}$/i.test(p.color) && !/^[a-z]{1,24}$/i.test(p.color)) throw new Error('Use a hex color or a named color.')
-  if (!geometryTypes.has(p.geometry)) throw new Error('That geometry is not supported yet.')
+  if (p.kind === 'math' && operation.latex !== undefined) p.latex = validateLatex(p.latex, true)
+  validateColor(p.color)
+  if (p.fill !== undefined) validateColor(p.fill)
+  if (p.fillOpacity !== undefined) validateOpacity(p.fillOpacity)
+  if (p.strokeWidth !== undefined) validateStrokeWidth(p.strokeWidth)
+  for (const key of ['showGrid', 'showAxes'] as const) if (operation[key] !== undefined) {
+    if (typeof operation[key] !== 'boolean') throw new Error(`${key} must be true or false.`)
+    p[key] = operation[key]
+  }
+  if (p.kind === 'geometry') {
+    const changedGeometry = operation.geometry !== undefined && operation.geometry !== original.geometry
+    const replacing = operation.vertices !== undefined || operation.angles !== undefined || operation.sides !== undefined || changedGeometry
+    const geometry = resolveGeometry({
+      geometry: operation.geometry ?? (operation.angles || operation.sides || operation.vertices ? 'polygon' : p.geometry),
+      vertices: operation.vertices ?? (replacing ? undefined : original.vertices),
+      angles: operation.angles ?? (replacing ? undefined : original.angles),
+      sides: operation.sides ?? (replacing ? undefined : original.sides),
+    })
+    p.geometry = geometry.geometry; p.vertices = geometry.vertices; p.angles = geometry.angles
+    p.sides = geometry.geometry === 'polygon' ? geometry.vertices?.length : undefined
+  }
   if (p.kind === 'plot') {
     p.expression = validateExpression(p.expression).expression
     validateDomain(p.xMin, p.xMax)
@@ -97,7 +134,7 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
   return p
 }
 
-type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[] }
+type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[]; layers: { ids: TLShapeId[]; front: boolean }[] }
 
 export class BoardController {
   private lastIds: string[] = []
@@ -108,10 +145,11 @@ export class BoardController {
       const b = this.editor.getShapePageBounds(shape), object: BoardObject = {
         id: shape.id, kind: shape.type === 'magic' ? shape.props.kind : shape.type,
         bounds: b ? { x: b.x, y: b.y, w: b.w, h: b.h } : { x: shape.x, y: shape.y, w: 1, h: 1 },
-        rotation: shape.rotation * 180 / Math.PI, locked: shape.isLocked,
+        rotation: shape.rotation * 180 / Math.PI, locked: shape.isLocked, opacity: shape.opacity ?? 1,
       }
       if (shape.type === 'magic') {
         object.color = shape.props.color; object.title = shape.props.title; object.fontSize = shape.props.fontSize
+        for (const key of ['fill', 'fillOpacity', 'strokeWidth', 'showGrid', 'showAxes', 'vertices', 'angles', 'sides'] as const) Object.assign(object, { [key]: shape.props[key] })
         if (shape.props.kind === 'plot') {
           for (const key of ['expression', 'xMin', 'xMax', 'yMin', 'yMax'] as const) Object.assign(object, { [key]: shape.props[key] })
           object.axisMode = getAxisMode(shape.meta)
@@ -119,7 +157,8 @@ export class BoardController {
         } else if (shape.props.kind === 'math') object.latex = shape.props.latex
         else if (shape.props.kind === 'text') object.text = shape.props.text
         else { object.geometry = shape.props.geometry; object.text = shape.props.text }
-      }
+      } else if (shape.type === 'image') object.crop = shape.props.crop
+      else if (shape.type === 'draw') { object.color = shape.props.color; object.strokeWidth = shape.props.strokeWidth }
       return object
     })
   }
@@ -129,17 +168,23 @@ export class BoardController {
     const virtual = new Map<string, TLShape>(this.editor.getCurrentPageShapes().map(shape => [shape.id, shape]))
     const creates = new Map<TLShapeId, TLCreateShapePartial>(), updates = new Map<TLShapeId, TLShapePartial>(), deletes = new Set<TLShapeId>(), touched = new Set<TLShapeId>()
     const context = { ...baseContext, selectedIds: [...baseContext.selectedIds], lastCreatedIds: this.lastCreatedIds.length ? this.lastCreatedIds : baseContext.lastCreatedIds }
+    const layers: Plan['layers'] = []
     const region = literalRegion(context)
     let createdCount = 0
     for (const operation of operations) {
       if (!operation || !operationTypes.has(operation.type)) throw new Error('That whiteboard action is not supported.')
       if (operation.axisMode !== undefined && !['equal', 'auto'].includes(operation.axisMode)) throw new Error('Axis mode must be equal or auto.')
+      if (operation.opacity !== undefined) validateOpacity(operation.opacity)
+      if (operation.layer !== undefined && !['front', 'back'].includes(operation.layer)) throw new Error('Choose front or back for the object layer.')
+      if (operation.crop !== undefined) validateCrop(operation.crop)
       for (const key of ['rotation', 'rotateBy', 'scale', 'dx', 'dy'] as const) if (operation[key] !== undefined && !Number.isFinite(operation[key])) throw new Error(`${key} must be a finite number.`)
       if (kinds[operation.type]) {
-        const kind = kinds[operation.type], b = getPlacementBounds(operation, context, kind, createdCount++)
+        if (operation.crop !== undefined) throw new Error('Cropping applies to images only.')
+        const priorCreatedBounds = [...creates.keys()].map(id => shapePageBounds(this.editor, virtual.get(id)!))
+        const kind = kinds[operation.type], b = getPlacementBounds(operation, context, kind, createdCount++, priorCreatedBounds)
         const props = propsFromOperation(operation, { ...DEFAULT_MAGIC_PROPS, kind, w: b.w, h: b.h })
         const id = createShapeId(), rotation = (operation.rotation ?? 0) * Math.PI / 180
-        const shape: TLCreateShapePartial<MagicShape> = { id, type: 'magic',
+        const shape: TLCreateShapePartial<MagicShape> = { id, type: 'magic', opacity: operation.opacity ?? 1,
           x: b.x + b.w / 2 - Math.cos(rotation) * b.w / 2 + Math.sin(rotation) * b.h / 2,
           y: b.y + b.h / 2 - Math.sin(rotation) * b.w / 2 - Math.cos(rotation) * b.h / 2, rotation, props,
           meta: { ...(kind === 'plot' ? { axisMode: operation.axisMode ?? 'equal' } : {}), ...(region ? { literalBounds: { ...region } } : {}) } }
@@ -147,6 +192,7 @@ export class BoardController {
         creates.set(id, shape)
         virtual.set(id, { ...shape, props, isLocked: false, parentId: this.editor.getCurrentPageId() } as MagicShape)
         touched.add(id); context.selectedIds = [id]; context.lastCreatedIds = [id]
+        if (operation.layer) layers.push({ ids: [id], front: operation.layer === 'front' })
         continue
       }
       const ids = resolveTargetIds(operation, context, virtual.keys()) as TLShapeId[]
@@ -177,8 +223,26 @@ export class BoardController {
           continue
         }
         if (operation.type !== 'update_object' && operation.type !== 'edit_content' && operation.type !== 'transform_object') throw new Error('Undo or redo must be a separate action.')
-        if (shape.type !== 'magic' && (operation.type === 'update_object' || operation.type === 'edit_content')) throw new Error('Content editing is supported for equations, graphs, text, and geometry. Use the normal drawing tools for this object.')
+        if (shape.type !== 'magic' && operation.type === 'edit_content') throw new Error('Character editing is supported for equations, graphs and text.')
+        if (operation.crop !== undefined && shape.type !== 'image') throw new Error('Cropping applies to images only.')
         const next = { ...shape, props: { ...shape.props }, meta: { ...shape.meta } } as TLShape
+        if (operation.opacity !== undefined) next.opacity = operation.opacity
+        if (next.type === 'image' && operation.crop !== undefined) {
+          const before = next.props.crop ?? { x: 0, y: 0, w: 1, h: 1 }, after = validateCrop(operation.crop)
+          const fullWidth = next.props.w / before.w, fullHeight = next.props.h / before.h
+          const scale = Array.isArray(next.props.excalidrawScale) ? next.props.excalidrawScale : [1, 1]
+          const offsetX = (scale[0] < 0 ? before.x + before.w - after.x - after.w : after.x - before.x) * fullWidth
+          const offsetY = (scale[1] < 0 ? before.y + before.h - after.y - after.h : after.y - before.y) * fullHeight
+          next.x += Math.cos(next.rotation) * offsetX - Math.sin(next.rotation) * offsetY
+          next.y += Math.sin(next.rotation) * offsetX + Math.cos(next.rotation) * offsetY
+          next.props.w = fullWidth * after.w; next.props.h = fullHeight * after.h
+          next.props.crop = after
+        }
+        if (next.type === 'draw') {
+          if (operation.color !== undefined) next.props.color = validateColor(operation.color)
+          if (operation.strokeWidth !== undefined) next.props.strokeWidth = validateStrokeWidth(operation.strokeWidth)
+        }
+        if (next.type !== 'magic' && ['expression', 'latex', 'text', 'geometry', 'vertices', 'angles', 'sides', 'fill'].some(key => operation[key as keyof BoardOperation] !== undefined)) throw new Error('This content belongs on an equation, graph, text or geometry object.')
         if (region) next.meta.literalBounds = { ...region }
         else delete next.meta.literalBounds
         if (next.type === 'magic') {
@@ -189,11 +253,7 @@ export class BoardController {
           if (operation.type === 'edit_content') {
             const expected = next.props.kind === 'math' ? 'latex' : next.props.kind === 'plot' ? 'expression' : 'text'
             if (operation.field !== expected) throw new Error(`This object uses its ${expected} field.`)
-            const content = applyContentEdit(next.props[expected], operation)
-            if (expected === 'latex') {
-              try { katex.renderToString(content, { throwOnError: true, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }) }
-              catch { throw new Error('That edit would make invalid LaTeX. Try selecting the complete math expression.') }
-            }
+            const content = expected === 'latex' ? applyLatexContentEdit(next.props.latex, operation) : applyContentEdit(next.props[expected], operation)
             next.props = propsFromOperation({ ...operation, [expected]: content }, next.props)
           } else next.props = propsFromOperation(operation, next.props)
         }
@@ -241,14 +301,15 @@ export class BoardController {
         if (region && next.type === 'magic') requireLiteralSize({ x: next.x, y: next.y, w: next.props.w, h: next.props.h }, next.props.kind)
         requireInside(region, shapePageBounds(this.editor, next))
         virtual.set(id, next)
-        if (creates.has(id)) creates.set(id, { ...creates.get(id), x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta } as TLCreateShapePartial)
-        else updates.set(id, { id, type: next.type, x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta } as TLShapePartial)
+        if (creates.has(id)) creates.set(id, { ...creates.get(id), x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta, opacity: next.opacity } as TLCreateShapePartial)
+        else updates.set(id, { id, type: next.type, x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta, opacity: next.opacity } as TLShapePartial)
         touched.add(id)
       }
       context.selectedIds = ids.filter(id => virtual.has(id))
+      if (operation.layer && operation.type !== 'delete_objects') layers.push({ ids: context.selectedIds, front: operation.layer === 'front' })
       context.lastCreatedIds = context.selectedIds.length ? context.selectedIds : context.lastCreatedIds.filter(id => virtual.has(id))
     }
-    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], touched: [...touched], nextLast: context.lastCreatedIds }
+    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], touched: [...touched], nextLast: context.lastCreatedIds, layers }
   }
 
   applyOperations(operations: BoardOperation[]): BoardResult {
@@ -265,6 +326,7 @@ export class BoardController {
         if (plan.creates.length) this.editor.createShapes(plan.creates)
         if (plan.updates.length) this.editor.updateShapes(plan.updates)
         if (plan.deletes.length) this.editor.deleteShapes(plan.deletes)
+        for (const layer of plan.layers) this.editor[layer.front ? 'bringToFront' : 'sendToBack'](layer.ids)
         if (plan.touched.length) this.editor.select(...plan.touched)
       })
       this.editor.markHistoryStoppingPoint('after-magic-command')

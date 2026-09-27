@@ -5,7 +5,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
 import { z } from 'zod'
-import { boardTools, commandSchema, contextInstructions, contextSchema, requestSchema } from './board-tools'
+import { boardTools, contextInstructions, contextSchema, requestSchema } from './board-tools'
+import { DEFAULT_TEXT_MODEL, textModelSettings } from './model-config'
+import { readBoardCommand } from './command-response'
 import { accessToken, authorized, blockedPath, grantAccess, isLocalBrowser, pairingCode, RateLimiter, sameOrigin, validPairCode } from './security'
 import { realtimeConfig } from './realtime-config'
 
@@ -13,7 +15,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const app = express()
 const httpServer = createServer(app)
 const port = Number(process.env.PORT || 3000)
-const textModel = process.env.OPENAI_TEXT_MODEL || 'gpt-4.1-mini'
+const textModel = process.env.OPENAI_TEXT_MODEL || DEFAULT_TEXT_MODEL
 const realtimeModel = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-mini'
 const MAX_SESSION_MS = 5 * 60 * 1000
 const MAX_VOICE_SECONDS = 30 * 60
@@ -99,7 +101,7 @@ app.post('/api/command', async (req, res) => {
   try {
     const client = new OpenAI({ apiKey: key, maxRetries: 0, timeout: 25_000 })
     const response = await client.responses.create({
-      model: textModel, instructions: contextInstructions(parsed.data.context),
+      ...textModelSettings(textModel), instructions: contextInstructions(parsed.data.context),
       input: [...(parsed.data.history ?? []).slice(-8).map(m => ({ role: m.role, content: m.text })), {
         role: 'user', content: parsed.data.image ? [
           { type: 'input_text', text: parsed.data.text },
@@ -108,16 +110,13 @@ app.post('/api/command', async (req, res) => {
       }],
       tools: [{ ...boardTools[0], strict: false }],
       tool_choice: { type: 'function', name: 'apply_board_operations' },
-      parallel_tool_calls: false, max_output_tokens: 1500, store: false,
+      parallel_tool_calls: false, store: false,
     })
     usage.inputTokens += response.usage?.input_tokens ?? 0
     usage.outputTokens += response.usage?.output_tokens ?? 0
     persistUsage()
-    const call = response.output.find(o => o.type === 'function_call' && o.name === 'apply_board_operations')
-    if (!call || call.type !== 'function_call') { res.status(502).json({ error: 'The assistant did not produce a complete board edit. Try rephrasing.' }); return }
-    const command = commandSchema.safeParse(JSON.parse(call.arguments))
-    if (!command.success) { res.status(502).json({ error: 'The assistant returned an invalid board edit. Try a shorter instruction.' }); return }
-    res.json(command.data)
+    try { res.json(readBoardCommand(response)) }
+    catch (error) { res.status(502).json({ error: (error as Error).message }) }
   } catch (error) { res.status(502).json({ error: friendlyError(error) }) }
 })
 

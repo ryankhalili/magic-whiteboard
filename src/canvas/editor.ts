@@ -1,4 +1,5 @@
 import type { Bounds, Point } from '../../shared/board'
+import { uuid } from '../utils/uuid'
 import { Box, Matrix2d, getStrokeRadius, getStrokeWidth, hitStroke, strokePoints, transformBounds } from './geometry'
 import { normalizeSnapshot } from './migration'
 import type { AssetRecord, Camera, DocumentRecord, ImageExportOptions, ImageExportResult, MagicShapeProps, ShapeKind, TLEditorSnapshot, TLShape, TLShapeId, TLShapePartial, TLCreateShapePartial } from './types'
@@ -7,8 +8,8 @@ export { Box, Matrix2d, colorValue, getStrokeWidth, strokePoints, transformBound
 
 export const DefaultColorStyle = 'color'
 export const DefaultSizeStyle = 'size'
-export const createShapeId = (suffix?: string): TLShapeId => `shape:${suffix ?? crypto.randomUUID()}`
-export const createAssetId = (suffix?: string): string => `asset:${suffix ?? crypto.randomUUID()}`
+export const createShapeId = (suffix?: string): TLShapeId => `shape:${suffix ?? uuid()}`
+export const createAssetId = (suffix?: string): string => `asset:${suffix ?? uuid()}`
 export const AssetRecordType = { createId: createAssetId }
 
 const defaultMagic: MagicShapeProps = {
@@ -22,7 +23,7 @@ type HistoryMark = { state: DocumentState; undoLength: number; redo: DocumentSta
 type RunOptions = { history?: 'ignore' | 'record'; ignoreShapeLock?: boolean }
 type ImageExporter = (editor: Editor, ids: TLShapeId[], options: ImageExportOptions) => Promise<ImageExportResult>
 
-/** An application-owned scene model. It does not use or execute a third-party canvas SDK. */
+/** Portable application document and shared history, projected onto the Excalidraw interaction canvas. */
 export class Editor {
   private records = new Map<string, DocumentRecord>()
   private pageId = 'page:main'
@@ -254,9 +255,30 @@ export class Editor {
     return this.run(() => { for (const asset of assets) { this.beforeMutation(); this.records.set(asset.id, clone(asset)); this.changed(true) } return this })
   }
   sendToBack(ids: TLShapeId[]) {
-    const selected = new Set(ids), shapes = this.getCurrentPageShapesSorted()
-    const reordered = [...shapes.filter(s => selected.has(s.id)), ...shapes.filter(s => !selected.has(s.id))]
-    return this.updateShapes(reordered.map((shape, index) => ({ id: shape.id, type: shape.type, index } as TLShapePartial)))
+    return this.reorderLayers(ids, false)
+  }
+  bringToFront(ids: TLShapeId[]) {
+    return this.reorderLayers(ids, true)
+  }
+  private reorderLayers(ids: TLShapeId[], front: boolean) {
+    const selected = new Set(ids.filter(id => this.getShape(id) && (this.ignoreLocks || !this.isShapeOrAncestorLocked(id))))
+    const siblings = new Map<string, TLShape[]>()
+    for (const shape of this.getCurrentPageShapesSorted()) {
+      const list = siblings.get(shape.parentId) ?? []
+      list.push(shape); siblings.set(shape.parentId, list)
+    }
+    const updates: TLShapePartial[] = []
+    for (const list of siblings.values()) {
+      const moving = list.filter(shape => selected.has(shape.id))
+      if (!moving.length) continue
+      const rest = list.filter(shape => !selected.has(shape.id))
+      const ordered = front ? [...rest, ...moving] : [...moving, ...rest]
+      if (ordered.every((shape, index) => shape.id === list[index].id)) continue
+      ordered.forEach((shape, index) => updates.push({ id: shape.id, type: shape.type, index } as TLShapePartial))
+    }
+    // Renumber locked peers too, preserving their order and avoiding duplicate indices.
+    // Locked targets remain excluded unless an enclosing import explicitly allows them.
+    return this.run(() => this.updateShapes(updates), { ignoreShapeLock: true })
   }
   isShapeOrAncestorLocked(value?: TLShape | TLShapeId) {
     let shape = value ? this.getShape(value) : undefined; const seen = new Set<string>()
@@ -361,7 +383,7 @@ export class Editor {
   }
   zoomToFit() {
     const boxes = this.getCurrentPageShapes().map(s => this.getShapePageBounds(s)!)
-    return boxes.length ? this.zoomToBounds(Box.Common(boxes)) : this.setCamera({ x: 0, y: 0, z: 1 })
+    return boxes.length ? this.zoomToBounds(Box.Common(boxes), { inset: 96 }) : this.setCamera({ x: 0, y: 0, z: 1 })
   }
   getSnapshot(): TLEditorSnapshot {
     return clone({ document: { schema: { schemaVersion: 1, engine: 'magic-whiteboard' }, store: Object.fromEntries(this.records) },

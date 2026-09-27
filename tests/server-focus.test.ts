@@ -51,6 +51,37 @@ describe('focus and graph-axis API contract', () => {
     expect(properties.axisMode.description).toContain('same physical size')
     expect(properties.scale.description).toContain('does NOT equalize')
   })
+  it.each([.1, 1, 15.999, 10000.001, 100000])('rejects out-of-controller-range operation dimensions %s before applying a batch', dimension => {
+    for (const axis of ['w', 'h']) {
+      const command = { message: '', operations: [
+        { type: 'create_text', text: 'Should not be applied separately' },
+        { type: 'create_plot', expression: 'x^2+y^2=9', bounds: { x: 100, y: 100, w: 440, h: 320, [axis]: dimension } },
+      ] }
+      const parsed = commandSchema.safeParse(command)
+      expect(parsed.success).toBe(false)
+      if (!parsed.success) expect(parsed.error.issues[0].path).toEqual(['operations', 1, 'bounds', axis])
+    }
+  })
+  it('accepts controller boundary dimensions without constraining reported ink extents', () => {
+    const command = commandSchema.parse({ message: '', operations: [{ type: 'create_geometry', bounds: { x: -100, y: 100, w: 16, h: 10000 } }] })
+    expect(command.operations[0].bounds).toEqual({ x: -100, y: 100, w: 16, h: 10000 })
+    const tinyInk = { id: 'shape:dot', kind: 'draw', bounds: { x: 100, y: 100, w: .25, h: .5 }, rotation: 0 }
+    const parsed = requestSchema.parse({ text: 'Select this dot', context: { ...context,
+      focus: { kind: 'point', bounds: { x: 100, y: 100, w: 0, h: 0 }, targetIds: ['shape:dot'] },
+      objects: [tinyInk],
+    } })
+    expect(parsed.context.objects[0].bounds).toEqual(tinyInk.bounds)
+    const schema = boardTools[0].parameters as any
+    const size = schema.properties.operations.items.properties.bounds.properties
+    for (const axis of ['w', 'h']) expect(size[axis]).toMatchObject({ minimum: 16, maximum: 10000 })
+  })
+  it('preserves explicit layer commands and rejects unknown layer values', () => {
+    for (const layer of ['front', 'back']) {
+      const operation = { type: 'update_object', target: 'shape:plot', layer }
+      expect(commandSchema.parse({ message: '', operations: [operation] }).operations[0]).toEqual(operation)
+    }
+    expect(commandSchema.safeParse({ message: '', operations: [{ type: 'update_object', layer: 'topmost' }] }).success).toBe(false)
+  })
 })
 
 describe('assistant instructions for spatial intent', () => {

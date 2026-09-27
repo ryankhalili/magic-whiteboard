@@ -1,11 +1,13 @@
-import type { Bounds, Point } from '../../shared/board'
+import type { Bounds, Point, GeometryKind, ImageCrop } from '../../shared/board'
 
 export type TLShapeId = string
 export type TLAssetId = string
 export type MagicShapeProps = {
   w: number; h: number; kind: 'plot' | 'math' | 'text' | 'geometry'; expression: string; latex: string;
   text: string; title: string; color: string; xMin: number; xMax: number; yMin: number; yMax: number;
-  geometry: 'triangle' | 'right_triangle' | 'rectangle' | 'ellipse' | 'arrow'; fontSize: number
+  geometry: GeometryKind; fontSize: number;
+  vertices?: Point[]; angles?: number[]; sides?: number;
+  fill?: string; fillOpacity?: number; strokeWidth?: number; showGrid?: boolean; showAxes?: boolean
 }
 export type StrokePoint = Point & { z?: number; pressure?: number }
 export type DrawProps = {
@@ -13,7 +15,7 @@ export type DrawProps = {
   strokeWidth?: number; segments?: Array<{ type?: string; points: StrokePoint[] }>;
   [key: string]: unknown
 }
-export type ImageProps = { assetId: string | null; w: number; h: number; altText?: string; [key: string]: unknown }
+export type ImageProps = { assetId: string | null; w: number; h: number; altText?: string; crop?: ImageCrop; [key: string]: unknown }
 export type LegacyProps = { w?: number; h?: number; color?: string; text?: string; [key: string]: unknown }
 export interface ShapePropsMap {
   magic: MagicShapeProps; draw: DrawProps; image: ImageProps; group: Record<string, never>;

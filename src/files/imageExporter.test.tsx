@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Editor } from '../canvas/editor'
 import { renderShapesToSvg } from './imageExporter'
+import { installNativeInkRenderer } from '../canvas/nativeInkRenderer'
 
 vi.mock('../board/MagicShape', () => ({ magicShapeToSvg: async () => <text>Math object</text> }))
+const nativePath = 'M0,0 L30,0 L30,4 Z'
+const nativeRenderer = vi.fn(() => nativePath)
+let uninstall: () => void
+beforeEach(() => { nativeRenderer.mockClear(); uninstall = installNativeInkRenderer(nativeRenderer) })
+afterEach(() => uninstall())
 
 describe('owned SVG export', () => {
   it('includes locked screenshot bytes, pressure ink and transformed grouped content', async () => {
@@ -18,6 +24,8 @@ describe('owned SVG export', () => {
     expect(result.svg).toContain('fill="#2563eb"')
     expect(result.svg).toContain('100,50)')
     expect(result.svg).toContain('<path')
+    expect(result.svg).toContain(`d="${nativePath}"`)
+    expect(nativeRenderer).toHaveBeenCalledWith(expect.objectContaining({ strokeWidth: 3.5, pressures: [.25, .8], simulatePressure: false }))
     expect([result.width, result.height]).toEqual([400, 400])
   })
 

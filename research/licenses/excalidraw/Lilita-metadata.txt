@@ -1,0 +1,12 @@
+Excalidraw 0.18.1 bundled Lilita font metadata
+
+Source: node_modules/@excalidraw/excalidraw/dist/prod/fonts/Lilita/*.woff2
+
+Copyright:
+Copyright (c) 2011 Juan Montoreano (juan@remolacha.biz), with Reserved Font Names "Lilita One"
+
+Version:
+Version 1.002
+
+License URL:
+http://scripts.sil.org/OFL

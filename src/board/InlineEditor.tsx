@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useEditor } from '../canvas/context'
 import type { MathfieldElement } from 'mathlive'
 import type { MagicShape } from './MagicShape'
-import { autoYRange, validateExpression } from './expression'
+import katex from 'katex'
+import { SOURCE_FLUSH_EVENT, sourceUpdate, type SourceFlushOptions } from './liveSource'
 import 'mathlive/fonts.css'
 import './inline-editor.css'
 
@@ -21,28 +22,42 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
   const latestValue = useRef(visibleValue); latestValue.current = visibleValue
   const [sourceMode, setSourceMode] = useState(false), [loading, setLoading] = useState(isMath)
   const [error, setError] = useState(''), [draft, setDraft] = useState(shape.props[fieldName])
-  const finish = () => { editor.setEditingShape(null); editor.setCurrentTool('select.idle'); editor.markHistoryStoppingPoint('Finish editing content') }
-  const commit = (value: string) => {
-    setDraft(value)
-    if (value.length > 6000) { setError('Keep this object under 6,000 characters.'); return }
-    if (fieldName === 'expression') {
-      try {
-        const expression = validateExpression(value).expression
-        const [yMin, yMax] = autoYRange(expression, latest.current.props.xMin, latest.current.props.xMax)
-        editor.updateShape<MagicShape>({ id: shape.id, type: 'magic', props: { expression, yMin, yMax } })
-        setError('')
-      } catch (e) { setError((e as Error).message) }
-    } else editor.updateShape<MagicShape>({ id: shape.id, type: 'magic', props: { [fieldName]: value } })
+  const draftRef = useRef(draft), invalidDraft = useRef(false), pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const finish = () => { if (pending.current) commitRef.current(draftRef.current); editor.setEditingShape(null); editor.setCurrentTool('select.idle'); editor.markHistoryStoppingPoint('Finish editing content') }
+  const commit = (value: string, silent = false) => {
+    clearTimeout(pending.current); pending.current = undefined; draftRef.current = value; if (!silent) setDraft(value)
+    const current = editor.getShape<MagicShape>(shape.id)
+    if (!current) return
+    try {
+      const props = sourceUpdate(current, value)
+      editor.updateShape<MagicShape>({ id: shape.id, type: 'magic', props })
+      invalidDraft.current = false; if (!silent) setError('')
+    } catch (e) { invalidDraft.current = true; if (!silent) setError((e as Error).message) }
   }
   const commitRef = useRef(commit); commitRef.current = commit
   const finishRef = useRef(finish); finishRef.current = finish
   useEffect(() => {
     editor.markHistoryStoppingPoint('Edit object content')
-    return () => { editor.markHistoryStoppingPoint('After content editing') }
+    return () => { if (pending.current) commitRef.current(draftRef.current, true); clearTimeout(pending.current); editor.markHistoryStoppingPoint('After content editing') }
   }, [editor, shape.id])
   useEffect(() => {
+    const focus = (event: Event) => {
+      if ((event as CustomEvent).detail?.shapeId !== shape.id) return
+      if (mathField.current) mathField.current.focus(); else textarea.current?.focus()
+    }
+    const complete = (event: Event) => {
+      const options = (event as CustomEvent<SourceFlushOptions>).detail ?? {}
+      if (pending.current || (invalidDraft.current && !options.silent)) commitRef.current(draftRef.current, options.silent)
+      if (options.finishHistory !== false) editor.markHistoryStoppingPoint('Finish content before command')
+    }
+    window.addEventListener('marginalia-focus-editor', focus)
+    window.addEventListener(SOURCE_FLUSH_EVENT, complete)
+    return () => { window.removeEventListener('marginalia-focus-editor', focus); window.removeEventListener(SOURCE_FLUSH_EVENT, complete) }
+  }, [editor, shape.id])
+  useEffect(() => {
+    if (invalidDraft.current || pending.current) return
     const value = visibleValue
-    setDraft(value)
+    draftRef.current = value; setDraft(value)
     const mf = mathField.current
     if (mf && mf.value !== value) {
       const position = mf.position
@@ -117,7 +132,9 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
       className={isMath || fieldName === 'expression' ? 'content-source' : 'content-text'} style={contentLimit} value={draft} placeholder={isMath ? 'Enter LaTeX' : fieldName === 'expression' ? 'sin(x)' : 'Type here…'}
       spellCheck={fieldName === 'text'} autoCapitalize="off" autoCorrect="off" rows={fieldName === 'expression' ? 1 : 3}
       onChange={event => {
-        commit(event.target.value); notifyTextSelection(event.target)
+        draftRef.current = event.target.value; setDraft(event.target.value); clearTimeout(pending.current)
+        pending.current = setTimeout(() => commitRef.current(draftRef.current), 160)
+        notifyTextSelection(event.target)
         if (fieldName === 'text' && !latest.current.meta?.literalBounds && event.target.scrollHeight + 16 > latest.current.props.h) {
           editor.updateShape<MagicShape>({ id: shape.id, type: 'magic', props: { h: Math.min(10000, event.target.scrollHeight + 16) } })
         }
@@ -126,7 +143,8 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
       onKeyDown={event => {
         if (event.key === 'Escape' || (event.key === 'Enter' && (fieldName !== 'text' || event.ctrlKey || event.metaKey))) { event.preventDefault(); finish() }
         event.stopPropagation()
-      }}/>} 
+      }}/>}
+    {isMath && sourceMode && <div className="inline-source-preview" aria-label="Compiled equation preview" dangerouslySetInnerHTML={{ __html: katex.renderToString(shape.props.latex, { displayMode: true, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }).replace('class="katex"', 'class="katex" style="text-align:left"') }}/>}
     <div className="inline-editor-tools">{isMath && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => setSourceMode(value => !value)}>{sourceMode ? 'Visual math' : 'LaTeX source'}</button>}<button type="button" onPointerDown={event => event.preventDefault()} onClick={finish}>Done</button></div>
     {error && <div className="editor-note" role="status">{error}</div>}
   </div>
