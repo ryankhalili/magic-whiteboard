@@ -4,6 +4,7 @@ import {
 } from '../canvas/editor'
 import { normalizeSnapshot } from '../canvas/migration'
 import { exportTimeout } from './exportTimeout'
+import { loadOriginalNotebookSnapshot } from '../notebooks/canvasBackup'
 import { PDFDocument } from 'pdf-lib'
 import { DEFAULT_SETTINGS, type AppSettings, type Bounds } from '../../shared/board'
 
@@ -231,6 +232,16 @@ export function saveProject(editor: Editor, settings: AppSettings): void {
     snapshot: editor.getSnapshot(),
   }
   downloadBlob(new Blob([JSON.stringify(project)], { type: 'application/json' }), `${baseName(settings.name)}.marginalia.json`)
+}
+
+/** Download the untouched pre-migration checkpoint for inspection; never restore it automatically. */
+export async function downloadOriginalNotebook(id: string, settings: AppSettings): Promise<void> {
+  const snapshot = await loadOriginalNotebookSnapshot(id)
+  if (!snapshot) throw new Error('No original pre-migration checkpoint was found for this notebook. Its current contents have not changed.')
+  const project: ProjectFile = {
+    format: 'marginalia', version: 1, savedAt: new Date().toISOString(), settings: { ...settings }, snapshot,
+  }
+  downloadBlob(new Blob([JSON.stringify(project)], { type: 'application/json' }), `${baseName(settings.name)} - original checkpoint.marginalia.json`)
 }
 
 function object(value: unknown): value is Record<string, unknown> {
