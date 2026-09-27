@@ -20,4 +20,4 @@ if (-not $previewUrl) { Stop-Process -Id $previewProcess.Id; throw 'No preview U
 [IO.File]::WriteAllText((Join-Path $previewDir 'preview-host.txt'), $previewUrl.Host)
 Write-Output ('iPad URL: ' + $previewUrl.AbsoluteUri)
 Write-Output ('Tunnel PID: ' + $previewProcess.Id + '. Stop it with: Stop-Process -Id ' + $previewProcess.Id)
-Write-Output 'Restart npm run dev to allow this exact hostname. Get the pairing code from the laptop app.'
+Write-Output 'Start npm run dev if it is not running yet; a running server accepts this address without a restart. Get the pairing code from Help on the laptop.'

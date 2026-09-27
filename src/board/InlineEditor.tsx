@@ -4,6 +4,7 @@ import type { MathfieldElement } from 'mathlive'
 import type { MagicShape } from './MagicShape'
 import katex from 'katex'
 import { SOURCE_FLUSH_EVENT, sourceUpdate, type SourceFlushOptions } from './liveSource'
+import { mathFieldLatex } from './latex'
 import 'mathlive/fonts.css'
 import './inline-editor.css'
 
@@ -23,6 +24,8 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
   const [sourceMode, setSourceMode] = useState(false), [loading, setLoading] = useState(isMath)
   const [error, setError] = useState(''), [draft, setDraft] = useState(shape.props[fieldName])
   const draftRef = useRef(draft), invalidDraft = useRef(false), pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // the spelled out form committed for the math field; the field keeps its own blanks while typing
+  const fieldCommit = useRef<string | null>(null)
   const finish = () => { if (pending.current) commitRef.current(draftRef.current); editor.setEditingShape(null); editor.setCurrentTool('select.idle'); editor.markHistoryStoppingPoint('Finish editing content') }
   const commit = (value: string, silent = false) => {
     clearTimeout(pending.current); pending.current = undefined; draftRef.current = value; if (!silent) setDraft(value)
@@ -59,7 +62,7 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
     const value = visibleValue
     draftRef.current = value; setDraft(value)
     const mf = mathField.current
-    if (mf && mf.value !== value) {
+    if (mf && mf.value !== value && value !== fieldCommit.current) {
       const position = mf.position
       mf.setValue(value, { silenceNotifications: true })
       mf.position = Math.min(position, mf.lastOffset)
@@ -80,7 +83,7 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
       mf.mathVirtualKeyboardPolicy = 'auto'
       mf.defaultMode = 'math'
       mf.value = latestValue.current
-      const input = () => commitRef.current(mf.value)
+      const input = () => { const value = mathFieldLatex(mf.value, () => mf.getValue('latex-expanded')); fieldCommit.current = value; commitRef.current(value) }
       const selection = () => {
         const range = mf.selection.ranges[0] ?? [mf.position, mf.position]
         dispatchContentSelection({ shapeId: shape.id, field: 'latex', start: Math.min(...range), end: Math.max(...range), text: mf.getValue(mf.selection), coordinateSpace: 'mathlive' })

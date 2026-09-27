@@ -11,6 +11,9 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? 'undefined'
 }
 
+// the library catalog and the reference panel page never move new content, so they are not a board change
+export const boardState = (context: BoardContext): BoardContext => ({ ...context, library: undefined })
+
 function targets(operation: BoardOperation, context: BoardContext): string[] {
   if (operation.ids?.length) return [...new Set(operation.ids)]
   if (operation.target && !aliases.has(operation.target)) return [operation.target]
@@ -57,7 +60,7 @@ export function prepareBoardRepair(operations: BoardOperation[], before: BoardCo
     } else return { ok: false, reason: 'This action needs a new instruction rather than an automatic repeat.' }
   }
   const creates = scopes.some(scope => !scope.targets.length)
-  if (creates && (scopes.some(scope => scope.targets.length) || before.objects.length || after.objects.length || canonical(before) !== canonical(after))) return { ok: false, reason: 'New content can only be retried on an unchanged empty board.' }
+  if (creates && (scopes.some(scope => scope.targets.length) || canonical(boardState(before)) !== canonical(boardState(after)))) return { ok: false, reason: 'New content can only be retried as an entirely failed creation batch on an unchanged board.' }
   const ids = new Set(scopes.flatMap(scope => scope.targets))
   const objects = before.objects.filter(object => ids.has(object.id))
   const repair: BoardRepair = structuredClone({ failedOperations: operations, scopes, objects, originalContext: before, creates })
@@ -68,7 +71,7 @@ export function prepareBoardRepair(operations: BoardOperation[], before: BoardCo
 export function validateRepairContext(repair: BoardRepair, context: BoardContext): Decision<true> {
   if ((repair.originalContext.focusMode ?? 'reference') !== (context.focusMode ?? 'reference')) return { ok: false, reason: 'The work-area mode changed while the edit was being corrected.' }
   if (context.focusMode === 'literal' && canonical(context.focus) !== canonical(repair.originalContext.focus)) return { ok: false, reason: 'The literal work area changed while the edit was being corrected.' }
-  if (repair.creates && canonical(context) !== canonical(repair.originalContext)) return { ok: false, reason: 'The board or placement changed while the new content was being corrected.' }
+  if (repair.creates && canonical(boardState(context)) !== canonical(boardState(repair.originalContext))) return { ok: false, reason: 'The board or placement changed while the new content was being corrected.' }
   for (const original of repair.objects) {
     const current = context.objects.find(object => object.id === original.id)
     if (!current || canonical(current) !== canonical(original)) return { ok: false, reason: 'The original object changed while the edit was being corrected. Please give the instruction again.' }
