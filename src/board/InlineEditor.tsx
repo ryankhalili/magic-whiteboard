@@ -144,7 +144,7 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
         if (event.key === 'Escape' || (event.key === 'Enter' && (fieldName !== 'text' || event.ctrlKey || event.metaKey))) { event.preventDefault(); finish() }
         event.stopPropagation()
       }}/>}
-    {isMath && sourceMode && <div className="inline-source-preview" aria-label="Compiled equation preview" dangerouslySetInnerHTML={{ __html: katex.renderToString(shape.props.latex, { throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }) }}/>}
+    {isMath && sourceMode && <div className="inline-source-preview" aria-label="Compiled equation preview" dangerouslySetInnerHTML={{ __html: katex.renderToString(shape.props.latex, { displayMode: true, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }).replace('class="katex"', 'class="katex" style="text-align:left"') }}/>}
     <div className="inline-editor-tools">{isMath && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => setSourceMode(value => !value)}>{sourceMode ? 'Visual math' : 'LaTeX source'}</button>}<button type="button" onPointerDown={event => event.preventDefault()} onClick={finish}>Done</button></div>
     {error && <div className="editor-note" role="status">{error}</div>}
   </div>

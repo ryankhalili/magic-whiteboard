@@ -19,6 +19,8 @@ export const DEFAULT_MAGIC_PROPS: MagicShapeProps = {
 function mathHtml(latex: string) {
   return katex.renderToString(latex, { displayMode: true, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 })
     .replace('class="katex-display"', 'class="katex-display" style="margin:0;text-align:left"')
+    // KaTeX centers this child explicitly, so the outer wrapper cannot override it by inheritance.
+    .replace('class="katex"', 'class="katex" style="text-align:left"')
 }
 
 const mathStyle = (p: MagicShapeProps): React.CSSProperties => ({

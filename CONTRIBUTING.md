@@ -48,7 +48,7 @@ The checkpoint store retains the first raw SDK snapshot under `pre-owned-canvas:
 
 Use `OPENAI_API_KEY` or the ignored local `api.txt` file for the server. Never commit keys, `.env` contents, local usage records, or Codex authentication material. Do not place secrets in `VITE_` variables, browser code, fixtures, screenshots, or project downloads. Use non-sensitive fixtures for migration and vision tests.
 
-The application defaults to `gpt-4.1-mini` for typed commands, `gpt-realtime-mini` for voice, and `gpt-4o-mini-transcribe` for visible input transcription. Server environment variables can override the first two. Check the existing API allowance before running paid integration tests; unit tests should not require network access or spend credits. Local request/minute limits are not a guaranteed dollar cap.
+The application defaults to `gpt-6-luna` with low reasoning effort for typed commands, `gpt-realtime-mini` for voice, and `gpt-4o-mini-transcribe` for visible input transcription. Luna does not replace the Realtime audio model. Server environment variables can override the first two; Luna-specific reasoning settings are applied only to that model. Check the existing API allowance before running paid integration tests; unit tests should not require network access or spend credits. Local request/minute limits are not a guaranteed dollar cap.
 
 Codex's ChatGPT sign-in can provide subscription access for development, while API-key access is usage-based. Magic Whiteboard's general OpenAI API requests still use its Platform key and separate API billing. See [official Codex authentication documentation](https://developers.openai.com/codex/auth/). Do not reuse Codex login tokens as application API credentials.
 

@@ -128,7 +128,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     followRef.current = null; setFollowing(false)
     if (follower && editorRef.current) finishPointerFollow(editorRef.current, follower)
   }, [])
-  const execute = useCallback((ops: BoardOperation[]): BoardResult => {
+  const execute = useCallback((ops: BoardOperation[], reportFailure = true): BoardResult => {
     if (!controller.current) return { ok: false, message: 'The board is still loading.', ids: [] }
     const editor = editorRef.current!
     flushSourceEdits()
@@ -138,6 +138,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const followMark = ops.some(o => o.followPointer) ? editor.markHistoryStoppingPoint('Follow pointer instruction') : null
     const result = controller.current.applyOperations(ops)
     if (result.ok) {
+      setError('')
       notify(result.message)
       if (followMark && result.ids.length) {
         const p = pointerRef.current || { x: 0, y: 0 }
@@ -148,7 +149,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         // Following must remain placeable even if the command was issued in another tool.
         setTool('magic'); editor.setCurrentTool('select')
       }
-    } else setError(result.message)
+    } else if (reportFailure) setError(result.message)
     return result
   }, [notify, stopFollowing, getContext])
   const executeManual = useCallback((ops: BoardOperation[]): BoardResult => {
@@ -408,7 +409,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     setVoiceMode(true)
     try {
       const client = createRealtimeClient({
-        getContext, getVisualContext, applyOperations: execute,
+        getContext, getVisualContext, applyOperations: ops => execute(ops, false),
+        beforeApplyOperations: () => { flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing() },
         onAudioLevel: level => voiceOrbRef.current?.style.setProperty('--mic-level', String(level)),
         onContentPreview: handleContentPreview,
         onStatus: setVoiceStatus,
@@ -586,7 +588,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {['magic', 'text', 'math'].includes(tool) && <div className={`magic-surface ${following ? 'is-following' : ''}`} onPointerDown={magicDown} onPointerUp={magicUp} onDoubleClick={editAtPointer} onPointerCancel={() => { gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([]) }}/>}
       <svg className="gesture-overlay" aria-hidden="true">{path.length > 1 && <path d={path.map((p, i) => { const v = pageToLocal(p); return `${i ? 'L' : 'M'} ${v.x} ${v.y}` }).join(' ')} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>}</svg>
       {focus && !path.length && !isEditing && <div className={`magic-focus ${focus.kind} focus-${settings.focusMode ?? 'reference'}`} style={focus.kind === 'region' ? localBounds(focus.bounds) : { left: pageToLocal(focus.bounds).x - 12, top: pageToLocal(focus.bounds).y - 12 }}><span>{focus.kind === 'region' ? `Work here · ${settings.focusMode === 'literal' ? 'Literal' : 'Reference'}` : settings.focusMode === 'literal' ? 'Circle an area for Literal mode' : 'Reference point'}</span></div>}
-      {contentPreview && previewBounds && <div className="streaming-preview" style={{...localBounds(previewBounds), fontSize: 28 * zoom, ...(settings.focusMode === 'literal' ? {overflow:'hidden'} : {})}}>{contentPreview.field === 'latex' ? <span dangerouslySetInnerHTML={{ __html: katex.renderToString(contentPreview.value, {throwOnError:false,trust:false,maxExpand:300,strict:'ignore'}) }}/> : <span>{contentPreview.field === 'expression' ? 'y = ' : ''}{contentPreview.value}</span>}<span className="streaming-caret"/></div>}
+      {contentPreview && previewBounds && <div className="streaming-preview" style={{...localBounds(previewBounds), fontSize: 28 * zoom, ...(settings.focusMode === 'literal' ? {overflow:'hidden'} : {})}}>{contentPreview.field === 'latex' ? <span style={{display:'inline-block'}} dangerouslySetInnerHTML={{ __html: katex.renderToString(contentPreview.value, {displayMode:true,throwOnError:false,trust:false,maxExpand:300,maxSize:20,strict:'ignore'}).replace('class="katex-display"', 'class="katex-display" style="margin:0;text-align:left"').replace('class="katex"', 'class="katex" style="text-align:left"') }}/> : <span>{contentPreview.field === 'expression' ? 'y = ' : ''}{contentPreview.value}</span>}<span className="streaming-caret"/></div>}
 
       <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label>{objects.length > 0 && <select className="object-picker" aria-label="Choose board object" value={selected?.id || ''} onChange={event => { if (!event.target.value || !editor) return; editor.completeInteraction(); chooseTool('select'); editor.select(event.target.value); setInspectorOpen(true); setShowHistory(false) }}><option value="">Objects ({objects.length})</option>{objects.map(object => <option key={object.id} value={object.id}>{object.locked ? '🔒 ' : ''}{objectLabel(object)}</option>)}</select>}<button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void fetch('/api/status').then(r=>r.json()).then(setApi) }}><CircleHelp size={16}/></button></div>
       <nav className="tool-rail" aria-label="Drawing tools">

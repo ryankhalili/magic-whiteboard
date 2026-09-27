@@ -117,8 +117,12 @@ Codex can use a ChatGPT sign-in for subscription access, or an API key for usage
 
 Default backend models:
 
-- Typed commands: `gpt-4.1-mini`, using a constrained board-operation tool.
+- Typed commands: `gpt-6-luna` with low reasoning effort, using a constrained board-operation tool. The response budget includes reasoning and the complete edit payload; incomplete responses never change the board.
 - Voice: `gpt-realtime-mini`, with `gpt-4o-mini-transcribe` for visible input transcription.
+
+Luna is a text/image model, not a Realtime audio model; switching the typed-command default does not change the voice model. At the standard short-context rates checked September 26, 2026, Luna costs $0.10 input / $0.50 output per million tokens, compared with $0.40 / $1.60 for the previous `gpt-4.1-mini` default. Reasoning tokens count as output, and total cost depends on tokens used. See [official API pricing](https://developers.openai.com/api/docs/pricing).
+
+Math commands validate complete LaTeX before changing an object. Appending fragments preserves command boundaries, and invalid source keeps the last valid equation visible. In Assistant mode, “equals what?” asks for the result of the selected expression; Dictate math remains transcription. An invalid voice edit can receive one repair attempt against the same unchanged target. A new instruction, changed target, or repeated failure stops that repair rather than repeatedly editing the board. Failed creation is retried only on an unchanged empty board; partially successful batches are never repeated automatically.
 
 Help displays the running server's configured text and voice models. `OPENAI_TEXT_MODEL` and `OPENAI_REALTIME_MODEL` can change the defaults. The app responds to typed instructions and user-started voice turns through board tools; it has no autonomous background agent that continues working on notebooks.
 

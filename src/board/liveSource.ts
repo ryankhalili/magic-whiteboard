@@ -1,4 +1,4 @@
-import katex from 'katex'
+import { validateLatex } from './latex'
 import { validateExpression } from './expression'
 import type { MagicShape, MagicShapeProps } from './MagicShape'
 import type { Editor } from '../canvas/editor'
@@ -26,8 +26,8 @@ export function sourceUpdate(shape: MagicShape, value: string): Partial<MagicSha
   const field = sourceField(shape)
   if (field === 'expression') return { expression: validateExpression(value).expression }
   if (field === 'latex') {
-    try { katex.renderToString(value, { throwOnError: true, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }) }
-    catch { throw new Error('Finish the LaTeX expression to update the board. The last valid equation is still visible.') }
+    try { validateLatex(value) }
+    catch (error) { throw new Error(`Finish the LaTeX expression to update the board. ${error instanceof Error ? error.message : ''} The last valid equation is still visible.`) }
   }
   return { [field]: value }
 }

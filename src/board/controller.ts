@@ -2,12 +2,12 @@ import { createShapeId, type Editor, type TLShape, type TLShapeId, type TLShapeP
 import type { BoardContext, BoardObject, BoardOperation, BoardResult, Bounds } from '../../shared/board'
 import { DEFAULT_MAGIC_PROPS, type MagicShape, type MagicShapeProps } from './MagicShape'
 import { autoYRange, validateDomain, validateExpression } from './expression'
-import { applyContentEdit } from './contentEdit'
+import { applyContentEdit, applyLatexContentEdit } from './contentEdit'
 import { getAxisMode, getPlotLayout } from './plotLayout'
 import { containsBounds, shapePageBounds } from './spatial'
 import { resolveGeometry } from '../../shared/geometry'
 import { validateColor, validateCrop, validateOpacity, validateStrokeWidth } from '../../shared/appearance'
-import katex from 'katex'
+import { validateLatex } from './latex'
 
 const kinds: Record<string, MagicShapeProps['kind']> = { create_plot: 'plot', create_math: 'math', create_text: 'text', create_geometry: 'geometry' }
 const operationTypes = new Set([...Object.keys(kinds), 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo'])
@@ -103,6 +103,7 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
     if (value !== undefined) { if (!Number.isFinite(value)) throw new Error(`${key} must be a finite number.`); p[key] = value }
   }
   if (p.fontSize < 8 || p.fontSize > 160) throw new Error('Font size must be between 8 and 160.')
+  if (p.kind === 'math' && operation.latex !== undefined) p.latex = validateLatex(p.latex, true)
   validateColor(p.color)
   if (p.fill !== undefined) validateColor(p.fill)
   if (p.fillOpacity !== undefined) validateOpacity(p.fillOpacity)
@@ -250,11 +251,7 @@ export class BoardController {
           if (operation.type === 'edit_content') {
             const expected = next.props.kind === 'math' ? 'latex' : next.props.kind === 'plot' ? 'expression' : 'text'
             if (operation.field !== expected) throw new Error(`This object uses its ${expected} field.`)
-            const content = applyContentEdit(next.props[expected], operation)
-            if (expected === 'latex') {
-              try { katex.renderToString(content, { throwOnError: true, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }) }
-              catch { throw new Error('That edit would make invalid LaTeX. Try selecting the complete math expression.') }
-            }
+            const content = expected === 'latex' ? applyLatexContentEdit(next.props.latex, operation) : applyContentEdit(next.props[expected], operation)
             next.props = propsFromOperation({ ...operation, [expected]: content }, next.props)
           } else next.props = propsFromOperation(operation, next.props)
         }
