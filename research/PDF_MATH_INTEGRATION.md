@@ -5,7 +5,7 @@ Verified September 27, 2026, with Node 22.23.2.
 The `feature` branch starts from remote `main` at `093bf5c` and incorporates:
 
 - `pdf-worker` and `claude/pdf-worker` at `4592522` (identical tips).
-- `feat/interactive-math` at `83c9efa`.
+- `feat/interactive-math` at `a2d89cd`.
 - `codex/excalidraw-port` at `1a26261`, already included in `main`.
 
 The PDF branch was merged first because it already contains the shared voice,
@@ -14,6 +14,12 @@ resolution only in `src/ai/realtime.ts` and `src/styles.css`. The result retains
 filler cancellation, command continuation after a cough or filler, compact
 library context, unknown-tool recovery, and temporary spoken-math previews.
 Both branches' interface styles are retained.
+
+The final fetch also brought in delayed-transcript recovery at `a2d89cd`.
+Its additional overlaps in the server imports and voice state were resolved by
+retaining both library ranking and audio transcription, along with the PDF
+branch's board-state validation. The full suite and production build were rerun
+after this merge.
 
 Two added voice regressions cover the overlap: a final filler transcript clears
 an earlier speculative math draft, and filler interrupting an active integral
@@ -28,7 +34,7 @@ remain unchanged.
 
 - `npm ci` succeeded.
 - `npm run check` passed.
-- `npm test`: 1,017 passed, six skipped, across 64 files. The skipped checks depend
+- `npm test`: 1,110 passed, six skipped, across 66 files. The skipped checks depend
   on untracked local textbook PDFs. Synthetic PDF indexing and rendering tests ran.
 - `npm run build` passed. Existing chunk-size, mixed dynamic/static import and
   third-party annotation warnings remain.
@@ -46,6 +52,10 @@ notebook creation/reload, graph movement and independent resize, duplicate,
 undo/redo, implicit equation editing, invalid draft recovery, object locking,
 inline LaTeX editing, colored ink, eraser, and flushing a pending text edit before
 switching notebooks.
+
+These browser runs preceded the final transcript-recovery commit. That commit
+changes voice recovery and preview parsing, not the PDF or canvas UI; its new
+regressions and both integration regressions passed in the final full suite.
 
 PDF workflows were exercised manually in development and through the new
 `tests/browser/ego-pdf-library-smoke.js` against the production build. The script
@@ -73,6 +83,9 @@ absolute output directory for its synthetic PDF and downloaded files.
 Production requests for credential, environment, local-usage and server-source
 paths return 404. Unauthenticated command requests return 401; missing request
 headers and cross-origin commands return 403.
+The final production server also rejects unauthenticated and malformed audio
+transcription requests without consuming the command allowance, and serves its
+rebuilt HTML and JavaScript entry successfully.
 
 No live microphone, physical iPad/Pencil, paid image generation, or live-provider
 accuracy tests were run in this integration. Provider and speech-event behavior
