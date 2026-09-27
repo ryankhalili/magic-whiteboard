@@ -10,7 +10,7 @@ const sourceTypes = new Set(['magic', 'draw', 'image', 'text', 'geo'])
 
 export class NativeSceneImportError extends Error {
   constructor(detail: string) {
-    super(`${detail} Nothing was added. Paste a screenshot or copy an object created in Doodle Desk instead.`)
+    super(`${detail} Nothing was added. Paste a screenshot or copy an object created in Chalk Pal instead.`)
     this.name = 'NativeSceneImportError'
   }
 }
@@ -28,9 +28,9 @@ export function validateNativeSceneImport(editor: Editor, elements: readonly Exc
         || element.width < 0 || element.height < 0) throw new Error('This paste has invalid object dimensions.')
       const metadata = element.customData?.magicWhiteboard
       const source = record(metadata) && metadata.schemaVersion === 1 && record(metadata.shape) ? metadata.shape : undefined
-      if (metadata && !source) throw new Error('This paste has damaged Doodle Desk source data.')
+      if (metadata && !source) throw new Error('This paste has damaged Chalk Pal source data.')
       if (source) {
-        if (!sourceTypes.has(String(source.type)) || !record(source.props)) throw new Error('This paste has unsupported Doodle Desk source data.')
+        if (!sourceTypes.has(String(source.type)) || !record(source.props)) throw new Error('This paste has unsupported Chalk Pal source data.')
         // Our content uses images, with native freedraw for a continuous ink path.
         // A disconnected ink proxy is an image carrying its original draw source;
         // its transient PNG/SVG file is deliberately not a document image asset.

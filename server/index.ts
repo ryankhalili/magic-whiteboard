@@ -314,7 +314,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(400).json({ error: error instanceof SyntaxError ? 'The request could not be read.' : 'The request could not be completed.', code: 'invalid_request', retryable: false })
 })
 httpServer.listen(port, '0.0.0.0', () => {
-  console.log(`Doodle Desk is ready at http://localhost:${port}`)
+  console.log(`Chalk Pal is ready at http://localhost:${port}`)
   console.log(`iPad pairing code: ${pairingCode}. Voice segments last up to 5 minutes; configured voice allowance is ${MAX_VOICE_SECONDS / 60} minutes.`)
 })
 process.on('SIGINT', () => {

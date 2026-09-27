@@ -29,7 +29,7 @@ type ProjectFile = {
 }
 
 function baseName(name: string): string {
-  return name.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').slice(0, 100) || 'Doodle Desk'
+  return name.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').slice(0, 100) || 'Chalk Pal'
 }
 
 export function downloadBlob(blob: Blob, name: string): void {
@@ -239,7 +239,7 @@ export function pdfPageSize(bounds: Bounds): [number, number] {
 async function pngPdf(blob: Blob, title: string, [width, height]: [number, number]): Promise<Uint8Array> {
   const pdf = await PDFDocument.create()
   pdf.setTitle(title)
-  pdf.setCreator('Doodle Desk')
+  pdf.setCreator('Chalk Pal')
   const image = await pdf.embedPng(await blob.arrayBuffer())
   const page = pdf.addPage([width, height])
   page.drawImage(image, { x: 0, y: 0, width, height })
@@ -307,7 +307,7 @@ function object(value: unknown): value is Record<string, unknown> {
 export function parseProjectFile(text: string): ProjectFile {
   const project: unknown = JSON.parse(text)
   if (!object(project) || project.format !== 'marginalia' || project.version !== 1 || !object(project.snapshot)) {
-    throw new Error('This is not a supported Doodle Desk project file.')
+    throw new Error('This is not a supported Chalk Pal project file.')
   }
   const snapshot = project.snapshot
   if (!object(snapshot.document) || !object(snapshot.document.store) || !object(snapshot.document.schema)) {

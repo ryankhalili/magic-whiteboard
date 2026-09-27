@@ -1,6 +1,6 @@
-# Doodle Desk
+# Chalk Pal
 
-Doodle Desk is a drawing and learning workspace for sketches, equations, graphs, worksheets, and spoken instructions. The canvas is the primary work surface. A new user should be able to start drawing without setup; assistant features remain available beside manual tools.
+Chalk Pal is a drawing and learning workspace for sketches, equations, graphs, worksheets, and spoken instructions. The canvas is the primary work surface. A new user should be able to start drawing without setup; assistant features remain available beside manual tools.
 
 ## Workspace organization
 
