@@ -1,4 +1,4 @@
-Magic Whiteboard — Third-party software and font notices
+Doodle Desk — Third-party software and font notices
 Generated 2026-09-27 from the installed production dependency tree.
 These packages retain their own licenses, independently of the application's license.
 This artifact includes backend dependencies as well as browser dependencies.

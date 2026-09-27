@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Magic Whiteboard",
-  "short_name": "Magic Whiteboard",
+  "name": "Doodle Desk",
+  "short_name": "Doodle Desk",
   "description": "An editable whiteboard for writing, speaking, graphs, and equations.",
   "start_url": "/",
   "scope": "/",
