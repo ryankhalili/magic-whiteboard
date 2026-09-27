@@ -2,6 +2,7 @@ import type { BoardContext, BoardOperation, BoardResult } from '../../shared/boa
 import { parseBoardCommand } from '../../shared/tool-command'
 import { apiRequest } from './commands'
 import { createAudioMeter } from './audio-meter'
+import { createAudioTranscriptRecovery, type TranscribeOriginalAudio } from './audio-transcript-recovery'
 import { extractContentPreviews, type ContentPreview } from './content-preview'
 import { generateMathTranscriptPreview } from './spoken-math-preview'
 import { failureMessage, pinBoardRepair, prepareBoardRepair, repairInstructions, validateRepairContext, type BoardRepair } from './board-repair'
@@ -16,6 +17,7 @@ export type RealtimeOptions = {
   beforeApplyOperations?: () => void;
   onRecoveryState?: (state: VoiceRecoveryState) => void;
   repairRequest?: VoiceRepair;
+  transcribeAudio?: TranscribeOriginalAudio;
   applyOperations: (operations: BoardOperation[]) => BoardResult | BoardResult[] | Promise<BoardResult | BoardResult[]>;
   onStatus: (status: VoiceStatus) => void;
   onTranscript: (text: string, final: boolean) => void;
@@ -30,7 +32,7 @@ type WireEvent = { type: string; [key: string]: any }
 type VoiceTurn = {
   id: number; phase: 'normal' | 'repair-pending' | 'repair-attempted' | 'repaired' | 'stopped'
   repair?: BoardRepair; failure: string; failedResponseId?: string; repairRounds: number; reported: boolean
-  context: BoardContext; instruction: string; inputItem?: string; applied: boolean; repairUsed: boolean;
+  context: BoardContext; instruction: string; inputItem?: string; committedInputItem?: string; transcriptionFailed?: boolean; applied: boolean; repairUsed: boolean;
   responseRounds: number;
   modelPreview?: boolean; mathPreviewContext?: BoardContext; mathPreviewBlocked?: boolean;
   receiveTranscript?: (text: string) => void
@@ -95,6 +97,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
   let currentTurn = newTurn()
   let requestedResponse: ResponseOwner | null = null
   const responseOwners = new Map<string, ResponseOwner>()
+  const audioTranscriptRecovery = createAudioTranscriptRecovery(send, options.transcribeAudio ?? (async (audio, signal) => {
+    const result = await apiRequest<{ transcript: string }>('/api/realtime/transcribe', { audio }, { signal, timeoutMs: 22_000 })
+    return result.transcript
+  }))
 
   function setStatus(value: VoiceStatus) { if (status !== value) { status = value; options.onStatus(value) } }
   function send(event: unknown) { if (channel?.readyState === 'open') channel.send(JSON.stringify(event)) }
@@ -204,20 +210,43 @@ export function createRealtimeClient(options: RealtimeOptions) {
   function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {
       const aborted = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Voice recovery was cancelled.'))
+      promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted)).catch(() => {})
       if (signal.aborted) { aborted(); return }
       signal.addEventListener('abort', aborted, { once: true })
-      promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted)).catch(() => {})
     })
   }
-  async function instructionFor(turn: VoiceTurn, signal: AbortSignal) {
+  async function instructionFor(turn: VoiceTurn, signal: AbortSignal, needsOriginalAudio: boolean) {
     if (turn.instruction) return turn.instruction
+    // A validated, fully failed content edit already records its original intent.
+    // Only an otherwise untrusted payload needs to reread the original audio.
+    if (!needsOriginalAudio) return ''
+    const itemId = turn.committedInputItem
+    if (!itemId || itemId !== turn.inputItem) return ''
     let timer: ReturnType<typeof setTimeout> | undefined
+    const fallbackAbort = new AbortController()
     try {
-      return await abortable(new Promise<string>(resolve => {
-        turn.receiveTranscript = resolve
-        timer = setTimeout(() => resolve(''), 1500)
-      }), signal)
-    } finally { clearTimeout(timer); turn.receiveTranscript = undefined }
+      let final!: (text: string) => void, failed!: () => void
+      const originalFinal = new Promise<string>(resolve => { final = resolve })
+      const originalFailed = new Promise<string>(resolve => { failed = () => resolve('') })
+      turn.receiveTranscript = text => { if (text.trim()) final(text); else failed() }
+      const transcript = turn.transcriptionFailed ? '' : await abortable(Promise.race([
+        originalFinal, originalFailed, new Promise<string>(resolve => { timer = setTimeout(() => resolve(''), 6000) }),
+      ]), signal)
+      clearTimeout(timer)
+      if (transcript || turn.instruction) return turn.instruction || transcript
+      setRecovery({ phase: 'repairing', message: 'This is taking a little longer. Recovering your last words. Microphone paused.', attempt: 1 })
+      const recovered = await abortable(Promise.race([
+        originalFinal,
+        audioTranscriptRecovery.request(itemId, AbortSignal.any([signal, fallbackAbort.signal])),
+      ]), signal)
+      return turn.instruction || recovered
+    } finally {
+      clearTimeout(timer); turn.receiveTranscript = undefined
+      // A normal final transcript wins whenever it arrives during the fallback.
+      // Cancelling this controller only cancels retrieval/ASR, never the original
+      // assistant response that may be waiting for its tool result.
+      fallbackAbort.abort()
+    }
   }
   async function repairExternally(turn: VoiceTurn, failure: VoiceRepairRequest['failure'], rawArguments = '', failedOperations?: BoardOperation[], scope?: BoardRepair) {
     if (!options.repairRequest || turn.repairUsed || turn.applied && !scope) throw new Error('Automatic recovery cannot repeat this instruction. Please say the remaining change again.')
@@ -225,7 +254,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
     recoveryAbort?.abort(); recoveryAbort = abort
     turn.repairUsed = true; turn.phase = 'repair-pending'
     setRecovery({ phase: 'repairing', message: 'Fixing the last instruction. Microphone paused.', attempt: 1 })
-    const timer = setTimeout(() => abort.abort(new Error('The correction took too long. Listening can continue; please rephrase the instruction.')), 30_000)
+    const timer = setTimeout(() => abort.abort(new Error('The correction took too long. Listening can continue; please rephrase the instruction.')), 60_000)
     const stillCurrent = () => repairGeneration === generation && turn === currentTurn && !abort.signal.aborted
     try {
       options.beforeApplyOperations?.()
@@ -234,8 +263,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
         const valid = validateRepairContext(scope, options.getContext())
         if (!valid.ok) throw new Error(valid.reason)
       } else if (contextFingerprint(captured) !== contextFingerprint(options.getContext())) throw new Error('The board changed before recovery. Please repeat the instruction for the current selection.')
-      const instruction = await instructionFor(turn, abort.signal)
+      const instruction = await instructionFor(turn, abort.signal, !scope)
       if (!instruction && !scope) throw new Error('The last utterance could not be transcribed safely. Please repeat the instruction.')
+      if (!stillCurrent()) return null
+      setRecovery({ phase: 'repairing', message: 'Finishing the last instruction. Microphone paused.', attempt: 1 })
       const request: VoiceRepairRequest = {
         instruction: (instruction || 'Correct only the failed content operations shown, preserving their original intent and targets.').slice(0, 4000),
         context: structuredClone(captured), failedOperations,
@@ -243,6 +274,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
       }
       const command = parseBoardCommand(await abortable(options.repairRequest(request, abort.signal), abort.signal))
       if (!stillCurrent()) return null
+      const normalizedInstruction = (text: string) => text.trim().replace(/\s+/g, ' ').toLowerCase()
+      if (instruction && turn.instruction && normalizedInstruction(instruction) !== normalizedInstruction(turn.instruction)) {
+        throw new Error('The finalized transcript changed while I was correcting the edit. I left the correction unapplied; please repeat the instruction.')
+      }
       options.beforeApplyOperations?.()
       let operations: BoardOperation[]
       if (scope) {
@@ -353,6 +388,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
             const results = await options.applyOperations(operations)
             if (thisGeneration !== generation || turn !== currentTurn || responseId && interruptedResponses.has(responseId)) return false
             const after = options.getContext()
+            // Even a partial success must never be replayed after a later
+            // failed/incomplete response. The production controller is atomic,
+            // but custom asynchronous callbacks may report partial results.
+            if ((Array.isArray(results) ? results : [results]).some(result => result.ok || result.ids.length)) turn.applied = true
             const success = Array.isArray(results) ? results.length > 0 && results.every(result => result.ok) : results.ok
             output = { results, context: compactContext() }
             if (success) {
@@ -408,6 +447,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
     if (serialized !== lastPreview) { lastPreview = serialized; options.onContentPreview(preview) }
   }
   async function handleMessage(event: WireEvent) {
+    if (audioTranscriptRecovery.handle(event)) return
     if (event.response_id && (closedResponses.has(event.response_id) || !responseOwners.has(event.response_id))) return
     switch (event.type) {
       case 'session.created':
@@ -426,10 +466,13 @@ export function createRealtimeClient(options: RealtimeOptions) {
         break
       case 'input_audio_buffer.committed':
         if (recoveryState) {
-          if (event.item_id && event.item_id !== currentTurn.inputItem) send({ type: 'conversation.item.delete', item_id: event.item_id })
+          if (event.item_id && event.item_id === currentTurn.inputItem) currentTurn.committedInputItem = event.item_id
+          else if (event.item_id) send({ type: 'conversation.item.delete', item_id: event.item_id })
           send({ type: 'input_audio_buffer.clear' }); break
         }
-        if (event.item_id) { currentTurn.inputItem = event.item_id; remember(inputTurns, event.item_id, currentTurn, 8) }
+        if (event.item_id && (inputTurns.get(event.item_id) && inputTurns.get(event.item_id) !== currentTurn
+          || currentTurn.inputItem && currentTurn.inputItem !== event.item_id)) break
+        if (event.item_id) { currentTurn.inputItem = event.item_id; currentTurn.committedInputItem = event.item_id; remember(inputTurns, event.item_id, currentTurn, 8) }
         currentTurn.context = structuredClone(options.getContext())
         // Automatic response creation is disabled, letting the newest pen state arrive first.
         speechActive = false; sendContext(true); requestResponse()
@@ -444,12 +487,20 @@ export function createRealtimeClient(options: RealtimeOptions) {
         const owner = inputTurns.get(event.item_id)
         transcripts.delete(event.item_id)
         if (event.item_id !== currentTurn.inputItem || owner && owner !== currentTurn) break
-        currentTurn.instruction = String(event.transcript ?? '').slice(0, 4000)
+        currentTurn.instruction = String(event.transcript ?? '').trim().slice(0, 4000)
+        currentTurn.transcriptionFailed = !currentTurn.instruction
         currentTurn.receiveTranscript?.(currentTurn.instruction)
         options.onTranscript(currentTurn.instruction, true); updateTranscriptPreview(event.item_id, currentTurn.instruction); break
       }
-      case 'conversation.item.input_audio_transcription.failed':
-        options.onError('The live transcript could not be generated. The assistant may still understand your audio.'); break
+      case 'conversation.item.input_audio_transcription.failed': {
+        const owner = inputTurns.get(event.item_id)
+        if (event.item_id !== currentTurn.inputItem || owner && owner !== currentTurn) break
+        currentTurn.transcriptionFailed = true; currentTurn.receiveTranscript?.('')
+        if (transcriptPreview) clearPreview()
+        // The assistant still has the audio. A failed edit can recover from that
+        // exact item without surfacing an unrelated transcription-service error.
+        break
+      }
       case 'response.created':
         if (closedResponses.has(event.response?.id)) break
         activeResponseId = event.response?.id ?? null
@@ -549,7 +600,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
           const failed = event.response.status === 'failed', error = event.response.status_details?.error
           const message = error?.code === 'insufficient_quota' ? 'The OpenAI project has reached its credit limit.'
             : `${turn.failure ? `${turn.failure} ` : ''}${error?.message || 'The voice assistant stopped before finishing that response.'}`
-          if (options.repairRequest && !turn.applied && !turn.repairUsed && !isFatalVoiceError(`${error?.code ?? ''} ${message}`)) {
+          if (options.repairRequest && turn.phase !== 'stopped' && !turn.applied && !turn.repairUsed && !isFatalVoiceError(`${error?.code ?? ''} ${message}`)) {
             try { await repairExternally(turn, { kind: failed ? 'response_failed' : 'response_incomplete', message }) }
             catch (repairError) {
               stopTurn(turn, repairError instanceof Error ? repairError.message : message)
@@ -587,6 +638,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
   }
   function closeTransport(confirm = false) {
     generation++
+    audioTranscriptRecovery.reset()
     clearTimeout(maxTimer); clearTimeout(renewalTimer); clearTimeout(responseTimer); clearTimeout(idleTimer); clearTimeout(connectTimer); clearTimeout(contextTimer)
     transportAbort?.abort(); transportAbort = null
     channel?.close(); channel = null; peer?.close(); peer = null

@@ -24,6 +24,7 @@ function tokenize(transcript: string): string[] | null {
   if (!transcript.trim() || transcript.length > MAX_TRANSCRIPT) return null
   let source = transcript.toLowerCase().trim()
     .replace(/[,.!?]+$/, '')
+    .replace(/^(?:(?:this|that|it)(?: now)?|now) (?:equals|is equal to)\b/, '=')
     .replace(/\b(?:the|an) integral\b/g, 'integral')
     .replace(/\b(?:raised )?to the (?:power(?: of)?|(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?=\b))/g,
       phrase => /power/.test(phrase) ? '^' : `^ ${phrase.split(' ').at(-1)}`)
@@ -85,13 +86,29 @@ class SpokenMathParser {
   private operator(token: string) { return token === '<=' ? '\\le' : token === '>=' ? '\\ge' : token }
   private expression(stopDifferential = false): string {
     if (++this.depth > 20) throw new Error('Expression is too deeply nested')
-    let value = this.sum(stopDifferential)
+    let value = this.evaluatedSum(stopDifferential)
     while (['=', '<', '>', '<=', '>='].includes(this.peek() ?? '')) {
       const operator = this.operator(this.tokens[this.cursor++])
-      value += ` ${operator} ${this.sum(stopDifferential)}`
+      value += ` ${operator} ${this.evaluatedSum(stopDifferential)}`
     }
     this.depth--
     return value
+  }
+  private evaluatedSum(stopDifferential: boolean): string {
+    const value = this.sum(stopDifferential)
+    if (!this.take('bar')) return value
+    // Keep the entire dictated side inside the evaluation bar, without evaluating it.
+    const evaluated = `\\left.${value}\\right|`
+    if (!this.take('from')) {
+      if (this.peek()) throw new Error('Evaluation bar requires from')
+      return evaluated
+    }
+    // Products admit bounds like -pi, pi/2, and 2pi; sums need spoken parentheses.
+    const lower = this.product(false)
+    let upper = BLANK
+    if (this.take('to')) upper = this.product(false)
+    else if (this.peek()) throw new Error('Evaluation bounds require to')
+    return `${evaluated}_{${lower}}^{${upper}}`
   }
   private sum(stopDifferential: boolean): string {
     let value = this.product(stopDifferential)

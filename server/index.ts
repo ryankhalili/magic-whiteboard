@@ -13,6 +13,7 @@ import { createOpenAIImageProvider, DEFAULT_IMAGE_MODEL, ImageJobError, ImageJob
 import { configuredLimit, UsageLedger, UsageLedgerError } from './usage-ledger'
 import { accessToken, authorized, blockedPath, grantAccess, isLocalBrowser, pairingCode, RateLimiter, sameOrigin, validPairCode } from './security'
 import { realtimeConfig } from './realtime-config'
+import { audioTranscriptionRequestSchema, createOpenAIAudioTranscriber, transcribeRecoveredAudio } from './audio-transcription'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const app = express()
@@ -132,6 +133,24 @@ for (const mode of ['command', 'repair'] as const) app.post(`/api/${mode}`, asyn
       },
     }
     const result = await (mode === 'command' ? runBoardCommand(parsed.data, options) : repairBoardCommand(parsed.data, options))
+    if (!lifetime.signal.aborted && !res.destroyed) res.json(result)
+  } catch (error) { sendFailure(res, error) }
+  finally { lifetime.dispose() }
+})
+
+app.post('/api/realtime/transcribe', async (req, res) => {
+  const parsed = audioTranscriptionRequestSchema.safeParse(req.body)
+  if (!parsed.success) { res.status(400).json({ error: 'That audio could not be read. Repeat a short phrase or type it.', code: 'invalid_request', retryable: false }); return }
+  if (!apiLimiter.take(accessToken(req))) { res.setHeader('Retry-After', '60'); res.status(429).json({ error: 'Please wait a moment before retrying transcription.', code: 'local_rate_limit', retryable: true }); return }
+  const key = await readKey()
+  if (!key) { res.status(503).json({ error: 'Add your OpenAI API key to api.txt on the laptop.', code: 'missing_key', retryable: false }); return }
+  const lifetime = requestLifetime(res)
+  try {
+    const result = await transcribeRecoveredAudio(parsed.data, {
+      provider: createOpenAIAudioTranscriber(key), signal: lifetime.signal,
+      reserve: () => usage.reserveCommand(MAX_COMMANDS),
+      recordTokens: (input, output) => usage.recordTokens(input, output),
+    })
     if (!lifetime.signal.aborted && !res.destroyed) res.json(result)
   } catch (error) { sendFailure(res, error) }
   finally { lifetime.dispose() }
