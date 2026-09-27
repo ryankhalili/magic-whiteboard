@@ -1,0 +1,5 @@
+export { NotebookSwitcher } from './NotebookSwitcher'
+export { useNotebookLibrary, type NotebookLibraryController } from './useNotebookLibrary'
+export type { NotebookLibraryController as NotebookLibrary } from './useNotebookLibrary'
+export { NotebookRepository, type NotebookRecord, type NotebookLibraryState } from './library'
+export { saveNotebookSnapshot, loadNotebookSnapshot } from './canvasBackup'

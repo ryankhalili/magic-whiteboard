@@ -1,0 +1,3977 @@
+{
+  "auditedAt": "2026-09-26",
+  "scope": "npm ls --omit=dev --all: installed production dependency instances",
+  "packages": [
+    {
+      "name": "@arnog/colors",
+      "version": "0.5.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@arnog/colors",
+      "licenseFiles": [],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/arnog/colors"
+      },
+      "homepage": null
+    },
+    {
+      "name": "@babel/runtime",
+      "version": "7.29.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@babel/runtime",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/babel/babel.git",
+        "directory": "packages/babel-runtime"
+      },
+      "homepage": "https://babel.dev/docs/en/next/babel-runtime"
+    },
+    {
+      "name": "@cortex-js/compute-engine",
+      "version": "0.58.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@cortex-js/compute-engine",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/cortex-js/compute-engine.git"
+      },
+      "homepage": "https://cortexjs.io/compute-engine/"
+    },
+    {
+      "name": "@floating-ui/core",
+      "version": "1.8.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@floating-ui/core",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/floating-ui/floating-ui.git",
+        "directory": "packages/core"
+      },
+      "homepage": "https://floating-ui.com"
+    },
+    {
+      "name": "@floating-ui/dom",
+      "version": "1.8.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@floating-ui/dom",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/floating-ui/floating-ui.git",
+        "directory": "packages/dom"
+      },
+      "homepage": "https://floating-ui.com"
+    },
+    {
+      "name": "@floating-ui/react-dom",
+      "version": "2.1.9",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@floating-ui/react-dom",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/floating-ui/floating-ui.git",
+        "directory": "packages/react-dom"
+      },
+      "homepage": "https://floating-ui.com/docs/react-dom"
+    },
+    {
+      "name": "@floating-ui/utils",
+      "version": "0.2.12",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@floating-ui/utils",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/floating-ui/floating-ui.git",
+        "directory": "packages/utils"
+      },
+      "homepage": "https://floating-ui.com"
+    },
+    {
+      "name": "@modelcontextprotocol/client",
+      "version": "2.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@modelcontextprotocol/client",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/modelcontextprotocol/typescript-sdk.git"
+      },
+      "homepage": "https://modelcontextprotocol.io"
+    },
+    {
+      "name": "@modelcontextprotocol/core",
+      "version": "2.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@modelcontextprotocol/core",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/modelcontextprotocol/typescript-sdk.git"
+      },
+      "homepage": "https://modelcontextprotocol.io"
+    },
+    {
+      "name": "@openai/agents",
+      "version": "0.18.0",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/@openai/agents",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/openai/openai-agents-js"
+      },
+      "homepage": "https://openai.github.io/openai-agents-js/"
+    },
+    {
+      "name": "@openai/agents-core",
+      "version": "0.18.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@openai/agents-core",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/openai/openai-agents-js"
+      },
+      "homepage": "https://openai.github.io/openai-agents-js/"
+    },
+    {
+      "name": "@openai/agents-openai",
+      "version": "0.18.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@openai/agents-openai",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/openai/openai-agents-js"
+      },
+      "homepage": "https://openai.github.io/openai-agents-js/"
+    },
+    {
+      "name": "@openai/agents-realtime",
+      "version": "0.18.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@openai/agents-realtime",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/openai/openai-agents-js"
+      },
+      "homepage": "https://openai.github.io/openai-agents-js/"
+    },
+    {
+      "name": "@pdf-lib/standard-fonts",
+      "version": "1.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@pdf-lib/standard-fonts",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": "https://github.com/Hopding/standard-fonts.git",
+      "homepage": "https://github.com/Hopding/standard-fonts"
+    },
+    {
+      "name": "@pdf-lib/upng",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@pdf-lib/upng",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Hopding/upng"
+      },
+      "homepage": null
+    },
+    {
+      "name": "@radix-ui/number",
+      "version": "1.1.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/number",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/core/number"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/primitive",
+      "version": "1.1.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/primitive",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/core/primitive"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-accessible-icon",
+      "version": "1.1.15",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-accessible-icon",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/accessible-icon"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-accordion",
+      "version": "1.2.20",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-accordion",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/accordion"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-alert-dialog",
+      "version": "1.1.23",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-alert-dialog",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/alert-dialog"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-arrow",
+      "version": "1.1.15",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-arrow",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/arrow"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-aspect-ratio",
+      "version": "1.1.15",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-aspect-ratio",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/aspect-ratio"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-avatar",
+      "version": "1.2.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-avatar",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/avatar"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-checkbox",
+      "version": "1.3.11",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-checkbox",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/checkbox"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-collapsible",
+      "version": "1.1.20",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-collapsible",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/collapsible"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-collection",
+      "version": "1.1.15",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-collection",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/collection"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-compose-refs",
+      "version": "1.1.5",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-compose-refs",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/compose-refs"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-context",
+      "version": "1.2.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-context",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/context"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-context-menu",
+      "version": "2.3.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-context-menu",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/context-menu"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-dialog",
+      "version": "1.1.23",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-dialog",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/dialog"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-direction",
+      "version": "1.1.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-direction",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/direction"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-dismissable-layer",
+      "version": "1.1.19",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-dismissable-layer",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/dismissable-layer"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-dropdown-menu",
+      "version": "2.1.24",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-dropdown-menu",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/dropdown-menu"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-focus-guards",
+      "version": "1.1.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-focus-guards",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/focus-guards"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-focus-scope",
+      "version": "1.1.16",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-focus-scope",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/focus-scope"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-form",
+      "version": "0.1.16",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-form",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/form"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-hover-card",
+      "version": "1.1.23",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-hover-card",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/hover-card"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-id",
+      "version": "1.1.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-id",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/id"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-label",
+      "version": "2.1.15",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-label",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/label"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-menu",
+      "version": "2.1.24",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-menu",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/menu"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-menubar",
+      "version": "1.1.24",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-menubar",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/menubar"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-navigation-menu",
+      "version": "1.2.22",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-navigation-menu",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/navigation-menu"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-one-time-password-field",
+      "version": "0.1.16",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-one-time-password-field",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/one-time-password-field"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-password-toggle-field",
+      "version": "0.1.11",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-password-toggle-field",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/password-toggle-field"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-popover",
+      "version": "1.1.23",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-popover",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/popover"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-popper",
+      "version": "1.3.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-popper",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/popper"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-portal",
+      "version": "1.1.17",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-portal",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/portal"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-presence",
+      "version": "1.1.10",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-presence",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/presence"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-primitive",
+      "version": "2.1.10",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-primitive",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/primitive"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-progress",
+      "version": "1.1.16",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-progress",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/progress"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-radio-group",
+      "version": "1.4.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-radio-group",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/radio-group"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-roving-focus",
+      "version": "1.1.19",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-roving-focus",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/roving-focus"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-scroll-area",
+      "version": "1.2.18",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-scroll-area",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/scroll-area"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-select",
+      "version": "2.3.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-select",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/select"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-separator",
+      "version": "1.1.15",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-separator",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/separator"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-slider",
+      "version": "1.4.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-slider",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/slider"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-slot",
+      "version": "1.3.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-slot",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/slot"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-switch",
+      "version": "1.3.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-switch",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/switch"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-tabs",
+      "version": "1.1.21",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-tabs",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/tabs"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-toast",
+      "version": "1.2.23",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-toast",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/toast"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-toggle",
+      "version": "1.1.18",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-toggle",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/toggle"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-toggle-group",
+      "version": "1.1.19",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-toggle-group",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/toggle-group"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-toolbar",
+      "version": "1.1.19",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-toolbar",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/toolbar"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-tooltip",
+      "version": "1.2.16",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-tooltip",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/tooltip"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-callback-ref",
+      "version": "1.1.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-callback-ref",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-callback-ref"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-controllable-state",
+      "version": "1.2.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-controllable-state",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-controllable-state"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-effect-event",
+      "version": "0.0.5",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-effect-event",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-effect-event"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-escape-keydown",
+      "version": "1.1.5",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-escape-keydown",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-escape-keydown"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-is-hydrated",
+      "version": "0.1.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-is-hydrated",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-is-hydrated"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-layout-effect",
+      "version": "1.1.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-layout-effect",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-layout-effect"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-previous",
+      "version": "1.1.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-previous",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-previous"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-rect",
+      "version": "1.1.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-rect",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-rect"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-use-size",
+      "version": "1.1.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-use-size",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/use-size"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/react-visually-hidden",
+      "version": "1.2.11",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/react-visually-hidden",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/visually-hidden"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@radix-ui/rect",
+      "version": "1.1.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@radix-ui/rect",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/core/rect"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "@standard-schema/spec",
+      "version": "1.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@standard-schema/spec",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/standard-schema/standard-schema"
+      },
+      "homepage": "https://standardschema.dev"
+    },
+    {
+      "name": "@tiptap/core",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/core",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/core"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-blockquote",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-blockquote",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-blockquote"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-bold",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-bold",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-bold"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-bubble-menu",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-bubble-menu",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-bubble-menu"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-bullet-list",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-bullet-list",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-bullet-list"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-code",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-code",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-code"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-code-block",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-code-block",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-code-block"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-document",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-document",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-document"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-dropcursor",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-dropcursor",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages-deprecated/extension-dropcursor"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-floating-menu",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-floating-menu",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-floating-menu"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-gapcursor",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-gapcursor",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages-deprecated/extension-gapcursor"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-hard-break",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-hard-break",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-hard-break"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-heading",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-heading",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-heading"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-highlight",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-highlight",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-highlight"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-horizontal-rule",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-horizontal-rule",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-horizontal-rule"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-italic",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-italic",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-italic"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-link",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-link",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-link"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-list",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-list",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-list"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-list-item",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-list-item",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-list-item"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-list-keymap",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-list-keymap",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-list-keymap"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-ordered-list",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-ordered-list",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-ordered-list"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-paragraph",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-paragraph",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-paragraph"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-strike",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-strike",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-strike"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-text",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-text",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-text"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extension-underline",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extension-underline",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension-underline"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/extensions",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/extensions",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/extension"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/pm",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/pm",
+      "licenseFiles": [
+        "LICENSE",
+        "THIRD_PARTY_LICENSES.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/pm"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/react",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/react",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/react"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tiptap/starter-kit",
+      "version": "3.31.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tiptap/starter-kit",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ueberdosis/tiptap",
+        "directory": "packages/starter-kit"
+      },
+      "homepage": "https://tiptap.dev"
+    },
+    {
+      "name": "@tldraw/driver",
+      "version": "5.4.2",
+      "license": "SEE LICENSE IN LICENSE.md",
+      "direct": false,
+      "path": "node_modules/@tldraw/driver",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@tldraw/editor",
+      "version": "5.4.2",
+      "license": "SEE LICENSE IN LICENSE.md",
+      "direct": false,
+      "path": "node_modules/@tldraw/editor",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@tldraw/state",
+      "version": "5.4.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tldraw/state",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@tldraw/state-react",
+      "version": "5.4.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tldraw/state-react",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@tldraw/store",
+      "version": "5.4.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tldraw/store",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@tldraw/tlschema",
+      "version": "5.4.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tldraw/tlschema",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@tldraw/utils",
+      "version": "5.4.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tldraw/utils",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@tldraw/validate",
+      "version": "5.4.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@tldraw/validate",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "@types/node",
+      "version": "24.19.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@types/node",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/node"
+      },
+      "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/node"
+    },
+    {
+      "name": "@types/react",
+      "version": "19.3.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@types/react",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/react"
+      },
+      "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react"
+    },
+    {
+      "name": "@types/react-dom",
+      "version": "19.3.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@types/react-dom",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/react-dom"
+      },
+      "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom"
+    },
+    {
+      "name": "@types/use-sync-external-store",
+      "version": "0.0.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@types/use-sync-external-store",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/use-sync-external-store"
+      },
+      "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/use-sync-external-store"
+    },
+    {
+      "name": "@types/ws",
+      "version": "8.18.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@types/ws",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/ws"
+      },
+      "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/ws"
+    },
+    {
+      "name": "accepts",
+      "version": "2.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/accepts",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/accepts",
+      "homepage": null
+    },
+    {
+      "name": "aria-hidden",
+      "version": "1.2.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/aria-hidden",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/theKashey/aria-hidden.git"
+      },
+      "homepage": "https://github.com/theKashey/aria-hidden#readme"
+    },
+    {
+      "name": "body-parser",
+      "version": "2.3.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/body-parser",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "expressjs/body-parser",
+      "homepage": null
+    },
+    {
+      "name": "bytes",
+      "version": "3.1.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/bytes",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "visionmedia/bytes.js",
+      "homepage": null
+    },
+    {
+      "name": "call-bind-apply-helpers",
+      "version": "1.0.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/call-bind-apply-helpers",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/call-bind-apply-helpers.git"
+      },
+      "homepage": "https://github.com/ljharb/call-bind-apply-helpers#readme"
+    },
+    {
+      "name": "call-bound",
+      "version": "1.0.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/call-bound",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/call-bound.git"
+      },
+      "homepage": "https://github.com/ljharb/call-bound#readme"
+    },
+    {
+      "name": "classnames",
+      "version": "2.5.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/classnames",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/JedWatson/classnames.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "commander",
+      "version": "8.3.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/commander",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tj/commander.js.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "complex-esm",
+      "version": "2.1.1-esm1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/complex-esm",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/holgerengels/Complex.js.git"
+      },
+      "homepage": "https://raw.org/article/complex-numbers-in-javascript/"
+    },
+    {
+      "name": "complex.js",
+      "version": "2.4.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/complex.js",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git@github.com:rawify/Complex.js.git"
+      },
+      "homepage": "https://raw.org/article/complex-numbers-in-javascript/"
+    },
+    {
+      "name": "content-disposition",
+      "version": "1.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/content-disposition",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/content-disposition",
+      "homepage": null
+    },
+    {
+      "name": "content-type",
+      "version": "1.0.5",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/content-type",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/content-type",
+      "homepage": null
+    },
+    {
+      "name": "content-type",
+      "version": "2.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/body-parser/node_modules/content-type",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/content-type",
+      "homepage": null
+    },
+    {
+      "name": "content-type",
+      "version": "2.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/negotiator/node_modules/content-type",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/content-type",
+      "homepage": null
+    },
+    {
+      "name": "content-type",
+      "version": "2.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/type-is/node_modules/content-type",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/content-type",
+      "homepage": null
+    },
+    {
+      "name": "cookie",
+      "version": "0.7.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/cookie",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/cookie",
+      "homepage": null
+    },
+    {
+      "name": "cookie-signature",
+      "version": "1.2.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/cookie-signature",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/visionmedia/node-cookie-signature.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "cross-spawn",
+      "version": "7.0.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/cross-spawn",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git@github.com:moxystudio/node-cross-spawn.git"
+      },
+      "homepage": "https://github.com/moxystudio/node-cross-spawn"
+    },
+    {
+      "name": "csstype",
+      "version": "3.2.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/csstype",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "https://github.com/frenic/csstype",
+      "homepage": null
+    },
+    {
+      "name": "debug",
+      "version": "4.4.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/debug",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/debug-js/debug.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "decimal.js",
+      "version": "10.6.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/decimal.js",
+      "licenseFiles": [
+        "LICENCE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/MikeMcl/decimal.js.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "depd",
+      "version": "2.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/depd",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "dougwilson/nodejs-depd",
+      "homepage": null
+    },
+    {
+      "name": "detect-node-es",
+      "version": "1.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/detect-node-es",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/thekashey/detect-node"
+      },
+      "homepage": "https://github.com/thekashey/detect-node"
+    },
+    {
+      "name": "dunder-proto",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/dunder-proto",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/es-shims/dunder-proto.git"
+      },
+      "homepage": "https://github.com/es-shims/dunder-proto#readme"
+    },
+    {
+      "name": "ee-first",
+      "version": "1.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/ee-first",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jonathanong/ee-first",
+      "homepage": null
+    },
+    {
+      "name": "encodeurl",
+      "version": "2.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/encodeurl",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "pillarjs/encodeurl",
+      "homepage": null
+    },
+    {
+      "name": "es-define-property",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/es-define-property",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/es-define-property.git"
+      },
+      "homepage": "https://github.com/ljharb/es-define-property#readme"
+    },
+    {
+      "name": "es-errors",
+      "version": "1.3.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/es-errors",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/es-errors.git"
+      },
+      "homepage": "https://github.com/ljharb/es-errors#readme"
+    },
+    {
+      "name": "es-object-atoms",
+      "version": "1.1.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/es-object-atoms",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/es-object-atoms.git"
+      },
+      "homepage": "https://github.com/ljharb/es-object-atoms#readme"
+    },
+    {
+      "name": "escape-html",
+      "version": "1.0.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/escape-html",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "component/escape-html",
+      "homepage": null
+    },
+    {
+      "name": "escape-latex",
+      "version": "1.2.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/escape-latex",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dangmai/escape-latex"
+      },
+      "homepage": null
+    },
+    {
+      "name": "etag",
+      "version": "1.8.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/etag",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/etag",
+      "homepage": null
+    },
+    {
+      "name": "eventemitter3",
+      "version": "4.0.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/eventemitter3",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/primus/eventemitter3.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "eventsource",
+      "version": "3.0.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/eventsource",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://git@github.com/EventSource/eventsource.git"
+      },
+      "homepage": "https://github.com/EventSource/eventsource#readme"
+    },
+    {
+      "name": "eventsource-parser",
+      "version": "3.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/eventsource-parser",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+ssh://git@github.com/rexxars/eventsource-parser.git"
+      },
+      "homepage": "https://github.com/rexxars/eventsource-parser#readme"
+    },
+    {
+      "name": "express",
+      "version": "5.2.1",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/express",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "expressjs/express",
+      "homepage": "https://expressjs.com/"
+    },
+    {
+      "name": "fast-equals",
+      "version": "5.4.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/fast-equals",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/planttheidea/fast-equals.git"
+      },
+      "homepage": "https://github.com/planttheidea/fast-equals#readme"
+    },
+    {
+      "name": "finalhandler",
+      "version": "2.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/finalhandler",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "pillarjs/finalhandler",
+      "homepage": null
+    },
+    {
+      "name": "forwarded",
+      "version": "0.2.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/forwarded",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/forwarded",
+      "homepage": null
+    },
+    {
+      "name": "fraction.js",
+      "version": "5.3.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/fraction.js",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+ssh://git@github.com/rawify/Fraction.js.git"
+      },
+      "homepage": "https://raw.org/article/rational-numbers-in-javascript/"
+    },
+    {
+      "name": "fresh",
+      "version": "2.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/fresh",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/fresh",
+      "homepage": null
+    },
+    {
+      "name": "function-bind",
+      "version": "1.1.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/function-bind",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Raynos/function-bind.git"
+      },
+      "homepage": "https://github.com/Raynos/function-bind"
+    },
+    {
+      "name": "get-intrinsic",
+      "version": "1.3.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/get-intrinsic",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/get-intrinsic.git"
+      },
+      "homepage": "https://github.com/ljharb/get-intrinsic#readme"
+    },
+    {
+      "name": "get-nonce",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/get-nonce",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "git@github.com:theKashey/get-nonce.git",
+      "homepage": "https://github.com/theKashey/get-nonce"
+    },
+    {
+      "name": "get-proto",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/get-proto",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/get-proto.git"
+      },
+      "homepage": "https://github.com/ljharb/get-proto#readme"
+    },
+    {
+      "name": "gopd",
+      "version": "1.2.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/gopd",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/gopd.git"
+      },
+      "homepage": "https://github.com/ljharb/gopd#readme"
+    },
+    {
+      "name": "has-symbols",
+      "version": "1.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/has-symbols",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/inspect-js/has-symbols.git"
+      },
+      "homepage": "https://github.com/ljharb/has-symbols#readme"
+    },
+    {
+      "name": "hasown",
+      "version": "2.0.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/hasown",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/inspect-js/hasOwn.git"
+      },
+      "homepage": "https://github.com/inspect-js/hasOwn#readme"
+    },
+    {
+      "name": "http-errors",
+      "version": "2.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/http-errors",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/http-errors",
+      "homepage": null
+    },
+    {
+      "name": "iconv-lite",
+      "version": "0.7.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/iconv-lite",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/pillarjs/iconv-lite.git"
+      },
+      "homepage": "https://github.com/pillarjs/iconv-lite"
+    },
+    {
+      "name": "idb",
+      "version": "7.1.1",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/idb",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/jakearchibald/idb.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "inherits",
+      "version": "2.0.4",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/inherits",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "git://github.com/isaacs/inherits",
+      "homepage": null
+    },
+    {
+      "name": "ipaddr.js",
+      "version": "1.9.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/ipaddr.js",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "git://github.com/whitequark/ipaddr.js",
+      "homepage": null
+    },
+    {
+      "name": "is-plain-object",
+      "version": "5.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/is-plain-object",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jonschlinkert/is-plain-object",
+      "homepage": "https://github.com/jonschlinkert/is-plain-object"
+    },
+    {
+      "name": "is-promise",
+      "version": "4.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/is-promise",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/then/is-promise.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "isexe",
+      "version": "2.0.0",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/isexe",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/isaacs/isexe.git"
+      },
+      "homepage": "https://github.com/isaacs/isexe#readme"
+    },
+    {
+      "name": "javascript-natural-sort",
+      "version": "0.7.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/javascript-natural-sort",
+      "licenseFiles": [],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Bill4Time/javascript-natural-sort.git"
+      },
+      "homepage": "https://github.com/Bill4Time/javascript-natural-sort"
+    },
+    {
+      "name": "jose",
+      "version": "6.2.12",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/jose",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": "panva/jose",
+      "homepage": "https://github.com/panva/jose"
+    },
+    {
+      "name": "katex",
+      "version": "0.16.47",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/katex",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/KaTeX/KaTeX.git"
+      },
+      "homepage": "https://katex.org"
+    },
+    {
+      "name": "linkifyjs",
+      "version": "4.3.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/linkifyjs",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/nfrasser/linkifyjs.git",
+        "directory": "packages/linkifyjs"
+      },
+      "homepage": "https://linkify.js.org"
+    },
+    {
+      "name": "lodash.isequal",
+      "version": "4.5.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/lodash.isequal",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "lodash/lodash",
+      "homepage": "https://lodash.com/"
+    },
+    {
+      "name": "lodash.isequalwith",
+      "version": "4.4.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/lodash.isequalwith",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "lodash/lodash",
+      "homepage": "https://lodash.com/"
+    },
+    {
+      "name": "lodash.throttle",
+      "version": "4.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/lodash.throttle",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "lodash/lodash",
+      "homepage": "https://lodash.com/"
+    },
+    {
+      "name": "lodash.uniq",
+      "version": "4.5.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/lodash.uniq",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "lodash/lodash",
+      "homepage": "https://lodash.com/"
+    },
+    {
+      "name": "lucide-react",
+      "version": "0.468.0",
+      "license": "ISC",
+      "direct": true,
+      "path": "node_modules/lucide-react",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/lucide-icons/lucide.git",
+        "directory": "packages/lucide-react"
+      },
+      "homepage": "https://lucide.dev"
+    },
+    {
+      "name": "lz-string",
+      "version": "1.5.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/lz-string",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/pieroxy/lz-string.git"
+      },
+      "homepage": "http://pieroxy.net/blog/pages/lz-string/index.html"
+    },
+    {
+      "name": "math-intrinsics",
+      "version": "1.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/math-intrinsics",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/es-shims/math-intrinsics.git"
+      },
+      "homepage": "https://github.com/es-shims/math-intrinsics#readme"
+    },
+    {
+      "name": "mathjs",
+      "version": "15.2.0",
+      "license": "Apache-2.0",
+      "direct": true,
+      "path": "node_modules/mathjs",
+      "licenseFiles": [
+        "LICENSE",
+        "NOTICE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/josdejong/mathjs.git"
+      },
+      "homepage": "https://mathjs.org"
+    },
+    {
+      "name": "mathlive",
+      "version": "0.110.0",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/mathlive",
+      "licenseFiles": [
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/arnog/mathlive.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "media-typer",
+      "version": "1.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/media-typer",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/media-typer",
+      "homepage": null
+    },
+    {
+      "name": "merge-descriptors",
+      "version": "2.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/merge-descriptors",
+      "licenseFiles": [
+        "license"
+      ],
+      "repository": "sindresorhus/merge-descriptors",
+      "homepage": null
+    },
+    {
+      "name": "mime-db",
+      "version": "1.54.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/mime-db",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/mime-db",
+      "homepage": null
+    },
+    {
+      "name": "mime-types",
+      "version": "3.0.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/mime-types",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/mime-types",
+      "homepage": null
+    },
+    {
+      "name": "ms",
+      "version": "2.1.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/ms",
+      "licenseFiles": [
+        "license.md"
+      ],
+      "repository": "vercel/ms",
+      "homepage": null
+    },
+    {
+      "name": "negotiator",
+      "version": "1.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/negotiator",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/negotiator",
+      "homepage": null
+    },
+    {
+      "name": "object-inspect",
+      "version": "1.13.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/object-inspect",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/inspect-js/object-inspect.git"
+      },
+      "homepage": "https://github.com/inspect-js/object-inspect"
+    },
+    {
+      "name": "on-finished",
+      "version": "2.4.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/on-finished",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/on-finished",
+      "homepage": null
+    },
+    {
+      "name": "once",
+      "version": "1.4.0",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/once",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/isaacs/once"
+      },
+      "homepage": null
+    },
+    {
+      "name": "openai",
+      "version": "6.49.0",
+      "license": "Apache-2.0",
+      "direct": true,
+      "path": "node_modules/openai",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "github:openai/openai-node",
+      "homepage": null
+    },
+    {
+      "name": "openai",
+      "version": "7.23.0",
+      "license": "Apache-2.0",
+      "direct": true,
+      "path": "node_modules/@openai/agents-core/node_modules/openai",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "github:openai/openai-node",
+      "homepage": null
+    },
+    {
+      "name": "openai",
+      "version": "7.23.0",
+      "license": "Apache-2.0",
+      "direct": true,
+      "path": "node_modules/@openai/agents-openai/node_modules/openai",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "github:openai/openai-node",
+      "homepage": null
+    },
+    {
+      "name": "openai",
+      "version": "7.23.0",
+      "license": "Apache-2.0",
+      "direct": true,
+      "path": "node_modules/@openai/agents/node_modules/openai",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "github:openai/openai-node",
+      "homepage": null
+    },
+    {
+      "name": "orderedmap",
+      "version": "2.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/orderedmap",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/marijnh/orderedmap.git"
+      },
+      "homepage": "https://github.com/marijnh/orderedmap#readme"
+    },
+    {
+      "name": "pako",
+      "version": "1.0.11",
+      "license": "(MIT AND Zlib)",
+      "direct": false,
+      "path": "node_modules/pako",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "nodeca/pako",
+      "homepage": "https://github.com/nodeca/pako"
+    },
+    {
+      "name": "parseurl",
+      "version": "1.3.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/parseurl",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "pillarjs/parseurl",
+      "homepage": null
+    },
+    {
+      "name": "path-key",
+      "version": "3.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/path-key",
+      "licenseFiles": [
+        "license"
+      ],
+      "repository": "sindresorhus/path-key",
+      "homepage": null
+    },
+    {
+      "name": "path-to-regexp",
+      "version": "8.4.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/path-to-regexp",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/pillarjs/path-to-regexp.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "pdf-lib",
+      "version": "1.17.1",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/pdf-lib",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": "git+https://github.com/Hopding/pdf-lib.git",
+      "homepage": "https://pdf-lib.js.org"
+    },
+    {
+      "name": "pkce-challenge",
+      "version": "5.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/pkce-challenge",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/crouchcd/pkce-challenge.git"
+      },
+      "homepage": "https://github.com/crouchcd/pkce-challenge#readme"
+    },
+    {
+      "name": "prosemirror-changeset",
+      "version": "2.4.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-changeset",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://code.haverbeke.berlin/prosemirror/prosemirror-changeset.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-commands",
+      "version": "1.7.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-commands",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://code.haverbeke.berlin/prosemirror/prosemirror-commands.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-dropcursor",
+      "version": "1.8.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-dropcursor",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://code.haverbeke.berlin/prosemirror/prosemirror-dropcursor.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-gapcursor",
+      "version": "1.4.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-gapcursor",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/prosemirror/prosemirror-gapcursor.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-history",
+      "version": "1.5.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-history",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/prosemirror/prosemirror-history.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-inputrules",
+      "version": "1.5.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-inputrules",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/prosemirror/prosemirror-inputrules.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-keymap",
+      "version": "1.2.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-keymap",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/prosemirror/prosemirror-keymap.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-model",
+      "version": "1.25.12",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-model",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://code.haverbeke.berlin/prosemirror/prosemirror-model.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-schema-list",
+      "version": "1.5.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-schema-list",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/prosemirror/prosemirror-schema-list.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-state",
+      "version": "1.4.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-state",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/prosemirror/prosemirror-state.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-tables",
+      "version": "1.8.5",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-tables",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ProseMirror/prosemirror-tables.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-transform",
+      "version": "1.12.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-transform",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://code.haverbeke.berlin/prosemirror/prosemirror-transform.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "prosemirror-view",
+      "version": "1.42.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/prosemirror-view",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://code.haverbeke.berlin/prosemirror/prosemirror-view.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "proxy-addr",
+      "version": "2.0.8",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/proxy-addr",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/proxy-addr",
+      "homepage": null
+    },
+    {
+      "name": "qs",
+      "version": "6.16.0",
+      "license": "BSD-3-Clause",
+      "direct": false,
+      "path": "node_modules/qs",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/ljharb/qs.git"
+      },
+      "homepage": "https://github.com/ljharb/qs"
+    },
+    {
+      "name": "quickselect",
+      "version": "2.0.0",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/quickselect",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": null,
+      "homepage": null
+    },
+    {
+      "name": "radix-ui",
+      "version": "1.6.7",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/radix-ui",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/radix-ui/primitives.git",
+        "directory": "packages/react/radix-ui"
+      },
+      "homepage": "https://radix-ui.com/primitives"
+    },
+    {
+      "name": "range-parser",
+      "version": "1.3.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/range-parser",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/range-parser",
+      "homepage": null
+    },
+    {
+      "name": "raw-body",
+      "version": "3.0.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/raw-body",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "stream-utils/raw-body",
+      "homepage": null
+    },
+    {
+      "name": "rbush",
+      "version": "3.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/rbush",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/mourner/rbush.git"
+      },
+      "homepage": "https://github.com/mourner/rbush"
+    },
+    {
+      "name": "react",
+      "version": "19.3.0",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/react",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/react/react.git",
+        "directory": "packages/react"
+      },
+      "homepage": "https://react.dev/"
+    },
+    {
+      "name": "react-dom",
+      "version": "19.3.0",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/react-dom",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/react/react.git",
+        "directory": "packages/react-dom"
+      },
+      "homepage": "https://react.dev/"
+    },
+    {
+      "name": "react-remove-scroll",
+      "version": "2.7.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/react-remove-scroll",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "https://github.com/theKashey/react-remove-scroll",
+      "homepage": null
+    },
+    {
+      "name": "react-remove-scroll-bar",
+      "version": "2.3.8",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/react-remove-scroll-bar",
+      "licenseFiles": [],
+      "repository": "https://github.com/theKashey/react-remove-scroll-bar",
+      "homepage": null
+    },
+    {
+      "name": "react-style-singleton",
+      "version": "2.2.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/react-style-singleton",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/theKashey/react-style-singleton"
+      },
+      "homepage": "https://github.com/theKashey/react-style-singleton#readme"
+    },
+    {
+      "name": "rope-sequence",
+      "version": "1.3.4",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/rope-sequence",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/marijnh/rope-sequence.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "router",
+      "version": "2.2.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/router",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "pillarjs/router",
+      "homepage": null
+    },
+    {
+      "name": "safer-buffer",
+      "version": "2.1.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/safer-buffer",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ChALkeR/safer-buffer.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "scheduler",
+      "version": "0.28.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/scheduler",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/react/react.git",
+        "directory": "packages/scheduler"
+      },
+      "homepage": "https://react.dev/"
+    },
+    {
+      "name": "seedrandom",
+      "version": "3.0.5",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/seedrandom",
+      "licenseFiles": [],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/davidbau/seedrandom.git"
+      },
+      "homepage": "http://davidbau.com/archives/2010/01/30/random_seeds_coded_hints_and_quintillions.html"
+    },
+    {
+      "name": "send",
+      "version": "1.2.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/send",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "pillarjs/send",
+      "homepage": null
+    },
+    {
+      "name": "serve-static",
+      "version": "2.2.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/serve-static",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "expressjs/serve-static",
+      "homepage": null
+    },
+    {
+      "name": "setprototypeof",
+      "version": "1.2.0",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/setprototypeof",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/wesleytodd/setprototypeof.git"
+      },
+      "homepage": "https://github.com/wesleytodd/setprototypeof"
+    },
+    {
+      "name": "shebang-command",
+      "version": "2.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/shebang-command",
+      "licenseFiles": [
+        "license"
+      ],
+      "repository": "kevva/shebang-command",
+      "homepage": null
+    },
+    {
+      "name": "shebang-regex",
+      "version": "3.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/shebang-regex",
+      "licenseFiles": [
+        "license"
+      ],
+      "repository": "sindresorhus/shebang-regex",
+      "homepage": null
+    },
+    {
+      "name": "side-channel",
+      "version": "1.1.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/side-channel",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/side-channel.git"
+      },
+      "homepage": "https://github.com/ljharb/side-channel#readme"
+    },
+    {
+      "name": "side-channel-list",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/side-channel-list",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/side-channel-list.git"
+      },
+      "homepage": "https://github.com/ljharb/side-channel-list#readme"
+    },
+    {
+      "name": "side-channel-map",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/side-channel-map",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/side-channel-map.git"
+      },
+      "homepage": "https://github.com/ljharb/side-channel-map#readme"
+    },
+    {
+      "name": "side-channel-weakmap",
+      "version": "1.0.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/side-channel-weakmap",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ljharb/side-channel-weakmap.git"
+      },
+      "homepage": "https://github.com/ljharb/side-channel-weakmap#readme"
+    },
+    {
+      "name": "statuses",
+      "version": "2.0.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/statuses",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/statuses",
+      "homepage": null
+    },
+    {
+      "name": "tiny-emitter",
+      "version": "2.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/tiny-emitter",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/scottcorgan/tiny-emitter.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "tldraw",
+      "version": "5.4.2",
+      "license": "SEE LICENSE IN LICENSE.md",
+      "direct": true,
+      "path": "node_modules/tldraw",
+      "licenseFiles": [
+        "LICENSE.md"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tldraw/tldraw"
+      },
+      "homepage": "https://tldraw.dev"
+    },
+    {
+      "name": "toidentifier",
+      "version": "1.0.1",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/toidentifier",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "component/toidentifier",
+      "homepage": null
+    },
+    {
+      "name": "tslib",
+      "version": "1.14.1",
+      "license": "0BSD",
+      "direct": false,
+      "path": "node_modules/tslib",
+      "licenseFiles": [
+        "CopyrightNotice.txt",
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Microsoft/tslib.git"
+      },
+      "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "direct": false,
+      "path": "node_modules/aria-hidden/node_modules/tslib",
+      "licenseFiles": [
+        "CopyrightNotice.txt",
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Microsoft/tslib.git"
+      },
+      "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "direct": false,
+      "path": "node_modules/react-remove-scroll-bar/node_modules/tslib",
+      "licenseFiles": [
+        "CopyrightNotice.txt",
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Microsoft/tslib.git"
+      },
+      "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "direct": false,
+      "path": "node_modules/react-remove-scroll/node_modules/tslib",
+      "licenseFiles": [
+        "CopyrightNotice.txt",
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Microsoft/tslib.git"
+      },
+      "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "direct": false,
+      "path": "node_modules/react-style-singleton/node_modules/tslib",
+      "licenseFiles": [
+        "CopyrightNotice.txt",
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Microsoft/tslib.git"
+      },
+      "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "direct": false,
+      "path": "node_modules/use-callback-ref/node_modules/tslib",
+      "licenseFiles": [
+        "CopyrightNotice.txt",
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Microsoft/tslib.git"
+      },
+      "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "direct": false,
+      "path": "node_modules/use-sidecar/node_modules/tslib",
+      "licenseFiles": [
+        "CopyrightNotice.txt",
+        "LICENSE.txt"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Microsoft/tslib.git"
+      },
+      "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "type-is",
+      "version": "2.1.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/type-is",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/type-is",
+      "homepage": null
+    },
+    {
+      "name": "typed-function",
+      "version": "4.2.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/typed-function",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/josdejong/typed-function.git"
+      },
+      "homepage": "https://github.com/josdejong/typed-function"
+    },
+    {
+      "name": "undici-types",
+      "version": "7.24.6",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/undici-types",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/nodejs/undici.git"
+      },
+      "homepage": "https://undici.nodejs.org"
+    },
+    {
+      "name": "unpipe",
+      "version": "1.0.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/unpipe",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "stream-utils/unpipe",
+      "homepage": null
+    },
+    {
+      "name": "use-callback-ref",
+      "version": "1.3.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/use-callback-ref",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "https://github.com/theKashey/use-callback-ref/",
+      "homepage": null
+    },
+    {
+      "name": "use-sidecar",
+      "version": "1.1.3",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/use-sidecar",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/theKashey/use-sidecar"
+      },
+      "homepage": "https://github.com/theKashey/use-sidecar"
+    },
+    {
+      "name": "use-sync-external-store",
+      "version": "1.7.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/use-sync-external-store",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/react/react.git",
+        "directory": "packages/use-sync-external-store"
+      },
+      "homepage": null
+    },
+    {
+      "name": "vary",
+      "version": "1.1.2",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/vary",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": "jshttp/vary",
+      "homepage": null
+    },
+    {
+      "name": "w3c-keyname",
+      "version": "2.2.8",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/w3c-keyname",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/marijnh/w3c-keyname.git"
+      },
+      "homepage": "https://github.com/marijnh/w3c-keyname#readme"
+    },
+    {
+      "name": "which",
+      "version": "2.0.2",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/which",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/isaacs/node-which.git"
+      },
+      "homepage": null
+    },
+    {
+      "name": "wrappy",
+      "version": "1.0.2",
+      "license": "ISC",
+      "direct": false,
+      "path": "node_modules/wrappy",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/npm/wrappy"
+      },
+      "homepage": "https://github.com/npm/wrappy"
+    },
+    {
+      "name": "ws",
+      "version": "8.22.0",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/ws",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/websockets/ws.git"
+      },
+      "homepage": "https://github.com/websockets/ws"
+    },
+    {
+      "name": "zod",
+      "version": "4.6.5",
+      "license": "MIT",
+      "direct": true,
+      "path": "node_modules/zod",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/colinhacks/zod.git"
+      },
+      "homepage": "https://zod.dev"
+    }
+  ]
+}

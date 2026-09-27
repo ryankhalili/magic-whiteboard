@@ -1,0 +1,5 @@
+export { MagicShapeUtil, DEFAULT_MAGIC_PROPS } from './MagicShape'
+export type { MagicShape, MagicShapeProps } from './MagicShape'
+export { BoardController, createBoardController, resolveTargetIds, getPlacementBounds } from './controller'
+export { validateExpression, normalizeExpression, validateDomain, autoYRange, samplePlot, niceTicks } from './expression'
+export { getAxisMode, getPlotLayout } from './plotLayout'
