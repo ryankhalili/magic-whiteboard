@@ -40,7 +40,7 @@
   },
   "license": "UNLICENSED",
   "overrides": {
-    "nanoid@3.3.3": "3.3.19",
+    "nanoid@^3.0.0": "3.3.19",
     "nanoid@4.0.2": "5.1.16",
     "@radix-ui/react-tabs": "1.1.21",
     "lodash-es": "4.18.1"

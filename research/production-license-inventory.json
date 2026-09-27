@@ -1,11 +1,11 @@
 {
-  "auditedAt": "2026-09-26",
+  "auditedAt": "2026-09-27",
   "scope": "Installed production packages with the Excalidraw port; includes backend and nested instances",
-  "instanceCount": 375,
-  "uniquePackageVersions": 350,
+  "instanceCount": 378,
+  "uniquePackageVersions": 353,
   "licenses": {
-    "MIT": 298,
-    "Apache-2.0": 15,
+    "MIT": 300,
+    "Apache-2.0": 16,
     "(MIT AND Zlib)": 2,
     "ISC": 42,
     "0BSD": 7,
@@ -430,6 +430,32 @@
       "repository": {
         "type": "git",
         "url": "git+https://github.com/modelcontextprotocol/typescript-sdk.git"
+      }
+    },
+    {
+      "name": "@napi-rs/canvas",
+      "version": "1.0.9",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@napi-rs/canvas",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Brooooooklyn/canvas.git"
+      }
+    },
+    {
+      "name": "@napi-rs/canvas-darwin-arm64",
+      "version": "1.0.9",
+      "license": "MIT",
+      "direct": false,
+      "path": "node_modules/@napi-rs/canvas-darwin-arm64",
+      "licenseFiles": [],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Brooooooklyn/canvas.git"
       }
     },
     {
@@ -4042,6 +4068,20 @@
         "LICENSE.md"
       ],
       "repository": "git+https://github.com/Hopding/pdf-lib.git"
+    },
+    {
+      "name": "pdfjs-dist",
+      "version": "6.3.289",
+      "license": "Apache-2.0",
+      "direct": true,
+      "path": "node_modules/pdfjs-dist",
+      "licenseFiles": [
+        "LICENSE"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/mozilla/pdf.js.git"
+      }
     },
     {
       "name": "perfect-freehand",

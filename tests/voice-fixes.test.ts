@@ -244,6 +244,45 @@ describe('voice fixes', () => {
   })
 
   describe('COST F3 fillers and empty utterances', () => {
+    it('clears a speculative math draft when the final transcript is only filler', async () => {
+      const h = { ...handlers(), getContext: () => ({ ...base, dictationMode: 'math' as const }), onContentPreview: vi.fn() }
+      const client = createRealtimeClient(h)
+      await client.connect()
+      const channel = FakePeer.latest.channel
+      channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'draft' })
+      channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'draft', delta: 'integral' })
+      expect(h.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ value: '\\int' }))
+      channel.receive({ type: 'input_audio_buffer.committed', item_id: 'draft' })
+      channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'draft', transcript: 'um' })
+      expect(h.onContentPreview).toHaveBeenLastCalledWith(null)
+      expect(channel.sent.filter(event => event.type === 'response.cancel')).toHaveLength(1)
+      channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'draft', delta: ' of sine x' })
+      expect(h.onContentPreview).toHaveBeenLastCalledWith(null)
+      await respond(channel, 'cancelled-draft', [call('ignored-draft', [{ type: 'create_math', latex: 'x' }])], 'cancelled')
+      expect(h.applyOperations).not.toHaveBeenCalled()
+      expect(h.onError).not.toHaveBeenCalled()
+      client.disconnect()
+    })
+    it('finishes a pending math command once when filler interrupts its live preview', async () => {
+      const h = { ...handlers(), getContext: () => ({ ...base, dictationMode: 'math' as const }), onContentPreview: vi.fn() }
+      const client = createRealtimeClient(h)
+      await client.connect()
+      const channel = FakePeer.latest.channel
+      await speak(channel, 'math', 'integral of sine x dx')
+      expect(h.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:math' }))
+      channel.receive({ type: 'response.created', response: { id: 'first' } })
+      await speak(channel, 'filler', 'hmm')
+      expect(h.onContentPreview).toHaveBeenLastCalledWith(null)
+      channel.receive({ type: 'response.done', response: { id: 'first', status: 'cancelled', output: [] } })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(creates(channel)).toHaveLength(2)
+      const operation: BoardOperation = { type: 'create_math', latex: '\\int \\sin(x)\\,dx' }
+      await respond(channel, 'continued', [call('integral', [operation])])
+      expect(h.applyOperations).toHaveBeenCalledExactlyOnceWith([operation])
+      expect(h.onContentPreview).toHaveBeenLastCalledWith(null)
+      expect(h.onError).not.toHaveBeenCalled()
+      client.disconnect()
+    })
     it.each(['', 'um', 'Uh.', 'hmm...', 'Okay.', 'ok', 'So', 'um, okay'])('cancels the reply to %j and applies nothing', async transcript => {
       const h = handlers()
       const client = createRealtimeClient(h)

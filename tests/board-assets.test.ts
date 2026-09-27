@@ -318,4 +318,3 @@ describe('library pages through the Excalidraw adapter', () => {
     expect(order(editor)).toEqual(['shape:bg', 'shape:diagram', 'shape:later'])
   })
 })
-
