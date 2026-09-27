@@ -10,6 +10,8 @@ import { NotebookSwitcher, useNotebookLibrary, saveNotebookSnapshot, loadNoteboo
 import { sendBoardCommand, pairDevice } from './ai/commands'
 import { downloadOriginalNotebook, exportBoard, importImageFile, installBoardImageExporter, loadProject, saveProject } from './files/boardFiles'
 import { captureBoardContext } from './files/capture'
+import { ObjectInspector, objectLabel } from './board/ObjectInspector'
+import { flushSourceEdits, snapshotWithPendingSource } from './board/liveSource'
 import { DEFAULT_SETTINGS, type AppSettings, type BoardContext, type BoardOperation, type BoardResult, type Bounds, type Focus, type Point } from '../shared/board'
 
 type Tool = 'magic' | 'select' | 'draw' | 'eraser' | 'hand' | 'text' | 'math'
@@ -84,9 +86,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const [pairCode, setPairCode] = useState('')
   const [pairing, setPairing] = useState(false)
   const [checkingVoice, setCheckingVoice] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [rangeMin, setRangeMin] = useState('')
-  const [rangeMax, setRangeMax] = useState('')
+  const [inspectorOpen, setInspectorOpen] = useState(true)
   const [selectedContent, setSelectedContent] = useState('')
   const [saveState, setSaveState] = useState('Opening notebook…')
 
@@ -119,6 +119,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }, [])
   const getVisualContext = useCallback(async () => {
     if (!editorRef.current) return null
+    flushSourceEdits({ finishHistory: false })
     return captureBoardContext(editorRef.current, getContext().focus)
   }, [getContext])
 
@@ -130,6 +131,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const execute = useCallback((ops: BoardOperation[]): BoardResult => {
     if (!controller.current) return { ok: false, message: 'The board is still loading.', ids: [] }
     const editor = editorRef.current!
+    flushSourceEdits()
     editor.completeInteraction()
     // Finish an earlier drag before the next edit changes its geometry or history.
     stopFollowing()
@@ -149,6 +151,17 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     } else setError(result.message)
     return result
   }, [notify, stopFollowing, getContext])
+  const executeManual = useCallback((ops: BoardOperation[]): BoardResult => {
+    const ed = editorRef.current
+    if (!ed) return { ok: false, message: 'The board is still loading.', ids: [] }
+    flushSourceEdits()
+    ed.completeInteraction(); stopFollowing()
+    // Explicit inspector controls follow their selected object, independently of the AI focus cue.
+    const manualController = createBoardController(ed, () => ({ ...getContext(), focus: null, focusMode: 'reference' }))
+    const result = manualController.applyOperations(ops)
+    if (result.ok) notify(result.message); else setError(result.message)
+    return result
+  }, [getContext, notify, stopFollowing])
 
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(''), 4200); return () => clearTimeout(id) }, [toast])
   useEffect(() => { fetch('/api/status').then(r => r.json()).then(setApi).catch(() => setError('The local AI server is not reachable. Drawing still works.')) }, [])
@@ -176,6 +189,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       return // Keep the unreadable saved notebook intact; allow opening another notebook.
     }
     if (!ed || !snapshotReady.current) throw new Error('Wait for the notebook to finish opening before switching.')
+    flushSourceEdits()
     ed.completeInteraction()
     voiceRef.current?.disconnect()
     stopFollowing()
@@ -219,7 +233,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       })
       unpersist = editor.store.listen(() => {
         clearTimeout(snapshotTimer.current); setSaveState('Saving…')
-        snapshotTimer.current = setTimeout(() => { void saveNotebookSnapshot(notebook.id, editor.getSnapshot()).then(() => { if(!disposed) setSaveState('Saved on this device') }).catch(error => { if(!disposed) {setSaveState('Not saved');setError((error as Error).message)} }) }, 150)
+        snapshotTimer.current = setTimeout(() => {
+          const snapshot = snapshotWithPendingSource(editor, { finishHistory: false })
+          // A flushed edit may schedule another checkpoint; this snapshot already includes it.
+          clearTimeout(snapshotTimer.current)
+          void saveNotebookSnapshot(notebook.id, snapshot).then(() => { if(!disposed) setSaveState('Saved on this device') }).catch(error => { if(!disposed) {setSaveState('Not saved');setError((error as Error).message)} })
+        }, 150)
       }, { scope: 'document' })
       await saveNotebookSnapshot(notebook.id, editor.getSnapshot())
     }
@@ -234,17 +253,20 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     })
     return () => {
       disposed = true; unlisten(); unpersist(); cancelAnimationFrame(frame); clearTimeout(snapshotTimer.current)
-      if (snapshotReady.current) void saveNotebookSnapshot(notebook.id, editor.getSnapshot()).catch(() => {})
+      if (snapshotReady.current) void saveNotebookSnapshot(notebook.id, snapshotWithPendingSource(editor, { silent: true })).catch(() => {})
       snapshotReady.current = false
     }
   }, [getContext, notebook.id])
   useEffect(() => {
-    const saveBeforeLeaving = () => { if(snapshotReady.current && editorRef.current) void saveNotebookSnapshot(notebook.id,editorRef.current.getSnapshot()).catch(()=>{}) }
+    const saveBeforeLeaving = () => { if(snapshotReady.current && editorRef.current) void saveNotebookSnapshot(notebook.id,snapshotWithPendingSource(editorRef.current, { silent: true })).catch(()=>{}) }
+    const restoreAfterLeaving = () => { flushSourceEdits({ finishHistory: false }) }
     window.addEventListener('pagehide',saveBeforeLeaving)
-    return () => window.removeEventListener('pagehide',saveBeforeLeaving)
+    window.addEventListener('pageshow',restoreAfterLeaving)
+    return () => { window.removeEventListener('pagehide',saveBeforeLeaving); window.removeEventListener('pageshow',restoreAfterLeaving) }
   },[notebook.id])
 
   const chooseTool = useCallback((next: Tool) => {
+    flushSourceEdits()
     setTool(next); stopFollowing()
     editorRef.current?.setEditingShape(null)
     editorRef.current?.setCurrentTool(['magic', 'math', 'text'].includes(next) ? 'select' : next)
@@ -280,10 +302,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const camera = editor?.getCamera()
   const zoom = camera?.z || 1
   const editingShapeId = editor?.getEditingShapeId()
-  useEffect(() => {
-    setDraft(selected?.expression || selected?.latex || selected?.text || '')
-    setRangeMin(String(selected?.xMin ?? -10)); setRangeMax(String(selected?.xMax ?? 10))
-  }, [selected?.id, selected?.expression, selected?.latex, selected?.text, selected?.xMin, selected?.xMax])
+  useEffect(() => { if (selected?.id) setInspectorOpen(true) }, [selected?.id])
 
   const pageToLocal = (p: Point): Point => {
     const b = stageRef.current?.getBoundingClientRect()
@@ -425,9 +444,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const ed = editorRef.current
     const shape = ed?.getShape(id as TLShapeId)
     if (!ed || shape?.type !== 'magic' || shape.props.kind === 'geometry') return
+    flushSourceEdits()
     stopFollowing(); setTool('select'); ed.setCurrentTool('select'); ed.select(shape.id)
     ed.setEditingShape(shape.id); ed.setCurrentTool('select.editing_shape', {})
     setFocus(null)
+    setInspectorOpen(true); setShowHistory(false)
+    requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('marginalia-focus-editor', { detail: { shapeId: shape.id } })))
   }
   const editAtPointer = (event: React.MouseEvent) => {
     const ed = editorRef.current
@@ -448,12 +470,14 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
   const doExport = async (format: 'png' | 'pdf') => {
     if (!editor) return
+    flushSourceEdits(); editor.completeInteraction(); stopFollowing()
     setMenu(null); setBusy(true)
     try { await exportBoard(editor, format, settings); notify(`${format.toUpperCase()} exported.`) } catch (e) { setError((e as Error).message) }
     finally { setBusy(false) }
   }
   const importImage = async (file: File) => {
     if (!editorRef.current) return
+    flushSourceEdits(); editorRef.current.completeInteraction()
     stopFollowing()
     setBusy(true)
     try {
@@ -488,6 +512,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const worksheetExample = async () => {
     const ed = editorRef.current
     if (!ed || busy) return
+    flushSourceEdits(); ed.completeInteraction()
     stopFollowing(); setBusy(true); setError('')
     try {
       const response = await fetch('/sample-homework.png')
@@ -501,22 +526,15 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
   const removeBackground = () => {
     if (!editor) return
+    flushSourceEdits(); editor.completeInteraction()
     stopFollowing(); editor.markHistoryStoppingPoint('Remove background')
     editor.run(() => editor.deleteShapes(editor.getCurrentPageShapes().filter(s => s.meta.marginaliaBackground === true).map(s => s.id)), { ignoreShapeLock: true })
     setMenu(null); notify('Background removed. Undo will restore it.')
   }
-  const save = () => { if (editor) { saveProject(editor, settings); notify('Editable notebook downloaded.') } }
+  const save = () => { if (editor) { flushSourceEdits(); editor.completeInteraction(); stopFollowing(); saveProject(editor, settings); notify('Editable notebook downloaded.') } }
   const downloadOriginal = async () => {
     try { await downloadOriginalNotebook(notebook.id, settings); notify('Original notebook backup downloaded. Your current board is unchanged.') }
     catch (error) { setError((error as Error).message) }
-  }
-  const updateSelected = () => {
-    if (!selected) return
-    const op: BoardOperation = { type: 'update_object', target: selected.id }
-    if (selected.kind === 'plot') { op.expression = draft; op.xMin = Number(rangeMin); op.xMax = Number(rangeMax) }
-    else if (selected.kind === 'math') op.latex = draft
-    else op.text = draft
-    execute([op])
   }
   const changeMode = (mode: AppSettings['mode']) => {
     setSettings(s => ({ ...s, mode })); setMenu(null)
@@ -533,7 +551,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (selected?.kind !== 'plot') return
     const size = getPlacementBounds({ type: 'create_plot', placement: 'auto' }, { ...getContext(), focusMode: 'reference' }, 'plot')
     const bounds = { x: selected.bounds.x + (selected.bounds.w - size.w) / 2, y: selected.bounds.y + (selected.bounds.h - size.h) / 2, w: size.w, h: size.h }
-    execute([{ type: 'update_object', target: selected.id, bounds, axisMode: 'equal' }])
+    executeManual([{ type: 'update_object', target: selected.id, bounds, axisMode: 'equal' }])
   }
 
   const origin = pageToLocal({ x: 0, y: 0 })
@@ -554,9 +572,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       <div className="header-left"><span className="brand">Magic Whiteboard</span><NotebookSwitcher library={library} beforeChange={flushNotebook}/></div>
       <div className="document-title"><input aria-label="Notebook title" value={settings.name} onChange={e => setSettings(s => ({ ...s, name: e.target.value }))}/><span><Check size={12}/>{saveState}</span></div>
       <div className="header-actions">
-        <button className={`plain-button voice-mode-toggle ${voiceMode ? 'active' : ''}`} onClick={() => { if (voiceMode) setVoiceMode(false); else { setVoiceMode(true); if (voiceStatus === 'idle') void toggleVoice() } }}>{voiceMode ? <Keyboard size={18}/> : <Mic size={18}/>}<span>{voiceMode ? 'Type' : 'Voice mode'}</span></button>
-        <button className="plain-button hide-small" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/><span>Background</span></button>
-        <button className="export-button" onClick={() => setMenu(menu === 'export' ? null : 'export')}><Download size={16}/><span>Export</span><ChevronDown size={13}/></button>
+        <button aria-label={voiceMode ? 'Type' : 'Voice mode'} className={`plain-button voice-mode-toggle ${voiceMode ? 'active' : ''}`} onClick={() => { if (voiceMode) setVoiceMode(false); else { setVoiceMode(true); if (voiceStatus === 'idle') void toggleVoice() } }}>{voiceMode ? <Keyboard size={18}/> : <Mic size={18}/>}<span>{voiceMode ? 'Type' : 'Voice mode'}</span></button>
+        <button aria-label="Background" className="plain-button hide-small" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/><span>Background</span></button>
+        <button aria-label="Export" className="export-button" onClick={() => setMenu(menu === 'export' ? null : 'export')}><Download size={16}/><span>Export</span><ChevronDown size={13}/></button>
       </div>
     </header>
 
@@ -565,12 +583,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
       <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
       {!ready && <div className="notebook-loading">Opening notebook…</div>}
-      {['magic', 'text', 'math'].includes(tool) && <div className={`magic-surface ${following ? 'is-following' : ''}`} onPointerDown={magicDown} onPointerUp={magicUp} onDoubleClick={editAtPointer} onPointerCancel={() => { gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([]) }}/>} 
+      {['magic', 'text', 'math'].includes(tool) && <div className={`magic-surface ${following ? 'is-following' : ''}`} onPointerDown={magicDown} onPointerUp={magicUp} onDoubleClick={editAtPointer} onPointerCancel={() => { gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([]) }}/>}
       <svg className="gesture-overlay" aria-hidden="true">{path.length > 1 && <path d={path.map((p, i) => { const v = pageToLocal(p); return `${i ? 'L' : 'M'} ${v.x} ${v.y}` }).join(' ')} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>}</svg>
       {focus && !path.length && !isEditing && <div className={`magic-focus ${focus.kind} focus-${settings.focusMode ?? 'reference'}`} style={focus.kind === 'region' ? localBounds(focus.bounds) : { left: pageToLocal(focus.bounds).x - 12, top: pageToLocal(focus.bounds).y - 12 }}><span>{focus.kind === 'region' ? `Work here · ${settings.focusMode === 'literal' ? 'Literal' : 'Reference'}` : settings.focusMode === 'literal' ? 'Circle an area for Literal mode' : 'Reference point'}</span></div>}
       {contentPreview && previewBounds && <div className="streaming-preview" style={{...localBounds(previewBounds), fontSize: 28 * zoom, ...(settings.focusMode === 'literal' ? {overflow:'hidden'} : {})}}>{contentPreview.field === 'latex' ? <span dangerouslySetInnerHTML={{ __html: katex.renderToString(contentPreview.value, {throwOnError:false,trust:false,maxExpand:300,strict:'ignore'}) }}/> : <span>{contentPreview.field === 'expression' ? 'y = ' : ''}{contentPreview.value}</span>}<span className="streaming-caret"/></div>}
 
-      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label><button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void fetch('/api/status').then(r=>r.json()).then(setApi) }}><CircleHelp size={16}/></button></div>
+      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label>{objects.length > 0 && <select className="object-picker" aria-label="Choose board object" value={selected?.id || ''} onChange={event => { if (!event.target.value || !editor) return; editor.completeInteraction(); chooseTool('select'); editor.select(event.target.value); setInspectorOpen(true); setShowHistory(false) }}><option value="">Objects ({objects.length})</option>{objects.map(object => <option key={object.id} value={object.id}>{object.locked ? '🔒 ' : ''}{objectLabel(object)}</option>)}</select>}<button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void fetch('/api/status').then(r=>r.json()).then(setApi) }}><CircleHelp size={16}/></button></div>
       <nav className="tool-rail" aria-label="Drawing tools">
         {([{ id: 'magic', label: 'Magic pen', key: 'M', icon: Sparkles }, { id: 'draw', label: 'Pencil', key: 'P', icon: Pencil }, { id: 'select', label: 'Select & move', key: 'V', icon: MousePointer2 }, { id: 'text', label: 'Text', key: 'T', icon: Type }, { id: 'math', label: 'Math', key: 'Q', icon: Sigma }, { id: 'eraser', label: 'Eraser', key: 'E', icon: Eraser }, { id: 'hand', label: 'Pan', key: 'H', icon: Hand }] as const).map(({ id, label, key, icon: Icon }) => <button key={id} aria-label={label} aria-pressed={tool === id} title={`${label} (${key})`} className={tool === id ? 'active' : ''} onClick={() => chooseTool(id)}><Icon size={21}/><span className="tool-tip">{label}<kbd>{key}</kbd></span></button>)}
         <div className="rail-divider"/>
@@ -580,23 +598,16 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {['math','text'].includes(tool) && <div className="tool-instruction">Tap anywhere to write {tool === 'math' ? 'an equation' : 'text'}.</div>}
       {!shapeCount && ready && !['text','math'].includes(tool) && <div className="empty-board"><h1>Blank notebook</h1><p>Write with the pencil, type a note, or circle an area and ask for something.</p><div className="example-actions"><button onClick={example}>Try an example</button><button onClick={() => void worksheetExample()} disabled={busy}>Try a homework page</button></div></div>}
 
-      {selected && !showHistory && !isEditing && <aside className="object-inspector"><div className="inspector-heading"><span>{selected.kind === 'plot' ? 'Graph' : selected.kind === 'math' ? 'Equation' : selected.kind === 'geometry' ? 'Shape' : selected.kind === 'image' ? 'Image' : selected.kind === 'draw' ? 'Handwriting' : 'Text'}</span><button aria-label="Deselect object" onClick={() => {editor?.selectNone();contentSelectionRef.current=undefined;setSelectedContent('')}}><X size={16}/></button></div>
-        {selectedRecord?.type === 'magic' && <>
-          {selected.kind !== 'geometry' && <button className="edit-on-board" onClick={() => beginEditing(selected.id)}><Pencil size={14}/>Edit on board</button>}
-          <label className="field-label">{selected.kind === 'plot' ? 'Function' : selected.kind === 'math' ? 'LaTeX source' : 'Text'}<textarea aria-label="Object content" value={draft} onChange={e => setDraft(e.target.value)} rows={selected.kind === 'plot' ? 1 : 2} spellCheck={false}/></label>
-          {selected.kind === 'plot' && <div className="range-fields"><label>From<input aria-label="Plot range minimum" value={rangeMin} onChange={e => setRangeMin(e.target.value)} type="number" step="any"/></label><label>To<input aria-label="Plot range maximum" value={rangeMax} onChange={e => setRangeMax(e.target.value)} type="number" step="any"/></label></div>}
-          <button className="apply-edit" onClick={updateSelected}>Apply source changes<Check size={14}/></button>
-          {selected.kind === 'plot' && <div className="graph-scaling"><label>Axis scaling<select aria-label="Graph axis scaling" value={selected.axisMode ?? 'auto'} onChange={e=>execute([{type:'update_object',target:selected.id,axisMode:e.target.value as 'equal' | 'auto'}])}><option value="equal">Equal units</option><option value="auto">Auto scale</option></select></label><button onClick={resetGraphSize}>Natural graph size</button><p>Equal units uses the same spacing on both axes. Natural size also restores the graph's proportions.</p></div>}
-          <div className="format-controls"><label>Size<input aria-label="Object font size" type="number" min="8" max="160" value={selectedRecord.props.fontSize} onChange={e => { const fontSize=Number(e.target.value); if(fontSize>=8 && fontSize<=160) execute([{type:'update_object',target:selected.id,fontSize}]) }}/></label><label>Ink<input aria-label="Object ink color" type="color" value={selectedRecord.props.color} onChange={e=>execute([{type:'update_object',target:selected.id,color:e.target.value}])}/></label></div>
-        </>}
-        {selectionHasInk && <><button className="edit-on-board" disabled={busy} onClick={formalizeSelection}><Sparkles size={14}/>Clean up handwriting</button><button className="edit-on-board" disabled={busy} onClick={()=>void runPrompt('Read the function in the selected handwriting and plot it nearby. Keep the original handwriting. If unclear, ask me.')}><Sigma size={14}/>Plot this handwriting</button></>}
-        <div className="object-actions"><button aria-label="Rotate left 90 degrees" title="Rotate left 90°" onClick={() => execute([{ type: 'transform_object', target: selected.id, rotateBy: -90 }])}><RotateCcw size={16}/></button><button aria-label="Rotate right 90 degrees" title="Rotate right 90°" onClick={() => execute([{ type: 'transform_object', target: selected.id, rotateBy: 90 }])}><RotateCw size={16}/></button><button aria-label="Make smaller" title="Make smaller" onClick={() => execute([{ type: 'transform_object', target: selected.id, scale: .85 }])}><Minus size={16}/></button><button aria-label="Make bigger" title="Make bigger" onClick={() => execute([{ type: 'transform_object', target: selected.id, scale: 1.15 }])}><Plus size={16}/></button><button className="delete-object" aria-label="Delete selected object" onClick={() => execute([{ type: 'delete_objects', ids: editor?.getSelectedShapeIds() as string[] || [selected.id] }])}><Trash2 size={16}/></button></div><p className="inspector-hint">Double-click text or math to edit individual characters.</p>
-      </aside>}
+      {selected && selectedRecord && editor && !showHistory && inspectorOpen && <ObjectInspector key={selected.id} editor={editor} object={selected} shape={selectedRecord} editing={editingShapeId === selected.id} busy={busy} execute={executeManual}
+        onCollapse={() => setInspectorOpen(false)} onDeselect={() => { flushSourceEdits(); editor.setEditingShape(null); editor.selectNone(); contentSelectionRef.current = undefined; setSelectedContent('') }}
+        onEdit={() => beginEditing(selected.id)} onNaturalSize={resetGraphSize} onCleanInk={formalizeSelection}
+        onPlotInk={() => void runPrompt('Read the function in the selected handwriting and plot it nearby. Keep the original handwriting. If unclear, ask me.')}/>}
+      {selected && !showHistory && !inspectorOpen && <button className="reopen-inspector" onClick={() => setInspectorOpen(true)}><Settings2 size={15}/>Object controls</button>}
       {showHistory && <aside className="history-panel"><div className="inspector-heading"><span>Conversation</span><button aria-label="Close conversation" onClick={() => setShowHistory(false)}><X size={16}/></button></div><div className="messages">{messages.length ? messages.map(m => <div className={`message ${m.role}`} key={m.id}><span>{m.role === 'user' ? 'You' : 'Assistant'}</span><p>{m.text}</p></div>) : <p className="quiet">Your instructions and replies will appear here.</p>}</div></aside>}
 
       {menu === 'paper' && <div className="popover paper-popover"><div className="popover-heading">Page settings<button aria-label="Close page settings" onClick={()=>setMenu(null)}><X size={16}/></button></div><span className="field-caption">Layout</span><div className="segmented"><button className={settings.mode === 'infinite' ? 'selected' : ''} onClick={() => changeMode('infinite')}>Infinite</button><button className={settings.mode === 'page' ? 'selected' : ''} onClick={() => changeMode('page')}>A4 page</button></div><span className="field-caption">Paper</span><div className="paper-swatches">{(['plain','dots', 'grid', 'ruled'] as const).map(p => <button aria-label={`${p} paper`} title={p} key={p} className={`swatch-${p} ${settings.paper === p ? 'selected' : ''}`} onClick={() => setSettings(s => ({ ...s, paper: p }))}/>)}</div><div className="paper-colors">{['#ffffff', '#f8f9fa', '#fffde7', '#eef5ff'].map(c => <button key={c} aria-label={`Paper color ${c}`} style={{ background: c }} className={settings.backgroundColor === c ? 'selected' : ''} onClick={() => setSettings(s => ({ ...s, backgroundColor: c }))}/>)}</div><button className="menu-row" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/>Set image background</button><button className="menu-row" onClick={() => { importAsBackground.current = false; imageInput.current?.click() }}><FileImage size={17}/>Insert movable image</button><button className="menu-row" onClick={() => projectInput.current?.click()}><FileUp size={17}/>Open notebook file</button><button className="menu-row" onClick={() => { save(); setMenu(null) }}><Save size={17}/>Save editable notebook</button>{editor?.getCurrentPageShapes().some(s => s.meta.marginaliaBackground === true) && <button className="menu-row" onClick={removeBackground}><Trash2 size={17}/>Remove background</button>}</div>}
       {menu === 'export' && <div className="popover export-popover"><div className="popover-heading">Export<button aria-label="Close export" onClick={()=>setMenu(null)}><X size={16}/></button></div><button className="menu-row" onClick={() => void doExport('png')}><FileImage size={18}/><span>PNG image<small>Include the whole board</small></span></button><button className="menu-row" onClick={() => void doExport('pdf')}><Download size={18}/><span>PDF<small>{settings.mode === 'page' ? 'A4 portrait page' : 'Fitted to your canvas'}</small></span></button><button className="menu-row" onClick={() => {save();setMenu(null)}}><Save size={18}/><span>Editable notebook<small>Keep the objects and images</small></span></button></div>}
-      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button><small>Voice uses your API credit. Five-minute session limit. Typed instructions work without a microphone.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
+      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}</p>}<small>Voice uses your API credit. Five-minute session limit. Typed instructions work without a microphone.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
 
       {api?.pairingRequired && !api.authorized && <form className="pair-banner" onSubmit={e=>{e.preventDefault();void pair()}}><div><b>Connect your iPad to AI</b><span>On your laptop, open Help & iPad connection to find the code.</span></div><input aria-label="Pairing code" placeholder="6-digit code" value={pairCode} onChange={e => setPairCode(e.target.value)} inputMode="numeric" maxLength={6}/><button disabled={pairing}>{pairing?'Connecting…':'Connect'}</button></form>}
       <div className="canvas-footer"><span className="canvas-status">{settings.mode === 'page' ? 'A4 portrait' : 'Infinite canvas'}<span className="footer-separator">·</span>{shapeCount} {shapeCount === 1 ? 'object' : 'objects'}</span><div className="history-buttons"><button aria-label="Undo" title="Undo" onClick={() => execute([{type:'undo'}])}><Undo2 size={17}/></button><button aria-label="Redo" title="Redo" onClick={() => execute([{type:'redo'}])}><Redo2 size={17}/></button></div><div className="zoom-controls"><button aria-label="Zoom out" onClick={() => editor?.zoomOut()}><Minus size={15}/></button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => editor?.zoomIn()}><Plus size={15}/></button><button aria-label="Fit canvas" title="Fit canvas" onClick={() => settings.mode === 'page' ? editor?.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 }) : editor?.zoomToFit()}><Maximize size={15}/></button></div></div>
@@ -615,6 +626,6 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       </div>
     </main>
     <input className="hidden-input" ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={e => { const f = e.target.files?.[0]; if (f) void importImage(f); e.target.value = '' }}/>
-    <input className="hidden-input" ref={projectInput} type="file" accept=".json,.marginalia" onChange={async e => { const f = e.target.files?.[0]; if (f && editor) { setBusy(true); try { stopFollowing(); setSettings(await loadProject(editor, f)); notify('Notebook opened.'); setMenu(null); setFocus(null) } catch (error) { setError((error as Error).message) } finally { setBusy(false) } } e.target.value = '' }}/>
+    <input className="hidden-input" ref={projectInput} type="file" accept=".json,.marginalia" onChange={async e => { const f = e.target.files?.[0]; if (f && editor) { setBusy(true); try { flushSourceEdits(); editor.completeInteraction(); stopFollowing(); setSettings(await loadProject(editor, f)); notify('Notebook opened.'); setMenu(null); setFocus(null) } catch (error) { setError((error as Error).message) } finally { setBusy(false) } } e.target.value = '' }}/>
   </div>
 }

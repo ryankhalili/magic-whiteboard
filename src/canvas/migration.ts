@@ -1,4 +1,7 @@
 import type { AssetRecord, DocumentRecord, MagicShapeProps, StrokePoint, TLShape, TLEditorSnapshot } from './types'
+import { resolveGeometry } from '../../shared/geometry'
+import { validateColor, validateCrop, validateOpacity, validateStrokeWidth } from '../../shared/appearance'
+import type { ImageCrop, Point } from '../../shared/board'
 
 const MAX_COORDINATE = 10_000_000
 const MAX_DIMENSION = 1_000_000
@@ -71,14 +74,27 @@ export function decodeLegacyInkPath(path: string, dimension: unknown = 3): Strok
 }
 function magicProps(props: Record<string, unknown>): MagicShapeProps {
   if (!['plot', 'math', 'text', 'geometry'].includes(String(props.kind))) throw new Error('This project contains an unsupported magic object.')
-  const geometry = ['triangle', 'right_triangle', 'rectangle', 'ellipse', 'arrow'].includes(String(props.geometry))
-    ? props.geometry as MagicShapeProps['geometry'] : 'triangle'
-  return {
+  const geometry = props.geometry === undefined ? 'triangle' : props.geometry as MagicShapeProps['geometry']
+  if (!['triangle', 'right_triangle', 'rectangle', 'ellipse', 'arrow', 'polygon', 'polyline'].includes(geometry)) throw new Error('This project contains unsupported geometry. The saved notebook has not changed.')
+  const result: MagicShapeProps = {
     w: dimension(props.w, 400), h: dimension(props.h, 240), kind: props.kind as MagicShapeProps['kind'],
     expression: text(props.expression), latex: text(props.latex), text: text(props.text), title: text(props.title, '', 400),
     color: text(props.color, '#202124', 100), xMin: finite(props.xMin, -10), xMax: finite(props.xMax, 10),
     yMin: finite(props.yMin, -10, 1e12), yMax: finite(props.yMax, 10, 1e12), geometry, fontSize: dimension(props.fontSize, 28),
   }
+  if (result.kind === 'geometry') {
+    const custom = resolveGeometry({ geometry, vertices: props.vertices as Point[] | undefined, angles: props.angles as number[] | undefined, sides: props.sides as number | undefined })
+    result.geometry = custom.geometry; result.vertices = custom.vertices; result.angles = custom.angles
+    result.sides = custom.geometry === 'polygon' ? custom.vertices?.length : undefined
+  }
+  if (props.fill !== undefined) result.fill = validateColor(props.fill as string)
+  if (props.fillOpacity !== undefined) result.fillOpacity = validateOpacity(props.fillOpacity as number)
+  if (props.strokeWidth !== undefined) result.strokeWidth = validateStrokeWidth(props.strokeWidth as number)
+  for (const key of ['showGrid', 'showAxes'] as const) if (props[key] !== undefined) {
+    if (typeof props[key] !== 'boolean') throw new Error('This project has an invalid plot display option.')
+    result[key] = props[key]
+  }
+  return result
 }
 
 /** Validate data from owned snapshots and earlier notebook files without loading any SDK code. */
@@ -116,8 +132,10 @@ export function normalizeSnapshot(input: unknown): TLEditorSnapshot {
       let normalized: unknown
       if (raw.type === 'magic') normalized = magicProps(props)
       else if (raw.type === 'image') {
-        if (props.crop != null || props.flipX === true || props.flipY === true) throw new Error('This notebook contains a cropped or flipped legacy image that is not supported yet. Export that image from the previous app before importing. Existing saved data has not changed.')
+        const owned = object(input.document.schema) && input.document.schema.engine === 'magic-whiteboard'
+        if ((props.crop != null && !owned) || props.flipX === true || props.flipY === true) throw new Error('This notebook contains a cropped or flipped legacy image that is not supported yet. Export that image from the previous app before importing. Existing saved data has not changed.')
         normalized = { ...metadata(props), assetId: typeof props.assetId === 'string' ? props.assetId : null, w: dimension(props.w, 320), h: dimension(props.h, 240), altText: text(props.altText, '', 500) }
+        if (props.crop != null) Object.assign(normalized as object, { crop: validateCrop(props.crop as ImageCrop) })
       }
       else if (raw.type === 'draw') {
         const scaleX = finite(props.scaleX, 1), scaleY = finite(props.scaleY, 1)

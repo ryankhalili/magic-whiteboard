@@ -4,6 +4,7 @@ import { EditorProvider, useValue } from './context'
 import { CanvasInteractions, selectionFrame, type CanvasPointer, type InteractionView, type ResizeHandle } from './interactions'
 import { inkOutlinePath } from './ink'
 import { legacyText, shapeOpacity } from './content'
+import { ImageGraphic } from './ImageGraphic'
 import './canvas.css'
 
 export type WhiteboardCanvasProps = {
@@ -35,7 +36,7 @@ const DefaultShape = memo(function DefaultShape({ shape, editor }: { shape: TLSh
   }
   if (shape.type === 'image') {
     const asset = shape.props.assetId ? editor.getAsset(shape.props.assetId) : null
-    return asset?.props.src ? <img className="whiteboard-image" src={asset.props.src} width={shape.props.w} height={shape.props.h} alt={shape.props.altText || asset.props.name || 'Imported image'} draggable={false}/> : <div className="whiteboard-missing-image" style={{ width: shape.props.w, height: shape.props.h }}>Image unavailable</div>
+    return asset?.props.src ? <ImageGraphic src={asset.props.src} props={shape.props} label={shape.props.altText || asset.props.name || 'Imported image'}/> : <div className="whiteboard-missing-image" style={{ width: shape.props.w, height: shape.props.h }}>Image unavailable</div>
   }
   if (shape.type === 'text') return <div style={{ width: shape.props.w || 300, minHeight: shape.props.h || 30, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: colorValue(shape.props.color || 'black'), fontSize: Number(shape.props.fontSize) || 24, fontFamily: 'Arial, sans-serif' }}>{legacyText(shape.props)}</div>
   if (shape.type === 'geo') {
