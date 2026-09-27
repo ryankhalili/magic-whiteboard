@@ -69,6 +69,98 @@ describe('voice lifecycle without microphone or paid API calls', () => {
   })
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
+  it('writes literal text without any assistant response and keeps out-of-order phrases in speech order', async () => {
+    let current: BoardContext = { ...structuredClone(context), dictationMode: 'text' }
+    const handlers = { ...callbacks(), getContext: () => current, repairRequest: vi.fn(), onContentPreview: vi.fn(),
+      applyOperations: vi.fn((operations: BoardOperation[]) => {
+        const op = operations[0], prior = current.objects[0]?.text ?? ''
+        current = { ...current, selectedIds: ['text:1'], lastCreatedIds: ['text:1'], objects: [{ id: 'text:1', kind: 'text', text: op.text ?? prior + op.replacement, bounds: { x: 0, y: 0, w: 300, h: 120 }, rotation: 0 }] }
+        return { ok: true, message: 'Written.', ids: ['text:1'] }
+      }) }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    for (const item of ['first', 'second']) {
+      channel.receive({ type: 'input_audio_buffer.speech_started', item_id: item })
+      channel.receive({ type: 'input_audio_buffer.committed', item_id: item })
+    }
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'second', transcript: 'Do not answer this question.' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'first', transcript: 'What is photosynthesis?' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(current.objects[0].text).toBe('What is photosynthesis? Do not answer this question.')
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(2)
+    expect(responseRequests(channel)).toHaveLength(0)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.onError).not.toHaveBeenCalled()
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'first', transcript: 'Duplicate' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(2)
+    client.disconnect()
+  })
+
+  it('shows text previews and recovers a missing final from the original audio without an assistant turn', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'text' as const }), onContentPreview: vi.fn(), repairRequest: vi.fn(), onRecoveryState: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'literal' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'literal', delta: 'The cell membrane' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ field: 'text', value: 'The cell membrane' }))
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'literal' })
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(audioRecoveryRequest(channel)?.item_id).toBe('literal')
+    expect(audioTrack.enabled).toBe(false)
+    await completeAudioRecovery(channel, audioRecoveryRequest(channel), '', 'The cell membrane controls transport.')
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_text', text: 'The cell membrane controls transport.', placement: 'auto' }])
+    expect(audioTrack.enabled).toBe(true)
+    expect(responseRequests(channel)).toHaveLength(0)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+
+  it('cancels queued text when mode changes and ignores delayed finals after Stop', async () => {
+    let current: BoardContext = { ...context, dictationMode: 'text' }
+    const handlers = { ...callbacks(), getContext: () => current }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'old-text' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'old-text' })
+    current = { ...current, dictationMode: 'assistant' }; client.updateContext()
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'old-text', transcript: 'Do not write this.' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(audioRecoveryRequest(channel)).toBeUndefined()
+  })
+
+  it('treats a no-operation repair reply as clarification rather than a red failure', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn(async () => ({ operations: [], message: 'Which expression should I change?' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Change it')
+    await finishResponse(FakePeer.latest.channel, 'clarify', [{ type: 'function_call', call_id: 'unknown', name: 'unknown', arguments: '{}' }])
+    expect(handlers.onNotice).toHaveBeenCalledWith('Which expression should I change?')
+    expect(handlers.onAssistant).toHaveBeenCalledWith('Which expression should I change?', true)
+    expect(handlers.onError).not.toHaveBeenCalled()
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+
+  it('does not retain full board objects in tool results or request a silent success confirmation', async () => {
+    const handlers = { ...callbacks(), spokenReplies: false,
+      applyOperations: vi.fn(() => ({ ok: true, message: 'Written.', ids: ['text:1'], objects: [{ id: 'text:1', kind: 'text' as const, text: 'Long board source', bounds: { x: 0, y: 0, w: 100, h: 80 }, rotation: 0 }] })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write hello')
+    const channel = FakePeer.latest.channel
+    await finishResponse(channel, 'compact-success', [toolCall('write', [{ type: 'create_text', text: 'Hello' }])])
+    expect(toolOutputs(channel)).toEqual([{ results: { ok: true, message: 'Written.', ids: ['text:1'] } }])
+    expect(responseRequests(channel)).toHaveLength(1)
+    client.disconnect()
+  })
+
   it('does not request a microphone on construction and closes media on stop', async () => {
     const handlers = callbacks()
     const client = createRealtimeClient(handlers)
@@ -212,7 +304,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     channel.receive({ type: 'response.output_item.added', response_id: 'metadata', item: { ...call, arguments: '' } })
     channel.receive({ type: 'response.function_call_arguments.done', response_id: 'metadata', call_id: call.call_id, item_id: call.id, arguments: call.arguments })
     await vi.advanceTimersByTimeAsync(0)
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }], expect.any(Function))
     channel.receive({ type: 'response.output_item.done', response_id: 'metadata', item: call })
     channel.receive({ type: 'response.done', response: { id: 'metadata', status: 'completed', output: [call] } })
     await vi.advanceTimersByTimeAsync(0)
@@ -246,7 +338,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(handlers.getVisualContext).not.toHaveBeenCalled()
     expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ failure: expect.objectContaining({ message: expect.stringContaining('inconsistent function metadata') }) }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction], expect.any(Function))
     client.disconnect()
   })
   it('does not add a second response merely to confirm a successful dictated fragment', async () => {
@@ -301,7 +393,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     const good = toolCall('good', [{ ...correctedEdit, target: 'selected' }])
     channel.receive({ ...good, type: 'response.function_call_arguments.done', response_id: 'repair' })
     await vi.advanceTimersByTimeAsync(0)
-    expect(handlers.applyOperations).toHaveBeenLastCalledWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenLastCalledWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     channel.receive({ type: 'response.done', response: { id: 'repair', status: 'completed', output: [good] } })
     await vi.advanceTimersByTimeAsync(0)
     expect(handlers.applyOperations).toHaveBeenCalledTimes(2)
@@ -453,7 +545,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await finishResponse(channel, 'broken', [{ type: 'function_call', call_id: 'malformed', name: 'apply_board_operations', arguments: argumentsText }])
     expect(repairRequest).toHaveBeenCalledTimes(1)
     expect(repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Extend this equation with equals question mark', context: mathContext, failure: expect.objectContaining({ kind: 'malformed_arguments', rawArguments: argumentsText }) }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     expect(handlers.onRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ phase: 'repairing', attempt: 1 }))
     expect(handlers.onRecoveryState).toHaveBeenLastCalledWith(null)
     expect(audioTrack.enabled).toBe(true)
@@ -470,7 +562,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await client.connect()
     const channel = FakePeer.latest.channel
     await finishResponse(channel, 'single', [{ type: 'function_call', call_id: 'single', name: 'apply_board_operations', arguments: '{"type":"create_text","text":"Hello"}' }])
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_text', text: 'Hello' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_text', text: 'Hello' }], expect.any(Function))
     expect(repairRequest).not.toHaveBeenCalled()
     client.disconnect()
   })
@@ -484,7 +576,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await finishResponse(channel, 'unknown-tool', [call])
     expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
     expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Write the integral of sine x', failure: expect.objectContaining({ kind: 'malformed_arguments', rawArguments: call.arguments }) }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction], expect.any(Function))
     expect(handlers.onError).not.toHaveBeenCalled()
     channel.receive({ type: 'response.done', response: { id: 'unknown-tool', status: 'completed', output: [call] } })
     await vi.advanceTimersByTimeAsync(0)
@@ -723,7 +815,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await client.connect(); client.sendText('Extend the equation')
     await finishResponse(FakePeer.latest.channel, 'failed', [], status)
     expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     expect(handlers.onError).not.toHaveBeenCalled()
     client.disconnect()
   })
@@ -796,7 +888,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     channel.receive({ type: 'response.done', response: { id: 'original-response', status: 'completed', output: [failedCall] } })
     await completeAudioRecovery(channel, recovery, 'audio-only', 'This equals negative cosine of x evaluated from pi to two pi')
     expect(handlers.repairRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ instruction: 'This equals negative cosine of x evaluated from pi to two pi' }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     expect(handlers.onAssistant).toHaveBeenCalledExactlyOnceWith('Equation corrected.', true)
     expect(handlers.onTranscript).not.toHaveBeenCalled()
     expect(handlers.onContentPreview.mock.calls.every(([preview]) => preview === null)).toBe(true)

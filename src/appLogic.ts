@@ -64,6 +64,20 @@ export function boardOnly(context: BoardContext): BoardContext {
   return { ...context, library: undefined, placementOptions: undefined, pointer: null, gesture: null, viewport: { x: 0, y: 0, w: 0, h: 0 } }
 }
 
+type BoardCommandState = { active: boolean; ready: boolean; notebookId: string; editor: Editor | null; boardKey: string; libraryKey?: string }
+/** Async PDF work may finish after Stop, a source edit, or a notebook switch. It must not commit then. */
+export function captureBoardCommandGuard(getState: () => BoardCommandState, isCurrent: () => boolean = () => true) {
+  const original = { ...getState() }
+  const current = () => {
+    const current = getState()
+    return current.active && current.ready && !!current.editor && isCurrent()
+      && current.notebookId === original.notebookId && current.editor === original.editor && current.boardKey === original.boardKey
+      && current.libraryKey === original.libraryKey
+  }
+  // Used only immediately after the instruction's own guarded, synchronous panel changes.
+  return { isCurrent: current, acceptLibraryChange: () => { original.libraryKey = getState().libraryKey } }
+}
+
 const whole = (b: Bounds): Bounds => ({ x: Math.round(b.x), y: Math.round(b.y), w: b.w > 0 ? Math.max(1, Math.round(b.w)) : b.w, h: b.h > 0 ? Math.max(1, Math.round(b.h)) : b.h })
 /**
  * objects for the model, most useful first: selection and focus, worksheet pages in view, other content newest first,
@@ -76,6 +90,12 @@ export function modelObjects(objects: readonly BoardObject[], important: Readonl
   rest.reverse()
   return [...first, ...pages, ...rest.filter(o => o.kind !== 'draw'), ...rest.filter(o => o.kind === 'draw')]
     .slice(0, limit).map(o => ({ ...o, bounds: whole(o.bounds) }))
+}
+
+/** Local target checks need exact page bounds; only model-facing snapshots may round them. */
+export function localContextObjects(objects: readonly BoardObject[], important: ReadonlySet<string>, view: Bounds | null | undefined, limit = 120): BoardObject[] {
+  const bounds = new Map(objects.map(object => [object.id, object.bounds]))
+  return modelObjects(objects, important, view, limit).map(object => ({ ...object, bounds: { ...bounds.get(object.id)! } }))
 }
 
 type ShelfBook = { title?: string; fileName?: string; pageCount: number; labels?: readonly (string | null)[] }

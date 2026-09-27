@@ -17,7 +17,7 @@ import { ImageGenerationPanel } from './images/ImageGenerationPanel'
 import { downloadOriginalNotebook, exportBoard, exportRegionPdf, importImageFile, installBoardImageExporter, loadProject, PAGE_BOUNDS, regionFromSelection, saveProject } from './files/boardFiles'
 import { boardNeedsImage, captureBoardContext } from './files/capture'
 import { boardImportLimit, isPdfFile } from './files/pdfPages'
-import { addedBounds, asksForPanelPage, boardOnly, commandAllowance, createSpeechStart, freeSpots, insertMessage, instructionTooLong, isPairingError, localHistoryCommand, modelLibrary, modelObjects, wantsPlacement } from './appLogic'
+import { addedBounds, asksForPanelPage, boardOnly, captureBoardCommandGuard, commandAllowance, createSpeechStart, freeSpots, insertMessage, instructionTooLong, isPairingError, localHistoryCommand, localContextObjects, modelLibrary, wantsPlacement } from './appLogic'
 import { defaultImportTarget, ImportDialog, importProgressText, type ImportInfo, type ImportTarget } from './library/ImportDialog'
 import { LibraryPanel } from './library/LibraryPanel'
 import { candidateTitle, panelHits, ReferencePanel } from './library/ReferencePanel'
@@ -30,7 +30,7 @@ import { forgetBookData, matchLibrary, problemImage } from './library/resolve'
 import { kindName, parseLibraryQuery, pickBook, titleMatch } from './library/search'
 import { listBooks, removeBook, touchBook } from './library/store'
 import type { BookRecord, Candidate, ImportProgress, LibraryQuery, PageBox, RankedCandidate, RenderedImage, Spot } from './library/types'
-import { ObjectInspector, objectLabel } from './board/ObjectInspector'
+import { ObjectInspector } from './board/ObjectInspector'
 import { flushSourceEdits, snapshotWithPendingSource } from './board/liveSource'
 import { DEFAULT_SETTINGS, type AppSettings, type BoardCommand, type BoardContext, type BoardOperation, type BoardResult, type Bounds, type Focus, type LibraryAction, type PlacementCandidate, type PlacementOption, type Point } from '../shared/board'
 
@@ -61,6 +61,7 @@ export default function App() {
 function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const notebook = library.activeNotebook
   const editorRef = useRef<Editor | null>(null)
+  const workspaceActive = useRef(true)
   const controller = useRef<ReturnType<typeof createBoardController> | null>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const focusRef = useRef<Focus | null>(null)
@@ -185,7 +186,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const important = new Set([...selectedIds, ...(currentFocus?.targetIds || []), ...(controller.current?.lastCreatedIds || [])])
     // worksheet page text only matters for pages in view or in the circled area
     const view = currentFocus?.kind === 'region' ? currentFocus.bounds : vp
-    const relevantObjects = modelObjects(controller.current?.getObjects() || [], important, view)
+    const relevantObjects = localContextObjects(controller.current?.getObjects() || [], important, view)
     const shelf = booksRef.current, open = openBookRef.current, pending = importRef.current, page = panelPageRef.current
     const matches = open ? panelHits(highlightRef.current, open) : []
     // titles only: the model never receives book text, and book ids tell it nothing
@@ -296,7 +297,10 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   useEffect(() => { refreshStatus().catch(() => setError('The local AI server is not reachable. Drawing still works.')) }, [refreshStatus])
   const imageMessage = images.draft?.message
   useEffect(() => { if (imageMessage) recoverPairing(imageMessage) }, [imageMessage, recoverPairing])
-  useEffect(() => () => { voiceRef.current?.disconnect(); commandAbort.current?.abort() }, [])
+  useEffect(() => {
+    workspaceActive.current = true
+    return () => { workspaceActive.current = false; voiceRef.current?.disconnect(); commandAbort.current?.abort() }
+  }, [])
   useEffect(() => {
     if (!aiPaused) return
     stopFollowing(); gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([])
@@ -526,33 +530,49 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
 
   // typed requests the board answers itself, with no model call
-  const runLocal = async (text: string, task: () => Promise<BoardResult>, fallback: string) => {
+  const runLocal = async (text: string, task: (guard: ReturnType<typeof captureBoardCommandGuard>) => Promise<BoardResult>, fallback: string) => {
     setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
+    const abort = new AbortController(); commandAbort.current = abort
+    const progress = setTimeout(() => setCommandProgress('Reading your library…'), 400)
     try {
-      const result = await task()
+      flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
+      const result = await task(captureInstructionGuard(() => !abort.signal.aborted))
+      if (abort.signal.aborted) return
       if (!result.ok) setError(result.message); else notify(result.message)
       addMessage('assistant', result.message)
-    } catch (e) { setError(errorText(e, fallback)) }
-    finally { setBusy(false) }
+    } catch (e) { if (!abort.signal.aborted) setError(errorText(e, fallback)) }
+    finally {
+      clearTimeout(progress); if (commandAbort.current === abort) commandAbort.current = null
+      setBusy(false); setCommandProgress('')
+    }
   }
   // everything on the board, wherever the view, pointer or gesture is; a reply is applied only when this still matches
   const boardKey = () => contextFingerprint(boardOnly({ ...getContext(), objects: controller.current?.getObjects() ?? [] }))
+  const captureInstructionGuard = (isCurrent?: () => boolean) => captureBoardCommandGuard(() => ({
+    active: workspaceActive.current, ready: snapshotReady.current, notebookId: notebook.id,
+    editor: editorRef.current, boardKey: boardKey(), libraryKey: JSON.stringify({ book: openBookRef.current?.id ?? null,
+      matches: shownMatches().map(match => match.id), pendingImport: importRef.current?.id ?? null }),
+  }), isCurrent)
+  const cancelledInsert = (): BoardResult => ({ ok: false, message: 'The instruction was cancelled or its writing target changed. No delayed insert was applied.', ids: [] })
   const runPrompt = async (text = prompt) => {
     if (!text.trim() || busy || recovery || voiceStatus === 'connecting') return
     const tooLong = instructionTooLong(text)
     if (tooLong) { setError(tooLong); return }
-    const step = localHistoryCommand(text)
+    const literalText = voiceRef.current?.isConnected() && dictationRef.current === 'text'
+    const step = literalText ? null : localHistoryCommand(text)
     if (step) return runLocal(text, async () => execute([{ type: step }], false), 'That could not be done.')
     const panel = panelSource()
-    if (panel && asksForPanelPage(text)) {
-      return runLocal(text, () => insertLock.run(async () => {
+    if (!literalText && panel && asksForPanelPage(text)) {
+      return runLocal(text, guard => insertLock.run(async () => {
+        if (!guard.isCurrent()) return cancelledInsert()
         focusUsed.current = false
         const { op } = await libraryImageOp(panel, `page ${panel.book.labels?.[panel.pageIndex] ?? panel.pageIndex + 1}`)
+        if (!guard.isCurrent()) return cancelledInsert()
         return applyResolved([op], [], true)
       }), 'That page could not be drawn.')
     }
-    const intent = detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0, bookTitles: booksRef.current.map(book => book.title), highlightCount: shownMatches().length })
-    if (intent) return runLocal(text, () => runIntent(intent), 'The library could not be read.')
+    const intent = literalText ? null : detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0, bookTitles: booksRef.current.map(book => book.title), highlightCount: shownMatches().length })
+    if (intent) return runLocal(text, guard => runIntent(intent, guard), 'The library could not be read.')
     if (api?.pairingRequired && !api.authorized) { setError('Enter the pairing code shown in Help on your laptop to connect this device.'); return }
     setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
     const abort = new AbortController(); commandAbort.current = abort
@@ -578,7 +598,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       if (result.operations.length) {
         const previous = placementRef.current
         placementRef.current = result.placementOptions ?? null
-        try { applied = await executeResolved(result.operations, false, result.placementOptions ?? null) }
+        try { applied = await executeResolved(result.operations, false, result.placementOptions ?? null, () => !abort.signal.aborted) }
         finally { placementRef.current = previous }
       }
       if (applied && !applied.ok) {
@@ -588,6 +608,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           const corrected = await repairBoardCommand({ instruction: text, context: before, failedOperations: result.operations, failure: { kind: 'operation_rejected', message: applied.message } }, abort.signal)
           if (abort.signal.aborted) return
           flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
+          if (!corrected.operations.length) { const clarification = corrected.message || 'Please clarify what you would like to change.'; addMessage('assistant', clarification); notify(clarification); return }
           const pinned = pinBoardRepair(repair.value, corrected.operations, getContext())
           if (!pinned.ok) { notify('The original content changed, so I left the correction unapplied.'); return }
           applied = execute(pinned.value, false)
@@ -613,10 +634,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     try {
       const client = createRealtimeClient({
         getContext, getVisualContext,
-        applyOperations: ops => {
+        applyOperations: (ops, isCurrent) => {
+          if (isCurrent && !isCurrent()) return { ok: false, message: 'The instruction was cancelled. No edit was applied.', ids: [] }
           if (!ops.some(isLibraryOp)) return execute(ops, false)
           setBusy(true)
-          return executeResolvedRef.current(ops, false).finally(() => setBusy(false))
+          return executeResolvedRef.current(ops, false, null, isCurrent).finally(() => setBusy(false))
         },
         beforeApplyOperations: () => { flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing() },
         onAudioLevel: level => {
@@ -904,12 +926,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     return panel ? { bookId: panel.book.id, pageIndex: panel.pageIndex } : lastInsertRef.current
   }
   // an older index is rebuilt from the stored PDF, with progress in the reference panel; one run per book
-  const reindexBook = (bookId: string): Promise<BookRecord> => {
+  const reindexBook = (bookId: string, isCurrent: () => boolean = () => true, onScopeChange: () => void = () => {}): Promise<BookRecord> => {
     const running = reindexing.current.get(bookId)
     if (running) return running
     const book = bookFor(bookId)
-    if (book && openBookRef.current?.id !== bookId) { setOpenBook(book); setHighlight(null) }
-    const show = (text: string | null) => { if (openBookRef.current?.id === bookId) setRefMessage(text) }
+    if (isCurrent() && book && openBookRef.current?.id !== bookId) { setOpenBook(book); setHighlight(null); onScopeChange() }
+    const show = (text: string | null) => { if (isCurrent() && openBookRef.current?.id === bookId) setRefMessage(text) }
     let shownAt = 0
     show('Updating this book so problems come out cleanly.')
     const job = ensureIndexed(bookId, progress => {
@@ -919,8 +941,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       show(`Updating this book. ${importProgressText(progress)}.`)
     }).then(async updated => {
       forgetBookData(bookId)
+      if (!isCurrent()) return updated
       await refreshBooks()
-      if (openBookRef.current?.id === bookId) { setOpenBook(updated); setRefMessage(null) }
+      if (isCurrent() && openBookRef.current?.id === bookId) { setOpenBook(updated); setRefMessage(null) }
       return updated
     }, error => {
       show(errorText(error, 'This book could not be updated. Import it again.'))
@@ -929,16 +952,20 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     reindexing.current.set(bookId, job)
     return job
   }
-  const lookupLibrary = (query: LibraryQuery, openBookId: string | null) => matchWithReindex(() => matchLibrary(query, { openBookId, near: nearPage() }), reindexBook)
+  const lookupLibrary = (query: LibraryQuery, openBookId: string | null, isCurrent: () => boolean = () => true, onScopeChange: () => void = () => {}, near: BookPage | null = nearPage()) => {
+    // Reindexing can await disk work; its retry must use the original page/chapter.
+    return matchWithReindex(() => matchLibrary(query, { openBookId, near }), id => reindexBook(id, isCurrent, onScopeChange))
+  }
   // confident: an operation to apply; unsure: the top matches wait in the reference panel
-  const resolveQuery = async (query: LibraryQuery, place: PlaceOptions = {}): Promise<ResolvedInsert> => {
-    const match = await lookupLibrary(query, openBookRef.current?.id ?? null)
+  const resolveQuery = async (query: LibraryQuery, place: PlaceOptions = {}, isCurrent: () => boolean = () => true, onScopeChange: () => void = () => {}, near: BookPage | null = nearPage()): Promise<ResolvedInsert> => {
+    const match = await lookupLibrary(query, openBookRef.current?.id ?? null, isCurrent, onScopeChange, near)
+    if (!isCurrent()) throw new Error('The instruction was cancelled or its writing target changed. No delayed insert was applied.')
     if ('error' in match) {
       if ('books' in match && match.books?.length) setMenu('library')
       return { result: { ok: false, message: match.error, ids: [] } }
     }
     if (!match.confident || !match.ranked.length) {
-      showMatches(match.book, match.ranked)
+      showMatches(match.book, match.ranked); onScopeChange()
       return { result: { ok: true, message: match.ranked.length ? pickText(match.ranked.length) : `Nothing in ${match.book.title} matches that.`, ids: [] } }
     }
     const best = match.ranked[0]
@@ -1048,11 +1075,13 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     else setError('Choose a PDF or a PNG, JPEG or WebP image.')
   }
 
-  const openFromLibrary = async (book: BookRecord) => {
-    setMenu(null); setOpenBook(book); setHighlight(null); setRefMessage(null)
+  const openFromLibrary = async (book: BookRecord, isCurrent: () => boolean = () => true, onScopeChange: () => void = () => {}) => {
+    if (!isCurrent()) return
+    setMenu(null); setOpenBook(book); setHighlight(null); setRefMessage(null); onScopeChange()
     // an unfinished import or an older index finishes reading while the book is open
-    if (needsReindex(book)) void reindexBook(book.id).catch(() => {})
+    if (needsReindex(book)) void reindexBook(book.id, isCurrent, onScopeChange).catch(() => {})
     const touched = await touchBook(book.id).catch(() => null)
+    if (!isCurrent()) return
     if (touched && openBookRef.current?.id === book.id && !reindexing.current.has(book.id)) setOpenBook(touched)
     void refreshBooks()
   }
@@ -1065,15 +1094,17 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       notify(`${book.title} was removed from this browser.`)
     } catch (error) { setError(errorText(error, 'That book could not be removed.')) }
   }
-  const runLibraryAction = async (action: LibraryAction | undefined, name = ''): Promise<BoardResult> => {
+  const runLibraryAction = async (action: LibraryAction | undefined, name = '', isCurrent: () => boolean = () => true, onScopeChange: () => void = () => {}): Promise<BoardResult> => {
     const done = (message: string, ok = true): BoardResult => ({ ok, message, ids: [] })
+    if (!isCurrent()) return done('The instruction was cancelled or its writing target changed.', false)
     if (action === 'store_import' || action === 'board_import') return routeImport(action === 'store_import' ? 'library' : 'board')
     if (action === 'close_reference') {
       if (!openBookRef.current) return done('No book is open.')
-      closeBook(); return done('Closed the book.')
+      closeBook(); onScopeChange(); return done('Closed the book.')
     }
     if (action !== 'open_book') return done('That library action is not supported.', false)
     const list = booksRef.current.length ? booksRef.current : await refreshBooks()
+    if (!isCurrent()) return done('The instruction was cancelled or its writing target changed.', false)
     if (!list.length) return done('The library is empty. Import a textbook first.', false)
     const hint = name.trim()
     let book: BookRecord | null
@@ -1082,7 +1113,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       book = picked && Math.max(titleMatch(hint, picked.title), titleMatch(hint, picked.fileName ?? '')) >= .5 ? picked : null
     } else book = openBookRef.current ?? (list.length === 1 ? list[0] : null)
     if (!book) { setMenu('library'); return done(hint ? `No book matches "${hint.slice(0, 60)}". Pick one in the Library.` : 'Which book? Pick one in the Library.', false) }
-    await openFromLibrary(book)
+    await openFromLibrary(book, isCurrent, onScopeChange)
     return done(`Opened ${book.title}.`)
   }
   // "number 2" while matches are highlighted: the match with that badge
@@ -1092,24 +1123,31 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (c && book) return { c, book }
     return { error: !shown.length ? 'There are no highlighted matches to pick from.' : shown.length === 1 ? 'Only match 1 is highlighted.' : `Pick a number from 1 to ${shown.length}.` }
   }
-  const pickMatch = async (index: number): Promise<BoardResult> => {
+  const pickMatch = async (index: number, isCurrent: () => boolean): Promise<BoardResult> => {
+    if (!isCurrent()) return cancelledInsert()
     const picked = pickedMatch(index)
     if ('error' in picked) return { ok: false, message: picked.error, ids: [] }
     focusUsed.current = false
     const { op } = await libraryImageOp({ book: picked.book, pageIndex: picked.c.pageIndex, candidate: picked.c }, picked.c.description)
+    if (!isCurrent()) return cancelledInsert()
     const result = applyResolved([op], [], true)
     if (result.ok) setHighlight(null)
     return result
   }
   // insert_library and library_action become board operations here, for typed and voice commands alike
-  const executeResolved = async (ops: BoardOperation[], reportFailure = true, options: PlacementOption[] | null = null): Promise<BoardResult> => {
+  const executeResolved = async (ops: BoardOperation[], reportFailure = true, options: PlacementOption[] | null = null, isCurrent?: () => boolean): Promise<BoardResult> => {
     const fail = (message: string): BoardResult => { if (reportFailure) setError(message); return { ok: false, message, ids: [] } }
+    const { isCurrent: current, acceptLibraryChange } = captureInstructionGuard(isCurrent)
+    let queryNear = nearPage()
+    const stale = () => fail('The instruction was cancelled or its writing target changed. No delayed insert was applied.')
+    if (!current()) return stale()
     if (!Array.isArray(ops) || !ops.length) return fail('Send between 1 and 20 whiteboard actions.')
     // images only come from the library, never straight from the model
     if (ops.some(op => op?.type === 'create_image')) return fail('That whiteboard action is not supported.')
     if (!ops.some(isLibraryOp)) return execute(ops, reportFailure)
     // one insert at a time, so each one finds its spot on the board as the last one left it
     return insertLock.run(async () => {
+      if (!current()) return stale()
       const ready: BoardOperation[] = [], notes: string[] = [], placed: Bounds[] = []
       // where the board will put each new object, in order; creates listed before an insert do not know about it
       const created: Bounds[] = []
@@ -1118,10 +1156,13 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       focusUsed.current = false
       try {
         for (const op of ops) {
+          if (!current()) return stale()
           const pick = op.type === 'library_action' && op.action === 'pick'
           if (op.type === 'library_action' && !pick) {
-            const result = await runLibraryAction(op.action, op.book ?? '')
+            const result = await runLibraryAction(op.action, op.book ?? '', current, acceptLibraryChange)
+            if (!current()) return stale()
             if (!result.ok) return fail(result.message)
+            if (op.action === 'open_book' || op.action === 'close_reference') queryNear = nearPage()
             notes.push(result.message); continue
           }
           if (op.type !== 'insert_library' && !pick) {
@@ -1143,8 +1184,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           } else {
             const query = libraryQueryFromOperation(op)
             if (!query) return fail('Say a page number or a problem number to insert from the book.')
-            resolved = await resolveQuery(query, place)
+            resolved = await resolveQuery(query, place, current, acceptLibraryChange, queryNear)
           }
+          if (!current()) return stale()
           if ('result' in resolved) {
             if (!resolved.result.ok) return fail(resolved.result.message)
             notes.push(resolved.result.message); continue
@@ -1155,6 +1197,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           if (resolved.note) notes.push(resolved.note)
         }
       } catch (error) { return fail(errorText(error, 'The book could not be read.')) }
+      if (!current()) return stale()
       const result = applyResolved(ready, notes, reportFailure)
       if (result.ok && picked) setHighlight(null)
       return result
@@ -1163,15 +1206,18 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const executeResolvedRef = useRef(executeResolved)
   executeResolvedRef.current = executeResolved
   // local fast path: clear library requests never reach the model
-  const runIntent = async (intent: LibraryIntent): Promise<BoardResult> => {
+  const runIntent = async (intent: LibraryIntent, guard: ReturnType<typeof captureBoardCommandGuard>): Promise<BoardResult> => {
+    if (!guard.isCurrent()) return cancelledInsert()
     if (intent.action === 'route_import') return routeImport(intent.to)
-    if (intent.action === 'close_reference') return runLibraryAction('close_reference')
-    if (intent.action === 'open_book') return runLibraryAction('open_book', intent.book)
-    if (intent.action === 'pick') return insertLock.run(() => pickMatch(intent.index))
-    const query = intent.query
+    if (intent.action === 'close_reference') return runLibraryAction('close_reference', '', guard.isCurrent, guard.acceptLibraryChange)
+    if (intent.action === 'open_book') return runLibraryAction('open_book', intent.book, guard.isCurrent, guard.acceptLibraryChange)
+    if (intent.action === 'pick') return insertLock.run(() => pickMatch(intent.index, guard.isCurrent))
+    const query = intent.query, near = nearPage()
     return insertLock.run(async () => {
+      if (!guard.isCurrent()) return cancelledInsert()
       focusUsed.current = false
-      const resolved = await resolveQuery(query)
+      const resolved = await resolveQuery(query, {}, guard.isCurrent, guard.acceptLibraryChange, near)
+      if (!guard.isCurrent()) return cancelledInsert()
       if ('result' in resolved) return resolved.result
       return applyResolved([resolved.op], resolved.note ? [resolved.note] : [], true)
     })
@@ -1179,11 +1225,13 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   // reference panel buttons; placed like reference mode when nothing is circled, even in Literal
   const panelInsert = async (make: () => Promise<{ op: BoardOperation }>) => {
     if (refBusy || insertLock.held()) return
+    const guard = captureInstructionGuard()
     setRefMessage(null)
     await insertLock.run(async () => {
       setRefBusy(true); focusUsed.current = false
       try {
         const { op } = await make()
+        if (!guard.isCurrent()) { setRefMessage(cancelledInsert().message); return }
         const result = applyResolved([op], [], false, true)
         if (result.ok) setHighlight(null); else setRefMessage(result.message)
       } catch (error) { setRefMessage(errorText(error, 'That page could not be drawn.')) }
@@ -1325,7 +1373,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {images.draft && <div className="image-placement-preview" style={localBounds(images.draft.bounds)} aria-label="Image placement preview"><span><ImagePlus size={16}/>{images.draft.phase === 'review' ? 'Image preview · awaiting confirmation' : ['submitting', 'generating'].includes(images.draft.phase) ? 'Generating image…' : 'Image request paused'}</span></div>}
       <ImageGenerationPanel images={images} model={api?.models?.image}/>
 
-      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label>{objects.length > 0 && <select className="object-picker" aria-label="Choose board object" value={selected?.id || ''} onChange={event => { if (!event.target.value || !editor) return; editor.completeInteraction(); chooseTool('select'); editor.select(event.target.value); setInspectorOpen(true); setShowHistory(false) }}><option value="">Objects ({objects.length})</option>{objects.map(object => <option key={object.id} value={object.id}>{object.locked ? '🔒 ' : ''}{objectLabel(object)}</option>)}</select>}<button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void refreshStatus().catch(() => {}) }}><CircleHelp size={16}/></button></div>
+      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label><button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void refreshStatus().catch(() => {}) }}><CircleHelp size={16}/></button></div>
       <nav className="tool-rail" aria-label="Drawing tools">
         {([{ id: 'magic', label: 'Magic pen', key: 'M', icon: Sparkles }, { id: 'draw', label: 'Pencil', key: 'P', icon: Pencil }, { id: 'select', label: 'Select & move', key: 'V', icon: MousePointer2 }, { id: 'text', label: 'Text', key: 'T', icon: Type }, { id: 'math', label: 'Math', key: 'Q', icon: Sigma }, { id: 'eraser', label: 'Eraser', key: 'E', icon: Eraser }, { id: 'hand', label: 'Pan', key: 'H', icon: Hand }] as const).map(({ id, label, key, icon: Icon }) => <button key={id} aria-label={label} aria-pressed={tool === id} title={`${label} (${key})`} className={tool === id ? 'active' : ''} onClick={() => chooseTool(id)}>{id === 'magic' && aiPaused ? <LoaderCircle className="spin" size={21}/> : <Icon size={21}/>}<span className="tool-tip">{label}<kbd>{key}</kbd></span></button>)}
         <div className="rail-divider"/>
@@ -1368,6 +1416,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           <div className="voice-output-label">Spoken replies {spokenReplies ? 'on' : 'off'} · microphone {recovery ? 'paused for recovery' : voiceStatus === 'idle' ? 'paused' : 'on'}</div>
           <div className="voice-mode-options"><select disabled={!!recovery} aria-label="Voice action" value={dictationMode} onChange={e=>changeDictation(e.target.value as typeof dictationMode)}><option value="assistant">Assistant</option><option value="math">Dictate math</option><option value="text">Dictate text</option></select><button onClick={()=>setShowHistory(!showHistory)}>Conversation</button></div>
           {dictationMode === 'math' && <p className="dictation-hint">Live LaTeX draft. Pause briefly between phrases to finish each edit.</p>}
+          {dictationMode === 'text' && <p className="dictation-hint">Speak to write your words. Choose Assistant to give editing commands.</p>}
         </div> : <><form className={`command-bar ${voiceStatus !== 'idle' ? 'voice-active' : ''}`} onSubmit={e => { e.preventDefault(); void runPrompt() }}><input ref={inputRef} aria-label="Ask Magic Whiteboard" value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Give an idea a little space…" disabled={busy || !!recovery || voiceStatus === 'connecting'}/><button type="submit" className="send-command" aria-label="Send instruction" disabled={busy || !!recovery || voiceStatus === 'connecting' || !prompt.trim()}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowUp size={18}/>}</button><span className="command-divider"/><button type="button" className={`voice-button ${voiceStatus !== 'idle' ? 'recording' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} onClick={()=>void toggleVoice()}>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={19}/> : <Mic size={19}/>}</button></form>
         <div className="command-caption"><span>{selectedContent ? `Selected: ${selectedContent.slice(0,35)}` : focus ? <><Scan size={12}/>{focus.kind === 'region' ? 'Region selected' : 'Point selected'}<button onClick={()=>setFocus(null)}>clear</button></> : 'Circle an area, then speak or type.'}</span>{allowance?.low && <span className="allowance-warning" role="status">{allowance.left ? `${allowance.left} of ${allowance.limit} typed commands left` : 'Typed command allowance used up'}</span>}<button onClick={()=>setShowHistory(!showHistory)}>Conversation{messages.length?` (${messages.length})`:''}</button></div></>}
       </div>
