@@ -116,3 +116,9 @@
   .empty-board { display: none; }
   .command-dock { max-height: calc(100% - 65px); overflow: auto; }
 }
+/* Keep count and canvas mode separate at every width. */
+.canvas-status .footer-separator, .canvas-status .footer-separator ~ span { display: inline; }
+@media (max-width: 360px) {
+  .canvas-status > span:first-child { max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .canvas-footer button { width: 25px; }
+}
