@@ -42,16 +42,23 @@ async function finishResponse(channel: FakeChannel, id: string, output: unknown[
 }
 const responseRequests = (channel: FakeChannel) => channel.sent.filter(event => event.type === 'response.create')
 const toolOutputs = (channel: FakeChannel) => channel.sent.filter(event => event.item?.type === 'function_call_output').map(event => JSON.parse(event.item.output))
+const audioRecoveryRequest = (channel: FakeChannel) => channel.sent.filter(event => event.type === 'conversation.item.retrieve').at(-1)
+async function completeAudioRecovery(channel: FakeChannel, request: any, _id: string, transcript: string) {
+  channel.receive({ type: 'conversation.item.retrieved', item: { id: request.item_id, type: 'message', role: 'user', content: [{ type: 'input_audio', transcript }] } })
+  await vi.advanceTimersByTimeAsync(0)
+}
 
 describe('voice lifecycle without microphone or paid API calls', () => {
   let stopTrack: ReturnType<typeof vi.fn>
   let media: ReturnType<typeof vi.fn>
   let fetchMock: ReturnType<typeof vi.fn>
-  const callbacks = () => ({ getContext: () => context, applyOperations: vi.fn(() => ({ ok: true, message: 'Applied.', ids: ['shape:1'] })), onStatus: vi.fn(), onTranscript: vi.fn(), onAssistant: vi.fn(), onError: vi.fn() })
+  let audioTrack: { stop: ReturnType<typeof vi.fn>; enabled: boolean }
+  const callbacks = () => ({ getContext: () => context, applyOperations: vi.fn(() => ({ ok: true, message: 'Applied.', ids: ['shape:1'] })), onStatus: vi.fn(), onTranscript: vi.fn(), onAssistant: vi.fn(), onError: vi.fn(), onNotice: vi.fn() })
   beforeEach(() => {
     vi.useFakeTimers()
     stopTrack = vi.fn()
-    const stream = { getTracks: () => [{ stop: stopTrack }], getAudioTracks: () => [{ stop: stopTrack }] }
+    audioTrack = { stop: stopTrack, enabled: true }
+    const stream = { getTracks: () => [audioTrack], getAudioTracks: () => [audioTrack] }
     media = vi.fn().mockResolvedValue(stream)
     fetchMock = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/session') ? { sdp: 'answer', sessionId: 'rtc_test', maxDurationSeconds: 300 } : { ok: true } }))
     vi.stubGlobal('window', { isSecureContext: true })
@@ -93,7 +100,8 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await vi.advanceTimersByTimeAsync(90_000)
     expect(client.isConnected()).toBe(false)
     expect(stopTrack).toHaveBeenCalledTimes(1)
-    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('90 seconds'))
+    expect(handlers.onNotice).toHaveBeenCalledWith(expect.stringContaining('90 seconds'))
+    expect(handlers.onError).not.toHaveBeenCalled()
   })
   it('sends current pen context before requesting a response to speech', async () => {
     const client = createRealtimeClient(callbacks())
@@ -105,6 +113,26 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     const response = channel.sent.findIndex(e => e.type === 'response.create')
     expect(snapshot).toBeGreaterThanOrEqual(0)
     expect(response).toBeGreaterThan(snapshot)
+    client.disconnect()
+  })
+  it('discards an oversized argument stream before concatenation and ignores its later deltas', async () => {
+    const handlers = { ...callbacks(), onContentPreview: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'response.created', response: { id: 'oversized' } })
+    channel.receive({ type: 'response.output_item.added', response_id: 'oversized', item: { type: 'function_call', call_id: 'large', name: 'apply_board_operations' } })
+    channel.receive({ type: 'response.function_call_arguments.delta', response_id: 'oversized', call_id: 'large', delta: '{"operations":[{"type":"create_text","text":"Hello' })
+    for (let i = 0; i < 500; i++) channel.receive({ type: 'response.function_call_arguments.delta', response_id: 'oversized', call_id: 'large', delta: 'x'.repeat(2000) })
+    expect(client.getDiagnostics()).toMatchObject({ streams: 1, streamCharacters: 0 })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    // Initial arguments are bounded too, before any delta can be received.
+    channel.receive({ type: 'response.output_item.added', response_id: 'oversized', item: { type: 'function_call', call_id: 'large-initial', arguments: 'x'.repeat(100_000) } })
+    expect(client.getDiagnostics()).toMatchObject({ streams: 2, streamCharacters: 0 })
+    channel.receive({ type: 'response.done', response: { id: 'oversized', status: 'completed', output: [] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(client.getDiagnostics()).toMatchObject({ streams: 0, streamCharacters: 0 })
     client.disconnect()
   })
   it('uses unique context item IDs within the 32-character protocol limit at startup and replacement', async () => {
@@ -173,6 +201,52 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     channel.receive({ type: 'response.function_call_arguments.done', response_id: 'resp2', call_id: 'call2', name: 'apply_board_operations', arguments: '{"operations":[{"type":"create_text","text":"Hello"}],"message":""}' })
     await vi.advanceTimersByTimeAsync(0)
     expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it('uses exact added-item metadata when completed arguments omit the function name', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    const call = { ...toolCall('integral', [{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }]), id: 'item-integral' }
+    channel.receive({ type: 'response.created', response: { id: 'metadata' } })
+    channel.receive({ type: 'response.output_item.added', response_id: 'metadata', item: { ...call, arguments: '' } })
+    channel.receive({ type: 'response.function_call_arguments.done', response_id: 'metadata', call_id: call.call_id, item_id: call.id, arguments: call.arguments })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }])
+    channel.receive({ type: 'response.output_item.done', response_id: 'metadata', item: call })
+    channel.receive({ type: 'response.done', response: { id: 'metadata', status: 'completed', output: [call] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it('waits for a complete output item when arguments have no known function metadata', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel, call = toolCall('late-name', [{ type: 'create_math', latex: 'x' }])
+    channel.receive({ type: 'response.created', response: { id: 'missing-name' } })
+    channel.receive({ type: 'response.function_call_arguments.done', response_id: 'missing-name', call_id: call.call_id, arguments: call.arguments })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    channel.receive({ type: 'response.output_item.done', response_id: 'missing-name', item: call })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+  it('repairs conflicting event metadata without dispatching either claimed tool', async () => {
+    const correction: BoardOperation = { type: 'create_math', latex: '\\int x\\,dx' }
+    const handlers = { ...callbacks(), getVisualContext: vi.fn(), repairRequest: vi.fn(async () => ({ operations: [correction], message: 'Integral added.' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write the integral of x')
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'response.created', response: { id: 'conflict' } })
+    channel.receive({ type: 'response.output_item.added', response_id: 'conflict', item: { type: 'function_call', call_id: 'conflict', name: 'apply_board_operations', arguments: '' } })
+    channel.receive({ type: 'response.function_call_arguments.done', response_id: 'conflict', call_id: 'conflict', name: 'inspect_board', arguments: '{}' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.getVisualContext).not.toHaveBeenCalled()
+    expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ failure: expect.objectContaining({ message: expect.stringContaining('inconsistent function metadata') }) }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
     client.disconnect()
   })
   it('does not add a second response merely to confirm a successful dictated fragment', async () => {
@@ -355,7 +429,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     client.disconnect()
   })
 
-  it('cancels an in-flight repair for new speech without showing a stale error', async () => {
+  it('discards speech while a repair is paused and reports an unexpectedly cancelled correction', async () => {
     const handlers = { ...callbacks(), getContext: () => mathContext, applyOperations: vi.fn(() => mathFailure) }
     const client = createRealtimeClient(handlers)
     await client.connect()
@@ -366,9 +440,604 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     channel.receive({ type: 'response.done', response: { id: 'repair', status: 'cancelled', output: [toolCall('second', [correctedEdit])] } })
     await vi.advanceTimersByTimeAsync(0)
     expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
-    expect(handlers.onError).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('correction was interrupted'))
     expect(handlers.onStatus).toHaveBeenLastCalledWith('listening')
     client.disconnect()
+  })
+  it.each(['{"operations":', '{"operations":"bad"}', '{"operations":[{"type":"invented_action"}]}'])('repairs a malformed payload once with the original typed intent: %s', async argumentsText => {
+    const repairRequest = vi.fn(async () => ({ operations: [correctedEdit], message: 'Equation corrected.' }))
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest, onRecoveryState: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Extend this equation with equals question mark')
+    const channel = FakePeer.latest.channel
+    await finishResponse(channel, 'broken', [{ type: 'function_call', call_id: 'malformed', name: 'apply_board_operations', arguments: argumentsText }])
+    expect(repairRequest).toHaveBeenCalledTimes(1)
+    expect(repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Extend this equation with equals question mark', context: mathContext, failure: expect.objectContaining({ kind: 'malformed_arguments', rawArguments: argumentsText }) }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.onRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ phase: 'repairing', attempt: 1 }))
+    expect(handlers.onRecoveryState).toHaveBeenLastCalledWith(null)
+    expect(audioTrack.enabled).toBe(true)
+    expect(handlers.onError).not.toHaveBeenCalled()
+    // Only the user's initial response; Luna returns the confirmation directly.
+    expect(responseRequests(channel)).toHaveLength(1)
+    client.disconnect()
+  })
+
+  it('accepts schema-valid array/single-operation shorthand locally without spending a repair request', async () => {
+    const repairRequest = vi.fn()
+    const handlers = { ...callbacks(), repairRequest }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    await finishResponse(channel, 'single', [{ type: 'function_call', call_id: 'single', name: 'apply_board_operations', arguments: '{"type":"create_text","text":"Hello"}' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_text', text: 'Hello' }])
+    expect(repairRequest).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it.each(['create_math', 'functions.apply_board_operations', undefined])('repairs an unsupported or missing final tool name once without guessing its meaning: %s', async name => {
+    const correction: BoardOperation = { type: 'create_math', latex: '\\int \\sin(x)\\,dx' }
+    const handlers = { ...callbacks(), repairRequest: vi.fn(async () => ({ operations: [correction], message: 'Integral added.' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write the integral of sine x')
+    const channel = FakePeer.latest.channel
+    const call = { type: 'function_call', call_id: 'unknown', name, arguments: '{"latex":"not trusted for dispatch"}' }
+    await finishResponse(channel, 'unknown-tool', [call])
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Write the integral of sine x', failure: expect.objectContaining({ kind: 'malformed_arguments', rawArguments: call.arguments }) }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
+    expect(handlers.onError).not.toHaveBeenCalled()
+    channel.receive({ type: 'response.done', response: { id: 'unknown-tool', status: 'completed', output: [call] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+  it('renders integral transcription deltas as temporary math without committing board edits', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'integral-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'integral-speech', delta: 'integral' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:integral-speech', value: '\\int', complete: false, operationType: 'create_math' }))
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'integral-speech', delta: ' of sine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ value: '\\int \\sin x', complete: false }))
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'integral-speech', transcript: 'integral of sine x dx' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ value: '\\int \\sin x\\,\\mathrm{d}x', complete: false }))
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+  })
+  it.each(['source', 'selection', 'mode'] as const)('clears a math transcript draft when its original %s changes', async change => {
+    let current: BoardContext = { ...structuredClone(mathContext), dictationMode: 'math' }
+    const handlers = { ...callbacks(), getContext: () => current, onContentPreview: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'edit-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'edit-speech', delta: 'plus three' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ target: 'math:a', operationType: 'edit_content' }))
+    if (change === 'source') current = { ...current, objects: current.objects.map(object => object.id === 'math:a' ? { ...object, latex: 'x^3' } : object) }
+    else if (change === 'selection') current = { ...current, selectedIds: ['math:b'] }
+    else current = { ...current, dictationMode: 'assistant' }
+    client.updateContext()
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'edit-speech', transcript: 'plus three' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it('gives model previews and committed edits precedence over late transcript text', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'model-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'model-speech', delta: 'integral' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'model-speech' })
+    channel.receive({ type: 'response.created', response: { id: 'model-preview' } })
+    channel.receive({ type: 'response.function_call_arguments.delta', response_id: 'model-preview', call_id: 'model-call', delta: '{"operations":[{"type":"create_math","latex":"x^2' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'model-call', value: 'x^2' }))
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'model-speech', delta: ' of sine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'model-call', value: 'x^2' }))
+    channel.receive({ ...toolCall('model-call', [{ type: 'create_math', latex: 'x^2' }]), type: 'response.function_call_arguments.done', response_id: 'model-preview' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'model-speech', transcript: 'integral of sine x dx' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    client.disconnect()
+  })
+  it('clears transcript drafts on a new utterance and on paused recovery', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn(), repairRequest: vi.fn(() => new Promise<never>(() => {})) }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'old-draft' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'old-draft', delta: 'integral' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:old-draft' }))
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'new-draft' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'old-draft', transcript: 'integral of sine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'new-draft', transcript: 'integral of cosine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:new-draft' }))
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'new-draft' })
+    await finishResponse(channel, 'repair-draft', [{ type: 'function_call', call_id: 'unsupported', name: 'create_math', arguments: '{}' }])
+    expect(audioTrack.enabled).toBe(false)
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    client.disconnect()
+  })
+  it('does not clear a newer transcript draft when an interrupted old response completes', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'old-speech' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'old-speech' })
+    channel.receive({ type: 'response.created', response: { id: 'old-result' } })
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'new-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'new-speech', delta: 'integral of sine x' })
+    const oldCall = toolCall('old-call', [{ type: 'create_math', latex: 'x' }])
+    channel.receive({ ...oldCall, type: 'response.function_call_arguments.done', response_id: 'old-result' })
+    channel.receive({ type: 'response.done', response: { id: 'old-result', status: 'cancelled', output: [oldCall] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:new-speech' }))
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it('does not replay earlier successful edits when a later tool name is unsupported', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write an integral')
+    await finishResponse(FakePeer.latest.channel, 'partial', [toolCall('good', [{ type: 'create_math', latex: 'x' }]), { type: 'function_call', call_id: 'unsupported', name: 'create_math', arguments: '{}' }])
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('remaining change again'))
+    client.disconnect()
+  })
+
+  it.each(['apply_board_operations', 'create_math'])('pauses the microphone and aborts a pending repair on Stop for tool %s', async name => {
+    let finish!: (command: { operations: BoardOperation[]; message: string }) => void
+    const repairRequest = vi.fn((_request: unknown, _signal: AbortSignal) => new Promise<{ operations: BoardOperation[]; message: string }>(resolve => { finish = resolve }))
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest, onRecoveryState: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Make it equal to zero')
+    const channel = FakePeer.latest.channel
+    await finishResponse(channel, 'malformed', [{ type: 'function_call', call_id: 'bad', name, arguments: '{}' }])
+    expect(audioTrack.enabled).toBe(false)
+    const responseCount = responseRequests(channel).length
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'discarded' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'discarded' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'discarded', transcript: 'An ambiguous new instruction' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.onTranscript).not.toHaveBeenCalled()
+    expect(responseRequests(channel)).toHaveLength(responseCount)
+    expect(() => client.sendText('Another request')).toThrow('paused')
+    client.disconnect()
+    expect(repairRequest.mock.calls[0][1].aborted).toBe(true)
+    finish({ operations: [correctedEdit], message: 'Done.' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.onError).not.toHaveBeenCalled()
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    expect(handlers.onRecoveryState).toHaveBeenLastCalledWith(null)
+    expect(handlers.onStatus).toHaveBeenLastCalledWith('idle')
+  })
+
+  it.each(['apply_board_operations', 'create_math'])('does not apply a repair after drawing or selection changed for tool %s', async name => {
+    let current = structuredClone(mathContext)
+    let finish!: (command: { operations: BoardOperation[]; message: string }) => void
+    const handlers = { ...callbacks(), getContext: () => current, repairRequest: vi.fn(() => new Promise<{ operations: BoardOperation[]; message: string }>(resolve => { finish = resolve })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Append equals zero')
+    await finishResponse(FakePeer.latest.channel, 'bad', [{ type: 'function_call', call_id: 'bad', name, arguments: '{}' }])
+    current = { ...current, selectedIds: ['math:b'] }
+    finish({ operations: [correctedEdit], message: 'Done.' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('board changed during recovery'))
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+
+  it('gives a stalled repair a finite deadline and leaves healthy voice available', async () => {
+    const repairRequest = vi.fn((_request: unknown, _signal: AbortSignal) => new Promise<never>(() => {}))
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Append equals zero')
+    await finishResponse(FakePeer.latest.channel, 'bad', [{ type: 'function_call', call_id: 'bad', name: 'apply_board_operations', arguments: '{}' }])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(repairRequest.mock.calls[0][1].aborted).toBe(true)
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('took too long'))
+    expect(client.isConnected()).toBe(true)
+    expect(audioTrack.enabled).toBe(true)
+    expect(handlers.onStatus).toHaveBeenLastCalledWith('listening')
+    client.disconnect()
+  })
+
+  it('allows only one external correction even if its schema or board application fails', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })), applyOperations: vi.fn(() => mathFailure) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Extend the equation')
+    const channel = FakePeer.latest.channel
+    await finishResponse(channel, 'failed', [toolCall('first', [brokenEdit])])
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(2)
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('corrected edit also failed'))
+    expect(responseRequests(channel)).toHaveLength(1)
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+
+  it('aborts a Luna correction during reconnect and ignores its eventual old result', async () => {
+    let finish!: (command: { operations: BoardOperation[]; message: string }) => void
+    const repairRequest = vi.fn((_request: unknown, _signal: AbortSignal) => new Promise<{ operations: BoardOperation[]; message: string }>(resolve => { finish = resolve }))
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Extend the equation')
+    const oldPeer = FakePeer.latest
+    await finishResponse(oldPeer.channel, 'bad', [{ type: 'function_call', call_id: 'bad', name: 'apply_board_operations', arguments: '{}' }])
+    oldPeer.connectionState = 'failed'; oldPeer.dispatchEvent(new Event('connectionstatechange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(repairRequest.mock.calls[0][1].aborted).toBe(true)
+    finish({ operations: [correctedEdit], message: 'Old correction' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(client.isConnected()).toBe(true)
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+
+  it('closes media immediately on fatal quota errors without attempting a repair', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Create a note')
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'response.created', response: { id: 'quota' } })
+    channel.receive({ type: 'response.done', response: { id: 'quota', status: 'failed', status_details: { error: { code: 'insufficient_quota', message: 'Credit exhausted' } }, output: [] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledTimes(1)
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    expect(client.isConnected()).toBe(false)
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/session'))).toHaveLength(1)
+  })
+
+  it('clears an active reconnect when the user pauses microphone and never resumes it later', async () => {
+    let finish!: (response: unknown) => void
+    const handlers = callbacks(), client = createRealtimeClient(handlers)
+    await client.connect()
+    fetchMock.mockImplementation(async (url: string) => url.endsWith('/session')
+      ? await new Promise(resolve => { finish = resolve }) : { ok: true, json: async () => ({ ok: true }) })
+    FakePeer.latest.connectionState = 'failed'; FakePeer.latest.dispatchEvent(new Event('connectionstatechange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(audioTrack.enabled).toBe(false)
+    client.disconnect()
+    finish({ ok: true, json: async () => ({ sdp: 'answer', sessionId: 'late', maxDurationSeconds: 300 }) })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(client.isConnected()).toBe(false)
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    expect(handlers.onStatus).toHaveBeenLastCalledWith('idle')
+    expect(handlers.onError).not.toHaveBeenCalled()
+  })
+
+  it.each(['failed', 'incomplete'])('recovers a %s response once when nothing was applied', async status => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Extend the equation')
+    await finishResponse(FakePeer.latest.channel, 'failed', [], status)
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.onError).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+
+  it('never replays a turn after an early tool succeeded but response.done failed', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Append equals zero')
+    const channel = FakePeer.latest.channel, call = toolCall('applied', [correctedEdit])
+    channel.receive({ type: 'response.created', response: { id: 'failed' } })
+    channel.receive({ ...call, type: 'response.function_call_arguments.done', response_id: 'failed' })
+    await vi.advanceTimersByTimeAsync(0)
+    channel.receive({ type: 'response.done', response: { id: 'failed', status: 'failed', output: [call] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('Applied edits were kept'))
+    client.disconnect()
+  })
+
+  it.each(['apply_board_operations', 'create_math'])('waits for the original finalized transcript before repairing tool %s', async name => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original' })
+    await finishResponse(channel, 'bad', [{ type: 'function_call', call_id: 'bad', name, arguments: '{}' }])
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(audioRecoveryRequest(channel)).toBeUndefined()
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'original', transcript: 'Add equals question mark' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Add equals question mark' }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+
+  it('declines repair when the original audio never produces an unambiguous transcript', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original' })
+    await finishResponse(channel, 'failed', [], 'incomplete')
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(audioRecoveryRequest(channel)).toBeDefined()
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('could not be transcribed clearly'))
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+  it('retrieves the original transcript while the original tool completion is pending', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, onContentPreview: vi.fn(), repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Equation corrected.' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original-audio' })
+    channel.receive({ type: 'response.created', response: { id: 'original-response' } })
+    const failedCall = { type: 'function_call', call_id: 'unsupported', name: 'create_math', arguments: '{}' }
+    channel.receive({ ...failedCall, type: 'response.function_call_arguments.done', response_id: 'original-response' })
+    await vi.advanceTimersByTimeAsync(6000)
+    const recovery = audioRecoveryRequest(channel)
+    expect(recovery).toMatchObject({ type: 'conversation.item.retrieve', item_id: 'original-audio' })
+    expect(audioTrack.enabled).toBe(false)
+    channel.receive({ type: 'response.done', response: { id: 'original-response', status: 'completed', output: [failedCall] } })
+    await completeAudioRecovery(channel, recovery, 'audio-only', 'This equals negative cosine of x evaluated from pi to two pi')
+    expect(handlers.repairRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ instruction: 'This equals negative cosine of x evaluated from pi to two pi' }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.onAssistant).toHaveBeenCalledExactlyOnceWith('Equation corrected.', true)
+    expect(handlers.onTranscript).not.toHaveBeenCalled()
+    expect(handlers.onContentPreview.mock.calls.every(([preview]) => preview === null)).toBe(true)
+    expect(handlers.onError).not.toHaveBeenCalled()
+    expect(responseRequests(channel)).toHaveLength(1)
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+  it('prefers a delayed normal final and aborts only the dedicated ASR request', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, transcribeAudio: vi.fn((_audio: string, _signal: AbortSignal) => new Promise<never>(() => {})), repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })) }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original-audio' })
+    await finishResponse(channel, 'original-response', [{ type: 'function_call', call_id: 'bad', name: 'create_math', arguments: '{}' }])
+    await vi.advanceTimersByTimeAsync(6000)
+    const recovery = audioRecoveryRequest(channel)
+    channel.receive({ type: 'conversation.item.retrieved', item: { id: recovery.item_id, type: 'message', role: 'user', content: [{ type: 'input_audio', audio: 'A'.repeat(6400) }] } })
+    await vi.advanceTimersByTimeAsync(0)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'original-audio', transcript: 'Append equals zero' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.transcribeAudio).toHaveBeenCalledTimes(1)
+    expect(handlers.transcribeAudio.mock.calls[0][1].aborted).toBe(true)
+    expect(channel.sent.filter(event => event.type === 'response.cancel')).toHaveLength(0)
+    expect(handlers.repairRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ instruction: 'Append equals zero' }), expect.any(AbortSignal))
+    await completeAudioRecovery(channel, recovery, 'audio-only', 'An inaccurate late transcript')
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+  it('ignores old commits and transcription failures, but starts recovery immediately after the original transcript fails', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })) }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'old-audio' })
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'current-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'old-audio' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.failed', item_id: 'old-audio' })
+    expect(responseRequests(channel)).toHaveLength(0)
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'current-audio' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.failed', item_id: 'current-audio' })
+    await finishResponse(channel, 'current-response', [{ type: 'function_call', call_id: 'bad', name: 'create_math', arguments: '{}' }])
+    const recovery = audioRecoveryRequest(channel)
+    expect(recovery.item_id).toBe('current-audio')
+    expect(handlers.onError).not.toHaveBeenCalled()
+    await completeAudioRecovery(channel, recovery, 'audio-only', 'Append equals zero')
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+  it.each([0, 6000])('Stop cancels original-audio recovery after %s ms without adopting late text', async wait => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original-audio' })
+    await finishResponse(channel, 'original-response', [{ type: 'function_call', call_id: 'bad', name: 'create_math', arguments: '{}' }])
+    await vi.advanceTimersByTimeAsync(wait)
+    const recovery = audioRecoveryRequest(channel)
+    client.disconnect()
+    if (recovery) await completeAudioRecovery(channel, recovery, 'late-audio', 'Old instruction')
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'original-audio', transcript: 'Old instruction' })
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.onError).not.toHaveBeenCalled()
+    expect(client.isConnected()).toBe(false)
+  })
+  it('discards a recovered audio instruction when the original equation changes during transcription', async () => {
+    let current = structuredClone(mathContext)
+    const handlers = { ...callbacks(), getContext: () => current, repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })) }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original-audio' })
+    await finishResponse(channel, 'original-response', [{ type: 'function_call', call_id: 'bad', name: 'create_math', arguments: '{}' }])
+    await vi.advanceTimersByTimeAsync(6000)
+    current = { ...current, objects: current.objects.map(object => object.id === 'math:a' ? { ...object, latex: 'new source' } : object) }
+    await completeAudioRecovery(channel, audioRecoveryRequest(channel), 'audio-only', 'Append equals zero')
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('board changed during recovery'))
+    client.disconnect()
+  })
+  it('uses dedicated ASR once for exact retrieved PCM with no generative response', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, transcribeAudio: vi.fn(async () => 'Append negative cosine of x'), repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })) }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original-audio' })
+    await finishResponse(channel, 'original-response', [{ type: 'function_call', call_id: 'bad', name: 'create_math', arguments: '{}' }])
+    await vi.advanceTimersByTimeAsync(6000)
+    const audio = 'A'.repeat(6400)
+    channel.receive({ type: 'conversation.item.retrieved', item: { id: 'original-audio', type: 'message', role: 'user', content: [{ type: 'input_audio', audio }] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.transcribeAudio).toHaveBeenCalledExactlyOnceWith(audio, expect.any(AbortSignal))
+    expect(handlers.repairRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ instruction: 'Append negative cosine of x' }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(responseRequests(channel)).toHaveLength(1)
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+  it('does not apply fallback words after a different authoritative final arrives during Luna repair', async () => {
+    let finish!: (command: { operations: BoardOperation[]; message: string }) => void
+    const handlers = { ...callbacks(), getContext: () => mathContext, transcribeAudio: vi.fn(async () => 'Append cosine x'), repairRequest: vi.fn(() => new Promise<{ operations: BoardOperation[]; message: string }>(resolve => { finish = resolve })) }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original-audio' })
+    await finishResponse(channel, 'original-response', [{ type: 'function_call', call_id: 'bad', name: 'create_math', arguments: '{}' }])
+    await vi.advanceTimersByTimeAsync(6000)
+    channel.receive({ type: 'conversation.item.retrieved', item: { id: 'original-audio', type: 'message', role: 'user', content: [{ type: 'input_audio', audio: 'A'.repeat(6400) }] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'original-audio', transcript: 'Append sine x' })
+    finish({ operations: [correctedEdit], message: 'Corrected.' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('finalized transcript changed'))
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+  it('leaves voice connected after the dedicated transcription endpoint rejects unusable speech', async () => {
+    const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    fetchMock.mockImplementation(async () => ({ ok: false, status: 502, headers: { get: () => null }, json: async () => ({ error: 'The recovered speech could not be transcribed.', code: 'invalid_transcript', retryable: false }) }))
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original-audio' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original-audio' })
+    await finishResponse(channel, 'original-response', [{ type: 'function_call', call_id: 'bad', name: 'create_math', arguments: '{}' }])
+    await vi.advanceTimersByTimeAsync(6000)
+    channel.receive({ type: 'conversation.item.retrieved', item: { id: 'original-audio', type: 'message', role: 'user', content: [{ type: 'input_audio', audio: 'A'.repeat(6400) }] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/realtime/transcribe', expect.objectContaining({ method: 'POST' }))
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith('The recovered speech could not be transcribed.')
+    expect(client.isConnected()).toBe(true)
+    expect(audioTrack.enabled).toBe(true)
+    client.disconnect()
+  })
+  it.each(['failed', 'incomplete'])('never repairs partial success after a terminal %s response', async status => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn(), applyOperations: vi.fn(() => [{ ok: true, message: 'One change applied.', ids: ['created'] }, mathFailure]) }, client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write two equations')
+    const channel = FakePeer.latest.channel, call = toolCall('partial', [{ type: 'create_math', latex: 'x' }, { type: 'create_math', latex: '\\answer' }])
+    channel.receive({ type: 'response.created', response: { id: 'partial-response' } })
+    channel.receive({ ...call, type: 'response.function_call_arguments.done', response_id: 'partial-response' })
+    await vi.advanceTimersByTimeAsync(0)
+    channel.receive({ type: 'response.done', response: { id: 'partial-response', status, output: [call] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+
+  it('reconnects a failed transport without rerequesting the microphone or replaying edits', async () => {
+    const handlers = { ...callbacks(), onRecoveryState: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const oldPeer = FakePeer.latest
+    await finishResponse(oldPeer.channel, 'done', [toolCall('once', [{ type: 'create_text', text: 'Once' }])])
+    await finishResponse(oldPeer.channel, 'confirmation')
+    oldPeer.connectionState = 'failed'; oldPeer.dispatchEvent(new Event('connectionstatechange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakePeer.latest).not.toBe(oldPeer)
+    expect(oldPeer.closed).toBe(true)
+    expect(media).toHaveBeenCalledTimes(1)
+    expect(handlers.onRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ phase: 'reconnecting' }))
+    expect(audioTrack.enabled).toBe(true)
+    oldPeer.channel.receive({ ...toolCall('late', [{ type: 'create_text', text: 'Replay' }]), type: 'response.function_call_arguments.done', response_id: 'done' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(client.isConnected()).toBe(true)
+    client.disconnect()
+  })
+
+  it('bounds transient connection retries and never retries an authentication failure', async () => {
+    fetchMock.mockImplementation(async (url: string) => url.endsWith('/session') ? { ok: false, status: 503, json: async () => ({ error: 'Voice service temporarily unavailable', retryable: true }) } : { ok: true, json: async () => ({ ok: true }) })
+    const handlers = callbacks(), client = createRealtimeClient(handlers)
+    const sessionCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/session')).length
+    const connecting = client.connect()
+    // retries back off (0.5, 1, 2, 4, 8 s) and stop at the one minute reconnect deadline
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sessionCalls()).toBe(3)
+    await vi.advanceTimersByTimeAsync(59_000); await connecting
+    expect(sessionCalls()).toBe(12)
+    expect(handlers.onError).toHaveBeenCalledTimes(1)
+    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('within one minute'))
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(sessionCalls()).toBe(12)
+    fetchMock.mockClear().mockImplementation(async () => ({ ok: false, status: 401, json: async () => ({ error: 'Invalid API key', retryable: false }) }))
+    await client.connect()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(client.isConnected()).toBe(false)
+  })
+
+  it('renews sessions between turns and retains hard credit and intentional idle-stop behavior', async () => {
+    let sessions = 0
+    // sessions of a minute or less no longer renew early, so this one is 75 s (renewal 15 s before the end)
+    fetchMock.mockImplementation(async (url: string) => url.endsWith('/session') ? ++sessions === 1
+      ? { ok: true, json: async () => ({ sdp: 'answer', sessionId: 'first', maxDurationSeconds: 75 }) }
+      : { ok: false, status: 429, json: async () => ({ error: 'The voice credit allowance has been reached.', retryable: false }) }
+      : { ok: true, json: async () => ({ ok: true }) })
+    const handlers = { ...callbacks(), onRecoveryState: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(sessions).toBe(1)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sessions).toBe(2)
+    expect(handlers.onRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ phase: 'renewing' }))
+    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('credit allowance'))
+    expect(client.isConnected()).toBe(false)
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(sessions).toBe(2)
+  })
+
+  it('bounds state across 260 turns over two simulated hours and rejects events from old sessions', async () => {
+    const handlers = callbacks(), client = createRealtimeClient(handlers)
+    await client.connect()
+    const first = FakePeer.latest
+    for (let i = 0; i < 260; i++) {
+      client.sendText(`Create note ${i}`)
+      const channel = FakePeer.latest.channel
+      await finishResponse(channel, `turn${i}`, [toolCall(`call${i}`, [{ type: 'create_text', text: String(i) }])])
+      await finishResponse(channel, `confirm${i}`)
+      await vi.advanceTimersByTimeAsync(30_000)
+      const counts = client.getDiagnostics()
+      expect(counts.executions).toBe(0); expect(counts.responses).toBe(0); expect(counts.streams).toBe(0)
+      expect(counts.rememberedCalls).toBeLessThanOrEqual(256); expect(counts.rememberedResponses).toBeLessThanOrEqual(256)
+    }
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(260)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/session')).length).toBeGreaterThanOrEqual(25)
+    expect(media).toHaveBeenCalledTimes(1)
+    first.channel.receive({ type: 'response.created', response: { id: 'old' } })
+    first.channel.receive({ type: 'response.done', response: { id: 'old', status: 'completed', output: [toolCall('replay', [{ type: 'create_text', text: 'Old' }])] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(260)
+    expect(handlers.onError).not.toHaveBeenCalled()
+    client.disconnect()
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(handlers.onStatus).toHaveBeenLastCalledWith('idle')
+    expect(stopTrack).toHaveBeenCalledTimes(1)
   })
   it('diagnoses context create/delete/replacement acknowledgements, not merely an open channel', async () => {
     const checking = checkVoiceConnection(context)

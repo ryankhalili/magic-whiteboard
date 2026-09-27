@@ -1,5 +1,5 @@
-import { createShapeId, type Editor, type TLShape, type TLShapeId, type TLShapePartial, type TLCreateShapePartial } from '../canvas/editor'
-import type { BoardContext, BoardObject, BoardOperation, BoardResult, Bounds } from '../../shared/board'
+import { createAssetId, createShapeId, type AssetRecord, type Editor, type TLImageShape, type TLShape, type TLShapeId, type TLShapePartial, type TLCreateShapePartial } from '../canvas/editor'
+import type { BoardContext, BoardImage, BoardObject, BoardOperation, BoardResult, Bounds, PlacementOption } from '../../shared/board'
 import { DEFAULT_MAGIC_PROPS, type MagicShape, type MagicShapeProps } from './MagicShape'
 import { autoYRange, validateDomain, validateExpression } from './expression'
 import { applyContentEdit, applyLatexContentEdit } from './contentEdit'
@@ -8,9 +8,13 @@ import { containsBounds, shapePageBounds } from './spatial'
 import { resolveGeometry } from '../../shared/geometry'
 import { validateColor, validateCrop, validateOpacity, validateStrokeWidth } from '../../shared/appearance'
 import { validateLatex } from './latex'
+import { pdfPageInfo } from '../files/pdfPages'
+import { parseLibraryQuery } from '../library/search'
+import type { LibraryQuery } from '../library/types'
 
 const kinds: Record<string, MagicShapeProps['kind']> = { create_plot: 'plot', create_math: 'math', create_text: 'text', create_geometry: 'geometry' }
-const operationTypes = new Set([...Object.keys(kinds), 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo'])
+// insert_library and library_action are resolved by the app before they reach the board
+const operationTypes = new Set([...Object.keys(kinds), 'create_image', 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo'])
 const stringProps = ['expression', 'latex', 'text', 'title', 'color', 'geometry', 'fill'] as const
 const numericProps = ['xMin', 'xMax', 'yMin', 'yMax', 'fontSize', 'fillOpacity', 'strokeWidth'] as const
 
@@ -64,9 +68,14 @@ export function getPlacementBounds(operation: BoardOperation, context: BoardCont
     requireLiteralSize(region, kind)
     return validateBounds({ ...region })
   }
-  const point = operation.placement === 'pointer' && context.pointer ? context.pointer
-    : operation.placement !== 'auto' && context.focus ? { x: context.focus.bounds.x + context.focus.bounds.w / 2, y: context.focus.bounds.y + context.focus.bounds.h / 2 }
-      : { x: context.viewport.x + context.viewport.w / 2, y: context.viewport.y + context.viewport.h / 2 }
+  // a ranked free area, only offered when nothing is circled; A when the model did not choose one
+  const optionId = operation.placementOption ?? 'A'
+  const option = !region && !context.focus && operation.placement !== 'pointer'
+    ? context.placementOptions?.find(o => o.id === optionId && isFiniteBox(o.bounds)) : undefined
+  const point = option ? { x: option.bounds.x + option.bounds.w / 2, y: option.bounds.y + option.bounds.h / 2 }
+    : operation.placement === 'pointer' && context.pointer ? context.pointer
+      : operation.placement !== 'auto' && context.focus ? { x: context.focus.bounds.x + context.focus.bounds.w / 2, y: context.focus.bounds.y + context.focus.bounds.h / 2 }
+        : { x: context.viewport.x + context.viewport.w / 2, y: context.viewport.y + context.viewport.h / 2 }
   // Literal pointer/auto placement retains its existing containment behavior.
   // Reference batches use actual prior object extents, including rotations and
   // earlier transforms in this transaction, rather than a diagonal index offset.
@@ -87,6 +96,124 @@ export function getPlacementBounds(operation: BoardOperation, context: BoardCont
   validateBounds(bounds)
   requireInside(region, bounds)
   return bounds
+}
+
+const isFiniteBox = (b: Bounds | undefined | null): b is Bounds => !!b && [b.x, b.y, b.w, b.h].every(Number.isFinite) && b.w > 0 && b.h > 0
+
+// fnv style 53 bit hash, so the same page or problem always maps to the same asset
+function hashKey(text: string) {
+  let a = 0xdeadbeef, b = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) { const c = text.charCodeAt(i); a = Math.imul(a ^ c, 2654435761); b = Math.imul(b ^ c, 1597334677) }
+  a = Math.imul(a ^ (a >>> 16), 2246822507) ^ Math.imul(b ^ (b >>> 13), 3266489909)
+  b = Math.imul(b ^ (b >>> 16), 2246822507) ^ Math.imul(a ^ (a >>> 13), 3266489909)
+  return (4294967296 * (2097151 & b) + (a >>> 0)).toString(16).padStart(14, '0')
+}
+/** Deterministic asset id for a rendered library image, so inserting it again reuses the bytes. */
+export const libraryAssetId = (key: string) => createAssetId(`lib-${hashKey(key)}`)
+/** Asset key of a detected item; a newer index draws it differently, so its image is never reused from an older one. */
+export const libraryItemKey = (anchorId: string, indexVersion?: number) => (indexVersion ?? 1) > 1 ? `${anchorId}:item:v${indexVersion}` : `${anchorId}:item`
+
+const IMAGE_SRC = /^data:image\/(png|jpeg);base64,[A-Za-z\d+/=]+$/
+function validateImage(image: BoardImage | undefined): BoardImage {
+  if (!image || typeof image.src !== 'string' || !IMAGE_SRC.test(image.src)) throw new Error('Only PNG or JPEG images can be added this way.')
+  if (![image.w, image.h].every(n => typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= 1e6)) throw new Error('This image has an invalid size.')
+  return { src: image.src, w: image.w, h: image.h, mimeType: image.src.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', name: String(image.name ?? 'Image').slice(0, 300) || 'Image' }
+}
+function plainMeta(meta: unknown): Record<string, unknown> {
+  if (meta === undefined) return {}
+  let copy: unknown
+  try { const text = JSON.stringify(meta); copy = text && text.length <= 8000 ? JSON.parse(text) : null } catch { copy = null }
+  if (!copy || typeof copy !== 'object' || Array.isArray(copy)) throw new Error('The image details are invalid.')
+  return copy as Record<string, unknown>
+}
+
+export type LibraryImageKind = 'page' | 'item' | 'crop'
+/** Board size of an inserted page or problem, and the work space to keep free below it. */
+export function libraryImageSize(image: { w: number; h: number }, kind: LibraryImageKind): { w: number; h: number; workBelow: number } {
+  const aspect = image.w > 0 && image.h > 0 && Number.isFinite(image.h / image.w) ? Math.min(40, Math.max(1 / 40, image.h / image.w)) : 1.3
+  let w = kind === 'page' ? 700 : Math.min(640, Math.max(80, (image.w || 0) / 2))
+  let h = w * aspect
+  // very thin or very tall images still get a size the board accepts
+  if (h < 16) { h = 16; w = Math.min(10000, 16 / aspect) }
+  if (h > 10000) { h = 10000; w = Math.max(16, 10000 / aspect) }
+  return { w, h, workBelow: kind === 'page' ? 0 : Math.max(260, 1.2 * h) }
+}
+
+/**
+ * Where an image goes when the teacher has pointed or circled: reference mode puts it at the top left of the
+ * area at its natural size; literal mode fits it inside the region. null when nothing is focused.
+ */
+export function focusImageBounds(size: { w: number; h: number }, context: BoardContext): Bounds | null {
+  const region = literalRegion(context)
+  if (region) {
+    const scale = Math.min(1, region.w / size.w, region.h / size.h)
+    const w = size.w * scale, h = size.h * scale
+    if (w < 16 || h < 16) throw new Error('The circled area is too small for this. Circle a larger area.')
+    return { x: region.x, y: region.y, w, h }
+  }
+  const focus = context.focus
+  if (!focus || !isFiniteBox({ ...focus.bounds, w: Math.max(1, focus.bounds.w), h: Math.max(1, focus.bounds.h) })) return null
+  return { x: focus.bounds.x, y: focus.bounds.y, w: size.w, h: size.h }
+}
+
+/** The free spot for a model's placementOption: the option itself when the image fits there, else the spot nearest it. */
+export function spotForOption(option: PlacementOption, spots: readonly { bounds: Bounds }[], size: { w: number; h: number }): Bounds {
+  let best: Bounds | null = null, distance = Infinity
+  for (const spot of spots) {
+    const d = Math.hypot(spot.bounds.x - option.bounds.x, spot.bounds.y - option.bounds.y)
+    if (d < distance) { distance = d; best = spot.bounds }
+  }
+  return best ? { x: best.x, y: best.y, w: size.w, h: size.h } : { x: option.bounds.x, y: option.bounds.y, w: size.w, h: size.h }
+}
+
+/** The library request an insert_library operation refers to, or null when it names nothing. */
+export function libraryQueryFromOperation(operation: BoardOperation): LibraryQuery | null {
+  const book = typeof operation.book === 'string' && operation.book.trim() ? operation.book.trim().slice(0, 200) : undefined
+  const withBook = (query: LibraryQuery): LibraryQuery => book && !query.book ? { ...query, book } : query
+  const page = typeof operation.page === 'string' ? operation.page.trim() : ''
+  if (page) {
+    const label = page.replace(/^(?:pages?|pgs?\.?|p\.?)\s*/i, '').trim()
+    if (!/^(\d{1,4}|[ivxlcdm]{1,8})$/i.test(label)) return null
+    return withBook({ kind: 'page', label: /^\d/.test(label) ? String(Number(label)) : label.toLowerCase(), raw: `page ${label}` })
+  }
+  const item = typeof operation.item === 'string' ? operation.item.trim() : ''
+  const extra = typeof operation.query === 'string' ? operation.query.trim().slice(0, 300) : ''
+  if (item) {
+    const parsed = parseLibraryQuery(item)
+    if (parsed && parsed.kind === 'item') {
+      // a section or chapter the model put in query instead ("exercise 48" plus "in section 5.1")
+      const both = extra && !parsed.section && !parsed.chapter ? parseLibraryQuery(`${item} ${extra}`) : null
+      return withBook(both?.kind === 'item' && both.label === parsed.label && (both.section || both.chapter) ? both : parsed)
+    }
+    const lone = /^(?:#|no\.?|number)?\s*(\d{1,3}(?:\.\d{1,3}){0,2})$/i.exec(item)
+    if (lone) return withBook({ kind: 'item', label: lone[1], raw: item })
+    return withBook(parsed ?? { kind: 'topic', terms: item, raw: item })
+  }
+  const query = typeof operation.query === 'string' ? operation.query.trim() : ''
+  if (query) return withBook(parseLibraryQuery(query) ?? { kind: 'topic', terms: query, raw: query })
+  return null
+}
+
+const KIND_TITLES: Record<string, string> = {
+  example: 'Example', exercise: 'Exercise', problem: 'Problem', checkpoint: 'Checkpoint', section: 'Section', theorem: 'Theorem',
+  definition: 'Definition', question: 'Question', figure: 'Figure', table: 'Table',
+}
+/** What an inserted library image is, from meta.library, for the model and the object list. */
+function libraryObject(meta: Record<string, unknown>, height: number): { kind: string; title: string; workBelow?: number } | null {
+  const value = meta.library
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const info = value as Record<string, unknown>
+  const book = typeof info.title === 'string' ? info.title : 'Textbook'
+  const index = typeof info.pageIndex === 'number' && Number.isInteger(info.pageIndex) ? info.pageIndex : null
+  const page = typeof info.pageLabel === 'string' && info.pageLabel ? `page ${info.pageLabel}` : index !== null ? `file page ${index + 1}` : 'a page'
+  if (info.kind === 'page') return { kind: 'textbook_page', title: `${book}, ${page}`.slice(0, 200) }
+  // the work space kept free under a problem; older inserts get the size a new insert would get
+  const stored = info.workBelow, workBelow = Math.min(10000, typeof stored === 'number' && Number.isFinite(stored) && stored >= 0 ? stored
+    : Number.isFinite(height) && height > 0 ? Math.max(260, 1.2 * height) : 260)
+  if (info.kind === 'crop') return { kind: 'textbook_item', title: `Part of ${page}, ${book}`.slice(0, 200), workBelow }
+  const name = typeof info.itemKind === 'string' ? KIND_TITLES[info.itemKind] ?? 'Item' : 'Item'
+  const label = typeof info.itemLabel === 'string' && info.itemLabel ? ` ${info.itemLabel}` : ''
+  return { kind: 'textbook_item', title: `${name}${label} (${page})`.slice(0, 200), workBelow }
 }
 
 function propsFromOperation(operation: BoardOperation, original: MagicShapeProps): MagicShapeProps {
@@ -134,7 +261,13 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
   return p
 }
 
-type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[]; layers: { ids: TLShapeId[]; front: boolean }[] }
+type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; pageDeletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[]; layers: { ids: TLShapeId[]; front: boolean }[]; assets: AssetRecord[]; locked: TLShapeId[] }
+
+/** An inserted textbook page: locked like paper, but a mistaken insert can still be removed. */
+export function isLibraryPage(shape: TLShape | undefined): boolean {
+  const info = shape?.type === 'image' ? shape.meta?.library : undefined
+  return !!info && typeof info === 'object' && (info as { kind?: unknown }).kind === 'page'
+}
 
 export class BoardController {
   private lastIds: string[] = []
@@ -157,8 +290,18 @@ export class BoardController {
         } else if (shape.props.kind === 'math') object.latex = shape.props.latex
         else if (shape.props.kind === 'text') object.text = shape.props.text
         else { object.geometry = shape.props.geometry; object.text = shape.props.text }
-      } else if (shape.type === 'image') object.crop = shape.props.crop
-      else if (shape.type === 'draw') { object.color = shape.props.color; object.strokeWidth = shape.props.strokeWidth }
+      } else if (shape.type === 'image') {
+        object.crop = shape.props.crop
+        const pdf = pdfPageInfo(shape), book = pdf ? null : libraryObject(shape.meta, object.bounds.h)
+        if (pdf) {
+          object.kind = 'pdf_page'
+          object.title = `Worksheet page ${pdf.page} of ${pdf.pages}: ${pdf.name}`.slice(0, 200)
+          if (pdf.text) object.text = pdf.text
+        } else if (book) {
+          object.kind = book.kind; object.title = book.title
+          if (book.workBelow) object.workBelow = book.workBelow
+        }
+      } else if (shape.type === 'draw') { object.color = shape.props.color; object.strokeWidth = shape.props.strokeWidth }
       return object
     })
   }
@@ -166,13 +309,37 @@ export class BoardController {
 
   private prepare(operations: BoardOperation[], baseContext: BoardContext): Plan {
     const virtual = new Map<string, TLShape>(this.editor.getCurrentPageShapes().map(shape => [shape.id, shape]))
-    const creates = new Map<TLShapeId, TLCreateShapePartial>(), updates = new Map<TLShapeId, TLShapePartial>(), deletes = new Set<TLShapeId>(), touched = new Set<TLShapeId>()
+    const creates = new Map<TLShapeId, TLCreateShapePartial>(), updates = new Map<TLShapeId, TLShapePartial>(), deletes = new Set<TLShapeId>(), pageDeletes = new Set<TLShapeId>(), touched = new Set<TLShapeId>()
     const context = { ...baseContext, selectedIds: [...baseContext.selectedIds], lastCreatedIds: this.lastCreatedIds.length ? this.lastCreatedIds : baseContext.lastCreatedIds }
     const layers: Plan['layers'] = []
+    const assets = new Map<string, AssetRecord>(), locked: TLShapeId[] = []
     const region = literalRegion(context)
     let createdCount = 0
     for (const operation of operations) {
       if (!operation || !operationTypes.has(operation.type)) throw new Error('That whiteboard action is not supported.')
+      if (operation.type === 'create_image') {
+        const image = validateImage(operation.image)
+        if (!operation.bounds) throw new Error('An image needs a place on the board.')
+        const b = validateBounds({ x: operation.bounds.x, y: operation.bounds.y, w: operation.bounds.w, h: operation.bounds.h })
+        requireInside(region, b)
+        const meta = plainMeta(operation.meta)
+        const assetId = typeof meta.assetKey === 'string' && meta.assetKey ? libraryAssetId(meta.assetKey) : createAssetId()
+        if (!this.editor.getAsset(assetId) && !assets.has(assetId)) assets.set(assetId, {
+          id: assetId, typeName: 'asset', type: 'image', meta: {},
+          props: { name: image.name, src: image.src, w: image.w, h: image.h, mimeType: image.mimeType, isAnimated: false },
+        })
+        const id = createShapeId(), isLocked = operation.locked === true
+        const shape: TLCreateShapePartial<TLImageShape> = { id, type: 'image', x: b.x, y: b.y, rotation: 0, isLocked, opacity: 1,
+          props: { assetId, w: b.w, h: b.h, altText: image.name }, meta: { ...meta, marginaliaBackground: false } }
+        creates.set(id, shape)
+        virtual.set(id, { ...shape, index: 0, parentId: this.editor.getCurrentPageId() } as TLImageShape)
+        createdCount++
+        // a locked page is written on, not selected
+        if (isLocked) { locked.push(id); context.selectedIds = [] }
+        else { touched.add(id); context.selectedIds = [id] }
+        context.lastCreatedIds = [id]
+        continue
+      }
       if (operation.axisMode !== undefined && !['equal', 'auto'].includes(operation.axisMode)) throw new Error('Axis mode must be equal or auto.')
       if (operation.opacity !== undefined) validateOpacity(operation.opacity)
       if (operation.layer !== undefined && !['front', 'back'].includes(operation.layer)) throw new Error('Choose front or back for the object layer.')
@@ -216,10 +383,13 @@ export class BoardController {
       }
       for (const id of ids) {
         const shape = virtual.get(id)!
-        if (shape.isLocked || (this.editor.getShape(id) && this.editor.isShapeOrAncestorLocked(shape))) throw new Error('That object is locked. Unlock it before changing it.')
+        // shapes made earlier in this plan are still being placed, so a locked new page can be scaled or moved
+        const removablePage = operation.type === 'delete_objects' && isLibraryPage(shape) && !(this.editor.getShape(id) && this.editor.isShapeOrAncestorLocked(shape.parentId))
+        if (!creates.has(id) && !removablePage && (shape.isLocked || (this.editor.getShape(id) && this.editor.isShapeOrAncestorLocked(shape)))) throw new Error('That object is locked. Unlock it before changing it.')
         requireInside(region, shapePageBounds(this.editor, shape), 'The selected object')
         if (operation.type === 'delete_objects') {
-          virtual.delete(id); updates.delete(id); if (!creates.delete(id)) deletes.add(id); touched.delete(id)
+          virtual.delete(id); updates.delete(id); touched.delete(id)
+          if (!creates.delete(id)) (shape.isLocked ? pageDeletes : deletes).add(id)
           continue
         }
         if (operation.type !== 'update_object' && operation.type !== 'edit_content' && operation.type !== 'transform_object') throw new Error('Undo or redo must be a separate action.')
@@ -303,19 +473,22 @@ export class BoardController {
         virtual.set(id, next)
         if (creates.has(id)) creates.set(id, { ...creates.get(id), x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta, opacity: next.opacity } as TLCreateShapePartial)
         else updates.set(id, { id, type: next.type, x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta, opacity: next.opacity } as TLShapePartial)
-        touched.add(id)
+        if (!locked.includes(id)) touched.add(id)
       }
       context.selectedIds = ids.filter(id => virtual.has(id))
-      if (operation.layer && operation.type !== 'delete_objects') layers.push({ ids: context.selectedIds, front: operation.layer === 'front' })
+      // a locked page stays paper at the back, whatever layer the batch asks for
+      if (operation.layer && operation.type !== 'delete_objects') layers.push({ ids: context.selectedIds.filter(id => !locked.includes(id)), front: operation.layer === 'front' })
       context.lastCreatedIds = context.selectedIds.length ? context.selectedIds : context.lastCreatedIds.filter(id => virtual.has(id))
     }
-    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], touched: [...touched], nextLast: context.lastCreatedIds, layers }
+    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], pageDeletes: [...pageDeletes], touched: [...touched], nextLast: context.lastCreatedIds, layers,
+      assets: [...assets.values()].filter(asset => [...creates.values()].some(shape => shape.type === 'image' && shape.props?.assetId === asset.id)),
+      locked: locked.filter(id => creates.has(id)) }
   }
 
   applyOperations(operations: BoardOperation[]): BoardResult {
     if (!Array.isArray(operations) || operations.length === 0 || operations.length > 20) return { ok: false, message: 'Send between 1 and 20 whiteboard actions.', ids: [] }
     if (operations.length === 1 && (operations[0].type === 'undo' || operations[0].type === 'redo')) {
-      this.editor[operations[0].type](); return { ok: true, message: operations[0].type === 'undo' ? 'Undone.' : 'Redone.', ids: [], objects: this.getObjects() }
+      this.editor[operations[0].type](); return { ok: true, message: operations[0].type === 'undo' ? 'Undone.' : 'Redone.', ids: [] }
     }
     let plan: Plan
     try { plan = this.prepare(operations, this.getContext()) }
@@ -323,15 +496,21 @@ export class BoardController {
     const mark = this.editor.markHistoryStoppingPoint('magic-command')
     try {
       this.editor.run(() => {
+        if (plan.assets.length) this.editor.createAssets(plan.assets)
         if (plan.creates.length) this.editor.createShapes(plan.creates)
         if (plan.updates.length) this.editor.updateShapes(plan.updates)
         if (plan.deletes.length) this.editor.deleteShapes(plan.deletes)
-        for (const layer of plan.layers) this.editor[layer.front ? 'bringToFront' : 'sendToBack'](layer.ids)
+        if (plan.pageDeletes.length) this.editor.run(() => this.editor.deleteShapes(plan.pageDeletes), { ignoreShapeLock: true })
+        // a locked book page is paper: under everything the teacher can touch, so it never hides or shields anything
+        if (plan.locked.length) this.editor.run(() => this.editor.sendToBack(plan.locked, { aboveLocked: true }), { ignoreShapeLock: true })
+        // back means behind other content, never behind pages or backgrounds
+        for (const layer of plan.layers) if (layer.front) this.editor.bringToFront(layer.ids); else this.editor.sendToBack(layer.ids, { aboveLocked: true })
         if (plan.touched.length) this.editor.select(...plan.touched)
+        else if (plan.locked.length) this.editor.selectNone()
       })
       this.editor.markHistoryStoppingPoint('after-magic-command')
       this.lastIds = plan.nextLast
-      return { ok: true, message: 'Whiteboard updated.', ids: plan.touched, objects: this.getObjects() }
+      return { ok: true, message: 'Whiteboard updated.', ids: [...plan.touched, ...plan.locked] }
     } catch (error) {
       this.editor.bailToMark(mark)
       return { ok: false, message: error instanceof Error ? error.message : 'The whiteboard could not apply that change.', ids: [] }

@@ -1,19 +1,34 @@
 import { parse, type MathNode } from 'mathjs'
 
 const constants: Record<string, number> = { pi: Math.PI, e: Math.E, tau: Math.PI * 2 }
+
+/** Real powers: a negative base with an odd root has a real value, so (-8)^(1/3) is -2 and x^(1/3) plots for x < 0. */
+export function realPow(base: number, power: number): number {
+  if (Math.abs(power) > 100) return NaN
+  if (!(base < 0) || Number.isInteger(power)) return Math.pow(base, power)
+  for (let q = 3; q <= 9; q += 2) {
+    const p = Math.round(power * q)
+    if (Math.abs(power * q - p) < 1e-9) return (p % 2 ? -1 : 1) * Math.pow(-base, power)
+  }
+  return NaN
+}
+
 const functions: Record<string, { min: number; max: number; fn: (...n: number[]) => number }> = {
   sin: { min: 1, max: 1, fn: Math.sin }, cos: { min: 1, max: 1, fn: Math.cos },
   tan: { min: 1, max: 1, fn: Math.tan }, asin: { min: 1, max: 1, fn: Math.asin },
   acos: { min: 1, max: 1, fn: Math.acos }, atan: { min: 1, max: 1, fn: Math.atan },
   sinh: { min: 1, max: 1, fn: Math.sinh }, cosh: { min: 1, max: 1, fn: Math.cosh },
-  tanh: { min: 1, max: 1, fn: Math.tanh }, sqrt: { min: 1, max: 1, fn: Math.sqrt },
+  tanh: { min: 1, max: 1, fn: Math.tanh }, sqrt: { min: 1, max: 1, fn: Math.sqrt }, cbrt: { min: 1, max: 1, fn: Math.cbrt },
+  sec: { min: 1, max: 1, fn: x => 1 / Math.cos(x) }, csc: { min: 1, max: 1, fn: x => 1 / Math.sin(x) },
+  cot: { min: 1, max: 1, fn: x => Math.cos(x) / Math.sin(x) }, arcsin: { min: 1, max: 1, fn: Math.asin },
+  arccos: { min: 1, max: 1, fn: Math.acos }, arctan: { min: 1, max: 1, fn: Math.atan },
   abs: { min: 1, max: 1, fn: Math.abs }, exp: { min: 1, max: 1, fn: Math.exp },
   log: { min: 1, max: 2, fn: (x, base) => base === undefined ? Math.log(x) : Math.log(x) / Math.log(base) },
   ln: { min: 1, max: 1, fn: Math.log }, log10: { min: 1, max: 1, fn: Math.log10 },
   floor: { min: 1, max: 1, fn: Math.floor }, ceil: { min: 1, max: 1, fn: Math.ceil },
   round: { min: 1, max: 1, fn: Math.round }, sign: { min: 1, max: 1, fn: Math.sign },
   min: { min: 2, max: 8, fn: Math.min }, max: { min: 2, max: 8, fn: Math.max },
-  pow: { min: 2, max: 2, fn: (a, b) => Math.abs(b) > 100 ? NaN : Math.pow(a, b) },
+  pow: { min: 2, max: 2, fn: realPow },
 }
 
 type ExpressionNode = MathNode & {
@@ -21,8 +36,15 @@ type ExpressionNode = MathNode & {
 }
 
 export function normalizeExpression(expression: string): string {
-  return expression.trim().replace(/π/g, 'pi').replace(/τ/g, 'tau')
+  let out = expression.trim().replace(/π/g, 'pi').replace(/τ/g, 'tau')
     .replace(/²/g, '^2').replace(/³/g, '^3').replace(/−/g, '-').replace(/[×·]/g, '*').replace(/÷/g, '/').replace(/\*\*/g, '^')
+  // |x| is abs(x); inner bars pair first, so ||x|-1| becomes abs(abs(x)-1)
+  for (let i = 0; i < 8 && out.includes('|'); i++) {
+    const next = out.replace(/\|([^|]+)\|/g, 'abs($1)')
+    if (next === out) break
+    out = next
+  }
+  return out
 }
 
 export type ValidatedExpression = {
@@ -69,7 +91,7 @@ export function validateExpression(source: string): ValidatedExpression {
         case '-': return (x, y) => a(x, y) - b(x, y)
         case '*': return (x, y) => a(x, y) * b(x, y)
         case '/': return (x, y) => a(x, y) / b(x, y)
-        case '^': return (x, y) => { const power = b(x, y); return Math.abs(power) > 100 ? NaN : Math.pow(a(x, y), power) }
+        case '^': return (x, y) => realPow(a(x, y), b(x, y))
       }
     }
     if (n.type === 'FunctionNode' && typeof n.fn === 'object' && n.fn.type === 'SymbolNode') {

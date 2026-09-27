@@ -61,10 +61,11 @@ describe('bounded content repair safety', () => {
     expect(pinBoardRepair(repair, [{ type: 'update_object', target: 'math:a', latex: 'x^2 = ?' }], context).ok).toBe(false)
   })
 
-  it('only retries creation on an unchanged empty board with the same placement and request count', () => {
+  it('only retries creation on an unchanged board with the same placement and request count', () => {
     const empty = { ...context, objects: [], selectedIds: [] }
     const operation: BoardOperation = { type: 'create_math', latex: '\\answer', placement: 'pointer' }
-    expect(prepareBoardRepair([operation], context, context, failure).ok).toBe(false)
+    expect(prepareBoardRepair([operation], context, context, failure).ok).toBe(true)
+    expect(prepareBoardRepair([operation, original], context, context, failure).ok).toBe(false)
     const repair = prepared([operation], empty)
     expect(pinBoardRepair(repair, [{ ...operation, latex: '?' }], empty).ok).toBe(true)
     expect(pinBoardRepair(repair, [{ ...operation, latex: '?', placement: 'focus' }], empty).ok).toBe(false)

@@ -22,7 +22,7 @@ npm run build
 npm start
 ```
 
-`npm start` serves the previously built `dist` directory. `PORT` changes the default port. `OPENAI_TEXT_MODEL` and `OPENAI_REALTIME_MODEL` override the default models on the server.
+`npm start` serves the previously built `dist` directory. `PORT` changes the default port. `OPENAI_TEXT_MODEL`, `OPENAI_REALTIME_MODEL`, and `OPENAI_IMAGE_MODEL` override the default models on the server.
 
 ## First interaction
 
@@ -71,7 +71,11 @@ A graph also has its own axis-scaling choice. **Equal units** gives one unit on 
 
 **Voice mode** hides the typing bar and shows the microphone control, live transcript, and an action selector. The microphone circle responds to measured microphone volume (RMS). Choose **Assistant** for board commands, **Dictate math** for equations, or **Dictate text** for prose. Spoken replies are optional.
 
-The connection provides continuous audio input, turn detection, transcripts, and board tool calls. Streaming text and math previews show partial model output before a complete edit is committed. Complete changes commit after recognized speech turns; recognition and generation latency still apply. **True per-word math compilation while the user is still speaking is deferred.** The current behavior combines speech turns with streamed model output, rather than a continuously correct transcription of every spoken word. Selecting characters or math content gives follow-up instructions more specific context. Check a resulting edit when the selection or spoken reference is ambiguous.
+The connection provides continuous audio input, turn detection, transcripts, and board tool calls. **Dictate math** now draws a temporary LaTeX preview from incoming transcription chunks for common integrals, functions, powers, fractions, Greek symbols, evaluation bars, and arithmetic. Say “the integral of,” then continue with “sine x d x”; the draft grows as those words become available. “This now equals negative cosine of x bar from pi to two pi” appends an evaluation step to the current equation without calculating it. Existing math can receive continuation previews, and validated source selections can be replaced. The model's streamed output takes over from the local draft and only a validated final operation changes the document. Unknown or ambiguous phrases wait for the model instead of displaying guessed math.
+
+Transcription and generation latency still apply: the current input model can wait for a short speech pause before sending chunks. This is not guaranteed per-word compilation during uninterrupted speech. In an open source/MathLive editor, the live draft is read-only and separate from editable source; typing or selecting characters cannot accidentally accept speculative AI text. Moving the target, changing its source, changing dictation mode, stopping voice, or entering recovery clears stale transcript drafts.
+
+**Pause microphone** closes the local audio connection and requests server-side session shutdown. Turning spoken replies off only silences the assistant; it does not pause the microphone or end API usage. Active voice sessions renew in segments of at most five minutes, within the cumulative allowance, and pause after 90 seconds of inactivity. Recovery temporarily pauses audio and shows its progress. A cancelled request, changed board, or new instruction prevents an obsolete repair from being applied.
 
 ## Notebooks
 
@@ -87,6 +91,7 @@ The `.marginalia.json` file extension and existing browser-storage keys are reta
 
 ## Images, pages, and saving
 
+- **Generate image** opens a description and a shaded placement preview. Voice or typed image requests can propose the same review step. Review the description, dimensions, and region, then use the checkmark to confirm the paid request. A proposal alone never starts generation. The generated PNG becomes an ordinary portable image after insertion.
 - Import a PNG, JPEG, WebP, or GIF as an ordinary image or a locked background. Pasted screenshots use the same portable image storage. A new background replaces the previous background on the current board.
 - **Image crop** in Object controls hides percentages from the left, right, top, and bottom edges without deleting the original image bytes. **Reset crop** restores the full image. Unlock a background before cropping it. The crop is used in the live board, PNG/PDF export, and AI board captures.
 - A4 mode uses a fixed 794 × 1123 canvas region; infinite mode expands around the content. Choose plain, dotted, grid, or ruled paper and a background color.
@@ -95,7 +100,13 @@ The `.marginalia.json` file extension and existing browser-storage keys are reta
 - Project files contain editable scene records, embedded images, and board settings. They never include server credentials. Project import validates and migrates the document before replacing the active board. The legacy `.marginalia.json` format remains supported.
 - Local browser storage holds each notebook. Download an editable project backup before switching browsers/devices, changing preview addresses, or clearing website data.
 
-Image input is limited to 12 MB; large photographs are resized to at most 2400 pixels on their longest side. Project import is limited to 40 MB. PDF import is not included in this version.
+Image input is limited to 12 MB; large photographs are resized to at most 2400 pixels on their longest side. Project import is limited to 40 MB.
+
+**Import** accepts PDFs as well as images. Choose **Put on the board** to add each PDF page as a locked sheet you can annotate, or **Save to library** to keep the original PDF in this browser and retrieve pages or problems later. Board imports support up to 120 pages and 40 MB, subject to notebook storage limits. Multi-page imports use the infinite canvas; a single page can fit the A4 background.
+
+**Library** opens saved books in a reference panel. Search for a printed page, section, exercise, or example, then insert a page, a detected problem, or a manual crop. Search uses the PDF's text layer; scanned pages without text need manual browsing and cropping. Placement leaves room around existing work. Jev can rank candidates when configured; local ranking remains available without a key. **Selected area PDF** exports a circled region or selected objects. Library books stay in this browser; inserted page images travel with an editable notebook backup.
+
+Generated images use low quality and one of `1024x1024`, `1536x1024`, or `1024x1536`. The server runs one image generation at a time with a bounded queue; polling the job does not create another request. Image jobs never retry the provider automatically. A timeout can still incur a charge, so the request ID and reservation remain recorded. Generated results are temporarily cached on the server for up to 30 minutes, subject to a memory bound; inserted images are saved with the notebook. A server restart loses temporary results but retains hashed request IDs, preventing an old request from being charged again automatically.
 
 Screenshot and ink understanding is experimental. Typed commands include an image of the focused region or viewport when the board contains an image or ink. In a voice session, the assistant can call `inspect_board` to capture that region on demand. The crop includes complete selected strokes and a small margin, and is scaled to at most 1024 pixels on the longest side.
 
@@ -113,7 +124,7 @@ An application manifest and iPad home-screen icon are included. There is no offl
 
 ## Voice and API cost
 
-The canvas, drawing, rendering, image import, source compilation, and file export run locally. Natural-language commands and Realtime voice use the paid OpenAI API with this project's server-side key.
+The canvas, drawing, rendering, image import, source compilation, and file export run locally. Natural-language commands, Realtime voice, and confirmed image generation use the paid OpenAI API with this project's server-side key.
 
 Codex can use a ChatGPT sign-in for subscription access, or an API key for usage-based access. That development-tool login does not replace the Platform API key used by this application; general API calls use separate API billing. See [official Codex authentication documentation](https://developers.openai.com/codex/auth/).
 
@@ -121,14 +132,23 @@ Default backend models:
 
 - Typed commands: `gpt-6-luna` with low reasoning effort, using a constrained board-operation tool. The response budget includes reasoning and the complete edit payload; incomplete responses never change the board.
 - Voice: `gpt-realtime-mini`, with `gpt-4o-mini-transcribe` for visible input transcription.
+- Confirmed image generation: `gpt-image-2.5-flare`, low quality, one PNG per request.
 
 Luna is a text/image model, not a Realtime audio model; switching the typed-command default does not change the voice model. At the standard short-context rates checked September 26, 2026, Luna costs $0.10 input / $0.50 output per million tokens, compared with $0.40 / $1.60 for the previous `gpt-4.1-mini` default. Reasoning tokens count as output, and total cost depends on tokens used. See [official API pricing](https://developers.openai.com/api/docs/pricing).
 
-Math commands validate complete LaTeX before changing an object. Appending fragments preserves command boundaries, and invalid source keeps the last valid equation visible. In Assistant mode, “equals what?” asks for the result of the selected expression; Dictate math remains transcription. An invalid voice edit can receive one repair attempt against the same unchanged target. A new instruction, changed target, or repeated failure stops that repair rather than repeatedly editing the board. Failed creation is retried only on an unchanged empty board; partially successful batches are never repeated automatically.
+Math commands validate complete LaTeX before changing an object. Appending fragments preserves command boundaries, and invalid source keeps the last valid equation visible. In Assistant mode, “equals what?” asks for the result of the selected expression; Dictate math remains transcription. Malformed command output can receive one Luna correction using the original instruction and snapshot. A rejected content edit is constrained to the same unchanged targets; failed content creation is retried only as a completely failed creation batch on an unchanged board. Partially successful batches are never repeated automatically. A new instruction, changed target, cancellation, or repeated failure stops recovery.
 
-Help displays the running server's configured text and voice models. `OPENAI_TEXT_MODEL` and `OPENAI_REALTIME_MODEL` can change the defaults. The app responds to typed instructions and user-started voice turns through board tools; it has no autonomous background agent that continues working on notebooks.
+Typed requests share a maximum of three upstream attempts across the initial response and one semantic correction; a voice repair request allows at most two transport attempts for its single correction. Both have a 30-second total deadline. Temporary service or rate-limit failures use bounded backoff and respect `Retry-After`; a delay longer than the deadline stops the request. Authentication, credit, quota, and local allowance failures are not retried. Unknown or inconsistent function names also receive the same bounded repair, without treating aliases as permission to execute tools. Complete operation lists are schema-validated before they reach the board; incomplete or ambiguous output is never partially applied.
 
-To contain prototype usage, the backend allows 200 typed commands and 30 total reserved voice minutes, and stops a voice session after five minutes. The voice client also stops after 90 seconds of inactivity. Counters persist in the ignored `.local/usage.json` file. These are local usage allowances, **not a guaranteed dollar spending cap**; account billing and available credits are authoritative. Check the OpenAI project before increasing the allowances. End the voice session when finished.
+Voice recovery no longer abandons a missing transcript after 1.5 seconds. It waits up to six seconds, then retrieves the exact committed user-audio item. A finalized transcript on that item is reused; otherwise a dedicated `gpt-4o-mini-transcribe` request transcribes the original audio before the correction. Retrieval has a four-second deadline and fallback transcription has an 18-second deadline. The full client recovery, including the existing repair request, is bounded to one minute. Fallback audio is limited to 100 ms through 30 seconds of PCM and is processed in memory, never saved to disk. Stop cancels recovery, and a different finalized transcript or changed board prevents an obsolete correction. See [the transcript recovery checks](research/TRANSCRIPT_RECOVERY_FIX.md).
+
+Help displays the running server's configured text, voice, and image models. Model environment variables can change the defaults. The app responds to typed instructions and user-started voice turns through board tools; it has no autonomous background agent that continues working on notebooks.
+
+The default cumulative allowances are 200 command/transcription attempts, 180 reserved voice minutes, and 20 confirmed image requests. Command attempts include typed requests, repair calls, transient retries, and fallback speech transcription. Image reservations include failed or timed-out generations because those can still be billed. Voice reserves at most five minutes per segment and returns unused time only after the provider confirms closure; an uncertain close retains its reservation and is retried in the background.
+
+Explicit server environment overrides are `OPENAI_COMMAND_LIMIT` (1–1,000,000), `OPENAI_VOICE_MINUTES_LIMIT` (1–1440), and `OPENAI_IMAGE_LIMIT` (1–1000). Values must be whole numbers; out-of-range numbers are clamped. Changing a limit preserves consumption already recorded. Counters do not reset daily or on restart.
+
+Counters and SHA-256 image request-ID tombstones persist in the ignored `.local/usage.json` file. Reservations are serialized and saved with a flushed temporary file and atomic rename before a paid request is sent. Corrupt or unreadable counters disable paid requests instead of resetting to zero; preserve and repair that file before restarting. These are local usage allowances, **not a guaranteed dollar spending cap**; account billing and available credits are authoritative. Pause the microphone when finished and check OpenAI billing before raising allowances.
 
 The API key stays on the server. `api.txt`, `.env` files, and local usage records are ignored by Git and blocked from HTTP serving. Browser sessions receive an audio connection and board commands, not the permanent API key. Do not publish the workspace itself as static files.
 
@@ -166,10 +186,10 @@ See the [earlier Excalidraw interaction review](research/EXCALIDRAW-INSPIRATION.
 
 1. Test a full voice/pen interaction on the physical iPad, especially the timing of “this” and “here.”
 2. Improve handwriting cleanup with a reviewable recognition preview, symbol corrections, and an explicit keep-original option.
-3. Add multi-page PDF import and ordered document/LaTeX export.
+3. Add ordered document/LaTeX export and improve recognition of scanned PDF content.
 4. Improve offline recovery, cloud document synchronization, and collaboration.
 5. Evaluate native packaging and high-fidelity Pencil input after measuring the browser experience.
-6. Explore incremental speech-to-math rendering while speaking, with explicit draft/final states and correction handling; current voice edits remain turn-based.
+6. Improve continuous speech-to-math latency and vocabulary; transcript drafts are incremental, while final voice edits remain turn-based.
 
 Automated tests cover command validation, geometry, file validation, notebook migration/isolation, and serialized checkpoint persistence. Browser visual checks and physical-iPad verification remain separate from those tests; do not infer device readiness from a successful TypeScript build alone.
 
@@ -180,6 +200,8 @@ Keep `main` stable. Work on feature branches and merge through reviewed pull req
 ## Validation
 
 Run `npm run check`, `npm test`, `npm run build`, and `npm audit` after dependency or integration changes. Automated tests cover scene conversion, custom image identity, history, file handling, notebook persistence, migration, and board commands. Test results from the previous canvas do not establish Excalidraw port readiness.
+
+The command, voice, image-service, security, and durable-usage test groups passed 178 tests during this update, along with TypeScript checking. Those tests use simulated providers and do not verify live API model access, image-generation charges, or physical microphone behavior. Usage tests cover concurrent reservations, corruption, disk failure, restart persistence, and recording image request tombstones before provider invocation.
 
 See the [Excalidraw port verification report](research/EXCALIDRAW_PORT.md) for the browser checks, fixes, integration tradeoffs, and repeatable smoke script from this branch.
 
@@ -200,8 +222,15 @@ Start a new preview in PowerShell:
 npm run dev
 ```
 
-If the app server is already running, restart it after starting the new tunnel. The helper prints the HTTPS URL and tunnel process ID, and saves only the exact generated hostname in `.local/preview-host.txt`. Vite permits that hostname explicitly. It does not permit every tunnel hostname. The helper installs no service and makes no autostart change.
+On macOS, Linux or Windows, the cross platform helper does the same with `cloudflared` from `.local` or from your PATH, and reads `PORT` (default 3000):
 
-Open the HTTPS URL in Safari on the iPad, enter the pairing code from **Help & iPad connection** on the laptop, and use **Check voice connection** before starting the microphone. On the laptop, use `http://localhost:3000`. Stop the app with Ctrl+C. Stop the tunnel with the `Stop-Process -Id ...` command printed by the helper; stop an old tunnel before starting another. A newly started tunnel receives a different URL and therefore a separate browser-storage origin; download notebook files before changing preview addresses. A server restart changes the pairing code.
+```sh
+node server/start-tunnel.mjs
+npm run dev
+```
+
+The helpers print the HTTPS URL and tunnel process ID, and save the generated hostname in `.local/preview-host.txt`. In development, Vite accepts any `*.trycloudflare.com` hostname, so a server that is already running does not need a restart for a new tunnel. Cloudflare assigns those names, so they cannot be pointed back at this computer by someone else. The helpers install no service and make no autostart change.
+
+Open the HTTPS URL in Safari on the iPad, enter the pairing code from **Help & iPad connection** on the laptop, and use **Check voice connection** before starting the microphone. On the laptop, use `http://localhost:3000`. Stop the app with Ctrl+C. Stop the tunnel with the stop command printed by the helper; stop an old tunnel before starting another. A newly started tunnel receives a different URL and therefore a separate browser-storage origin; download notebook files before changing preview addresses. A server restart changes the pairing code, and so do 20 wrong pairing attempts; Help on the laptop always shows the current code.
 
 To check only the OpenAI voice configuration without opening media, run `npx tsx server/check-realtime.ts`. The script reports success or an error without printing credentials. Actual speech, pen latency, and iPad audio behavior still require device testing.

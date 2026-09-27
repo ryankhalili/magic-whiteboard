@@ -4,6 +4,7 @@ import type { MathfieldElement } from 'mathlive'
 import type { MagicShape } from './MagicShape'
 import katex from 'katex'
 import { SOURCE_FLUSH_EVENT, sourceUpdate, type SourceFlushOptions } from './liveSource'
+import { mathFieldLatex } from './latex'
 import 'mathlive/fonts.css'
 import './inline-editor.css'
 
@@ -18,11 +19,16 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
   const wrapper = useRef<HTMLDivElement>(null), mathHost = useRef<HTMLDivElement>(null)
   const mathField = useRef<MathfieldElement | null>(null), textarea = useRef<HTMLTextAreaElement>(null)
   const latest = useRef(shape); latest.current = shape
-  const visibleValue = preview?.field === fieldName ? preview.value : shape.props[fieldName]
+  // Streaming output is never editor source: a keypress or selection must not
+  // commit speculative text or report offsets into a draft that is not saved.
+  const visibleValue = shape.props[fieldName]
+  const liveDraft = preview?.field === fieldName ? preview.value : null
   const latestValue = useRef(visibleValue); latestValue.current = visibleValue
   const [sourceMode, setSourceMode] = useState(false), [loading, setLoading] = useState(isMath)
   const [error, setError] = useState(''), [draft, setDraft] = useState(shape.props[fieldName])
   const draftRef = useRef(draft), invalidDraft = useRef(false), pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // the spelled out form committed for the math field; the field keeps its own blanks while typing
+  const fieldCommit = useRef<string | null>(null)
   const finish = () => { if (pending.current) commitRef.current(draftRef.current); editor.setEditingShape(null); editor.setCurrentTool('select.idle'); editor.markHistoryStoppingPoint('Finish editing content') }
   const commit = (value: string, silent = false) => {
     clearTimeout(pending.current); pending.current = undefined; draftRef.current = value; if (!silent) setDraft(value)
@@ -59,7 +65,7 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
     const value = visibleValue
     draftRef.current = value; setDraft(value)
     const mf = mathField.current
-    if (mf && mf.value !== value) {
+    if (mf && mf.value !== value && value !== fieldCommit.current) {
       const position = mf.position
       mf.setValue(value, { silenceNotifications: true })
       mf.position = Math.min(position, mf.lastOffset)
@@ -80,7 +86,7 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
       mf.mathVirtualKeyboardPolicy = 'auto'
       mf.defaultMode = 'math'
       mf.value = latestValue.current
-      const input = () => commitRef.current(mf.value)
+      const input = () => { const value = mathFieldLatex(mf.value, () => mf.getValue('latex-expanded')); fieldCommit.current = value; commitRef.current(value) }
       const selection = () => {
         const range = mf.selection.ranges[0] ?? [mf.position, mf.position]
         dispatchContentSelection({ shapeId: shape.id, field: 'latex', start: Math.min(...range), end: Math.max(...range), text: mf.getValue(mf.selection), coordinateSpace: 'mathlive' })
@@ -145,6 +151,11 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
         event.stopPropagation()
       }}/>}
     {isMath && sourceMode && <div className="inline-source-preview" aria-label="Compiled equation preview" dangerouslySetInnerHTML={{ __html: katex.renderToString(shape.props.latex, { displayMode: true, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }).replace('class="katex"', 'class="katex" style="text-align:left"') }}/>}
+    {liveDraft !== null && <div className="inline-live-draft" role="status" aria-label="Live draft">
+      <span className="inline-live-draft-label">Live draft</span>
+      {isMath ? <div dangerouslySetInnerHTML={{ __html: katex.renderToString(liveDraft, { displayMode: true, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }).replace('class="katex"', 'class="katex" style="text-align:left"') }}/>
+        : <div className="inline-live-draft-text">{liveDraft}</div>}
+    </div>}
     <div className="inline-editor-tools">{isMath && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => setSourceMode(value => !value)}>{sourceMode ? 'Visual math' : 'LaTeX source'}</button>}<button type="button" onPointerDown={event => event.preventDefault()} onClick={finish}>Done</button></div>
     {error && <div className="editor-note" role="status">{error}</div>}
   </div>

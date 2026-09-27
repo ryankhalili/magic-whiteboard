@@ -20,6 +20,7 @@
     "mathlive": "^0.110.0",
     "openai": "^6.0.0",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "zod": "^4.0.0"
@@ -39,7 +40,7 @@
   },
   "license": "UNLICENSED",
   "overrides": {
-    "nanoid@3.3.3": "3.3.19",
+    "nanoid@^3.0.0": "3.3.19",
     "nanoid@4.0.2": "5.1.16",
     "@radix-ui/react-tabs": "1.1.21",
     "lodash-es": "4.18.1"
