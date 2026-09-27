@@ -1,4 +1,4 @@
-# Magic Whiteboard
+# Chalkpal
 
 A magic whiteboard prototype: indicate a place on the canvas, ask for a graph or equation, and refine that object by speaking or typing. Excalidraw supplies the drawing surface and pointer interactions. The application owns the editable document, AI commands, math editors, notebooks, and shared undo history.
 
@@ -91,7 +91,7 @@ Notebooks belong to the current browser profile and website address on this devi
 
 Before replacing an earlier SDK checkpoint, the app preserves its original schema, encoded handwriting, images and other records in an immutable `pre-owned-canvas:<notebook id>` archive in the checkpoint database. Repeated migration attempts do not replace that first archive. Migration stops if the archive cannot be saved. In **Help**, choose **Download original notebook backup** to retrieve it without changing the current board. The archive does not appear as another notebook or automatically make an old app understand the new checkpoint format. Notebooks created after migration have no earlier checkpoint to download.
 
-The `.marginalia.json` file extension and existing browser-storage keys are retained for compatibility with notebooks saved before the Magic Whiteboard name change.
+The `.marginalia.json` file extension and existing browser-storage keys are retained for compatibility with notebooks saved under the earlier Magic Whiteboard and Marginalia names.
 
 ## Images, pages, and saving
 

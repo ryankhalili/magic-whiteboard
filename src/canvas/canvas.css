@@ -1,7 +1,7 @@
 .whiteboard-canvas{position:absolute;inset:0;z-index:2;overflow:hidden;outline:none;background:transparent;touch-action:none;user-select:none;-webkit-user-select:none;overscroll-behavior:none}
 .excalidraw-host .excalidraw{--color-primary:#2563eb;--color-primary-light:#dbeafe;--color-selection:#2563eb;background:transparent}
 /* The application provides its focused toolbar, menus, history controls, and notebook storage. */
-.excalidraw-host .layer-ui__wrapper,.excalidraw-host .excalidraw__embeddable-hint,.excalidraw-host .excalidraw-link-dialog,.excalidraw-host .hyperlink-tooltip{display:none!important}
+.excalidraw-host .layer-ui__wrapper,.excalidraw-host .App-top-bar,.excalidraw-host .App-bottom-bar,.excalidraw-host .excalidraw__embeddable-hint,.excalidraw-host .excalidraw-link-dialog,.excalidraw-host .hyperlink-tooltip{display:none!important}
 .whiteboard-accessibility{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 /* Native images render custom content in scene order. The DOM copy supplies accessibility,
    autosizing, and the live editor; it also previews content while a new image is prepared. */
