@@ -2,6 +2,7 @@ import type { AssetRecord, DocumentRecord, MagicShapeProps, StrokePoint, TLShape
 import { resolveGeometry } from '../../shared/geometry'
 import { validateColor, validateCrop, validateOpacity, validateStrokeWidth } from '../../shared/appearance'
 import type { ImageCrop, Point } from '../../shared/board'
+import { cropFromNative, type NativeImageCrop } from './imageCrop'
 
 const MAX_COORDINATE = 10_000_000
 const MAX_DIMENSION = 1_000_000
@@ -136,6 +137,7 @@ export function normalizeSnapshot(input: unknown): TLEditorSnapshot {
         if ((props.crop != null && !owned) || props.flipX === true || props.flipY === true) throw new Error('This notebook contains a cropped or flipped legacy image that is not supported yet. Export that image from the previous app before importing. Existing saved data has not changed.')
         normalized = { ...metadata(props), assetId: typeof props.assetId === 'string' ? props.assetId : null, w: dimension(props.w, 320), h: dimension(props.h, 240), altText: text(props.altText, '', 500) }
         if (props.crop != null) Object.assign(normalized as object, { crop: validateCrop(props.crop as ImageCrop) })
+        else if (props.excalidrawCrop != null) Object.assign(normalized as object, { crop: cropFromNative(props.excalidrawCrop as NativeImageCrop) })
       }
       else if (raw.type === 'draw') {
         const scaleX = finite(props.scaleX, 1), scaleY = finite(props.scaleY, 1)

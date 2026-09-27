@@ -24,7 +24,6 @@ function AngleMark({ previous, vertex, next, angle, color, fontSize }: { previou
     <text x={vertex.x + inward.x * labelDistance} y={vertex.y + inward.y * labelDistance} dominantBaseline="middle" textAnchor="middle" fill={color} fontFamily="Arial, sans-serif" fontSize={fontSize}>{Number(angle.toFixed(2))}°</text>
   </g>
 }
-
 export function GeometryGraphic({ shape }: { shape: MagicShape }) {
   const p = shape.props as GeometryProps, { w, h, color } = p
   const left = Math.min(24, w * .12), right = w - left, top = Math.min(25, h * .12), bottom = h - Math.min(34, h * .16)
@@ -70,4 +69,3 @@ export function GeometryGraphic({ shape }: { shape: MagicShape }) {
     {p.title && <text x={w / 2} y={h - 4} textAnchor="middle" fill="#7b8986" fontFamily="Arial, sans-serif" fontSize={11}>{p.title}</text>}
   </g>
 }
-

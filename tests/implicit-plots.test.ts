@@ -129,7 +129,7 @@ describe('equation graphic', () => {
       latex: '', text: '', geometry: 'triangle',
       xMin: -5, xMax: 5, yMin: -5, yMax: 5, strokeWidth: 5, showGrid: false, showAxes: false,
     } }
-    const markup = renderToStaticMarkup(createElement(PlotGraphic, { shape }))
+    const markup = renderToStaticMarkup(createElement('svg', null, createElement(PlotGraphic, { shape })))
     expect(markup).toContain('x²+y²=9')
     expect(markup).toContain('stroke="#123456" stroke-width="5"')
     expect(markup).not.toContain('stroke="#e8e8e8"')

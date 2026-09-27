@@ -1,0 +1,9 @@
+Excalidraw 0.18.1 bundled Excalifont font metadata
+
+Source: node_modules/@excalidraw/excalidraw/dist/prod/fonts/Excalifont/*.woff2
+
+Copyright:
+Copyright (c) 2024 by Excalidraw. All rights reserved.
+
+Version:
+Version 1.000;Glyphs 3.2 (3227)

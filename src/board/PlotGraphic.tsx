@@ -1,4 +1,5 @@
 import type { MagicShape } from './MagicShape'
+import { useMemo } from 'react'
 import { niceTicks, samplePlot } from './expression'
 import { getAxisMode, getPlotLayout } from './plotLayout'
 
@@ -18,8 +19,10 @@ export function PlotGraphic({ shape, hideExpression = false }: { shape: MagicSha
   const showGrid = p.showGrid !== false, showAxes = p.showAxes !== false
   const { pad, width: pw, height: ph, X, Y, range } = getPlotLayout(p, getAxisMode(shape.meta))
   const id = `clip-${shape.id.replace(/[^a-zA-Z0-9]/g, '')}`
-  let paths: string[] = [], error = ''
-  try { paths = samplePlot(p.expression, range.xMin, range.xMax, range.yMin, range.yMax, pw, ph) } catch (e) { error = (e as Error).message }
+  const { paths, error } = useMemo(() => {
+    try { return { paths: samplePlot(p.expression, range.xMin, range.xMax, range.yMin, range.yMax, pw, ph), error: '' } }
+    catch (e) { return { paths: [] as string[], error: (e as Error).message } }
+  }, [p.expression, range.xMin, range.xMax, range.yMin, range.yMax, pw, ph])
   const xticks = niceTicks(range.xMin, range.xMax, Math.max(3, Math.floor(pw / 60)))
   const yticks = niceTicks(range.yMin, range.yMax, Math.max(3, Math.floor(ph / 40)))
   return <g>
@@ -37,4 +40,3 @@ export function PlotGraphic({ shape, hideExpression = false }: { shape: MagicSha
     </g>
   </g>
 }
-

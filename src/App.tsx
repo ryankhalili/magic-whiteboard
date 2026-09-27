@@ -580,7 +580,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       </div>
     </header>
 
-    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) { importAsBackground.current = true; void importImage(f) } }}>
+    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDropCapture={e => { const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) { e.preventDefault(); e.stopPropagation(); importAsBackground.current = true; void importImage(f) } }}>
       <div className="paper-pattern"/>
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
       <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
