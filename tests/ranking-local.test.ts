@@ -5,7 +5,7 @@ const sum = (ps: { p: number }[]) => ps.reduce((a, r) => a + r.p, 0)
 
 describe('local ranker', () => {
   it('uses the agreed feature weights', () => {
-    expect(FEATURE_WEIGHTS.library).toEqual({ exactLabel: 3, kindMatch: 2, kindPrior: 1.5, textMatch: 1.5, sameChapter: .5, early: .2 })
+    expect(FEATURE_WEIGHTS.library).toEqual({ exactLabel: 3, kindMatch: 2, kindPrior: 1.5, textMatch: 1.5, sameChapter: .5, early: .2, inSection: 3, nearChapter: 1, nearSection: .5 })
     expect(FEATURE_WEIGHTS.placement).toEqual({ inView: 2, readingOrder: 1.5, workSpace: 1.5, nearFocus: 1, centered: .5, aligned: .7 })
     expect(FEATURE_WEIGHTS.book).toEqual({ titleMatch: 3, recent: 1 })
   })

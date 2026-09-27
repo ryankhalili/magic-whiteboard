@@ -38,7 +38,7 @@ export function openedText(openedAt: number, now = Date.now()): string {
 }
 
 export function bookDescription(book: BookRecord, now = Date.now()): string {
-  if (!book.indexed) return 'Import not finished. Open it to see the pages.'
+  if (!book.indexed) return 'Import not finished. Open it to finish reading it.'
   const parts = [openedText(book.openedAt, now), formatBytes(book.size)]
   if (book.pageCount > 0 && book.textPages < book.pageCount / 2) parts.push('little searchable text')
   return parts.filter(Boolean).join(' · ')

@@ -24,6 +24,8 @@ export type BookRecord = {
   indexed: boolean
   /** pages that had a usable text layer */
   textPages: number
+  /** version of the item finder that indexed this book, missing means 1 */
+  indexVersion?: number
 }
 
 /** One visual line of text on a page. size is the font height as a fraction of the page height. */
@@ -60,15 +62,19 @@ export type Anchor = {
   box: PageBox
   /** the start of the item's text, at most 300 characters */
   snippet: string
+  /** the rest of an item that runs past the bottom of its page (or column), drawn under the first part */
+  continues?: { pageIndex: number; box: PageBox }
+  /** bits of neighbouring items inside box, painted white when the item is drawn */
+  mask?: PageBox[]
 }
 
 export type LibraryQuery =
   /** "page 22": a printed page label */
   | { kind: 'page'; label: string; book?: string; raw: string }
-  /** "problem 3.2", "example 3.2", "exercise 48", "3.2" */
-  | { kind: 'item'; label: string; itemKind?: AnchorKind; book?: string; raw: string }
+  /** "problem 3.2", "example 3.2", "exercise 48", "3.2"; section and chapter from "exercise 48 in section 5.1" */
+  | { kind: 'item'; label: string; itemKind?: AnchorKind; book?: string; raw: string; section?: string; chapter?: string }
   /** anything else: "the chain rule example" */
-  | { kind: 'topic'; terms: string; book?: string; raw: string }
+  | { kind: 'topic'; terms: string; book?: string; raw: string; section?: string; chapter?: string }
 
 export type Candidate = {
   /** stable id: an anchor id, or `${bookId}#${pageIndex}:page` */

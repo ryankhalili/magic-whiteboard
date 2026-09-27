@@ -5,7 +5,7 @@ export type RankResult = { ranked: { id: string; p: number }[]; confident: boole
 
 /** Feature weights for the local ranker. Features are expected in 0..1 and missing ones count as 0. */
 export const FEATURE_WEIGHTS: Record<RankTask, Record<string, number>> = {
-  library: { exactLabel: 3, kindMatch: 2, kindPrior: 1.5, textMatch: 1.5, sameChapter: .5, early: .2 },
+  library: { exactLabel: 3, kindMatch: 2, kindPrior: 1.5, textMatch: 1.5, sameChapter: .5, early: .2, inSection: 3, nearChapter: 1, nearSection: .5 },
   placement: { inView: 2, readingOrder: 1.5, workSpace: 1.5, nearFocus: 1, centered: .5, aligned: .7 },
   book: { titleMatch: 3, recent: 1 },
 }

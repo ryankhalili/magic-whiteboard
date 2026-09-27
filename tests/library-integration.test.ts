@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Editor, type AssetRecord, type TLShape } from '../src/canvas/editor'
 import { normalizeSnapshot } from '../src/canvas/migration'
-import { createBoardController, focusImageBounds, getPlacementBounds, libraryAssetId, libraryImageSize, libraryQueryFromOperation, spotForOption } from '../src/board/controller'
+import { createBoardController, focusImageBounds, getPlacementBounds, libraryAssetId, libraryImageSize, libraryItemKey, libraryQueryFromOperation, spotForOption } from '../src/board/controller'
 import { objectLabel } from '../src/board/ObjectInspector'
 import { findSpots, NATURAL_SIZES } from '../src/board/placementSpots'
 import { detectLibraryIntent } from '../src/library/intent'
@@ -10,7 +10,9 @@ import { runBoardCommand, type BoardModelResponse, type CommandRecoveryOptions }
 import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses'
 import { readBoardCommand } from '../server/command-response'
 import { localRank, type RankRequest, type RankResult } from '../shared/ranking'
-import type { BoardContext, BoardOperation, PlacementOption } from '../shared/board'
+import { parseBoardCommand } from '../shared/tool-command'
+import { createBoundsFor, createInsertLock, inspectorZone, manualOverride, matchWithReindex, reindexTarget, revealShift } from '../src/library/insertLayout'
+import type { BoardContext, BoardOperation, Bounds, PlacementOption } from '../shared/board'
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
 const JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDA=='
@@ -86,16 +88,17 @@ describe('create_image in the board controller', () => {
     expect(controller.applyOperations([pageOp(29, null, { x: 900, y: 80, w: 700, h: 906 })]).ok).toBe(true)
     const crop: BoardOperation = { ...itemOp({ x: 100, y: 1100, w: 300, h: 120 }), meta: { assetKey: `${BOOK}#30:crop:0.1,0.1,0.5,0.2`, library: { bookId: BOOK, title: 'Calculus Volume 1', pageIndex: 30, pageLabel: '23', kind: 'crop' } } }
     expect(controller.applyOperations([crop]).ok).toBe(true)
+    // the locked page goes under everything, like paper, so it comes first
     const objects = controller.getObjects()
     expect(objects.map(o => [o.kind, o.title])).toEqual([
-      ['textbook_item', 'Example 3.2 (page 191)'],
       ['textbook_page', 'Calculus Volume 1, file page 30'],
+      ['textbook_item', 'Example 3.2 (page 191)'],
       ['textbook_item', 'Part of page 23, Calculus Volume 1'],
     ])
     expect(objects.every(o => o.text === undefined)).toBe(true)
-    expect(objects[1].locked).toBe(true)
-    expect(objectLabel(objects[0])).toBe('Book excerpt: Example 3.2 (page 191)')
-    expect(objectLabel(objects[1])).toBe('Book page: Calculus Volume 1, file page 30')
+    expect(objects[0].locked).toBe(true)
+    expect(objectLabel(objects[1])).toBe('Book excerpt: Example 3.2 (page 191)')
+    expect(objectLabel(objects[0])).toBe('Book page: Calculus Volume 1, file page 30')
   })
   it('reports imported worksheet pages as pdf_page with their text', () => {
     const { editor, controller } = setup()
@@ -240,6 +243,22 @@ describe('insert_library references and the local fast path', () => {
     expect(libraryQueryFromOperation({ type: 'insert_library', query: 'chain rule example', book: 'Calculus' })).toMatchObject({ kind: 'topic', book: 'Calculus' })
     expect(libraryQueryFromOperation({ type: 'insert_library' })).toBeNull()
   })
+  it('keeps a section or chapter the model put beside the item', () => {
+    expect(libraryQueryFromOperation({ type: 'insert_library', item: 'exercise 48 in section 5.1' })).toMatchObject({ kind: 'item', label: '48', itemKind: 'exercise', section: '5.1' })
+    expect(libraryQueryFromOperation({ type: 'insert_library', item: 'exercise 48', query: 'in section 5.1' })).toMatchObject({ kind: 'item', label: '48', itemKind: 'exercise', section: '5.1' })
+    expect(libraryQueryFromOperation({ type: 'insert_library', item: 'exercise 48', query: 'from chapter 5' })).toMatchObject({ kind: 'item', label: '48', chapter: '5' })
+    // a query that names no place changes nothing
+    const plain = libraryQueryFromOperation({ type: 'insert_library', item: 'exercise 48', query: 'the one about limits' })
+    expect(plain).toMatchObject({ kind: 'item', label: '48', itemKind: 'exercise' })
+    expect(plain).not.toHaveProperty('section')
+    expect(plain).not.toHaveProperty('chapter')
+  })
+  it('gives an item drawn by a newer index its own image', () => {
+    const id = `${BOOK}#226:theorem:3.4`
+    expect(libraryItemKey(id)).toBe(`${id}:item`)
+    expect(libraryItemKey(id, 1)).toBe(`${id}:item`)
+    expect(libraryAssetId(libraryItemKey(id, 2))).not.toBe(libraryAssetId(libraryItemKey(id)))
+  })
   it('handles clear phrasings locally and gives the same query the model path would', () => {
     const state = { importPending: false, hasBooks: true }
     const page = detectLibraryIntent('page 23', state)
@@ -281,7 +300,8 @@ describe('board tools for library operations', () => {
     expect(properties.type.enum).toEqual(expect.arrayContaining(['insert_library', 'library_action']))
     expect(properties.type.enum).not.toContain('create_image')
     expect(properties.placementOption.enum).toEqual(['A', 'B', 'C'])
-    expect(properties.action.enum).toEqual(['open_book', 'close_reference', 'store_import', 'board_import'])
+    expect(properties.action.enum).toEqual(['open_book', 'close_reference', 'store_import', 'board_import', 'pick'])
+    expect(properties.index).toMatchObject({ type: 'integer', minimum: 1, maximum: 3 })
     for (const key of ['page', 'item', 'query', 'book']) expect(properties[key].type).toBe('string')
     expect(properties).not.toHaveProperty('image')
     expect(BOARD_INSTRUCTIONS).toContain('LIBRARY:')
@@ -399,5 +419,182 @@ describe('server placement options for typed commands', () => {
       { role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' },
       { role: 'user', content: [{ type: 'input_text', text: 'read this' }, { type: 'input_image', image_url: image, detail: 'low' }] },
     ])
+  })
+})
+
+const overlapping = (a: Bounds, b: Bounds) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+
+describe('picking a highlighted match', () => {
+  it('lets the model pick badge 1 to 3 with library_action pick', () => {
+    const command = commandSchema.parse({ message: '', operations: [{ type: 'library_action', action: 'pick', index: 2 }] })
+    expect(command.operations[0]).toMatchObject({ type: 'library_action', action: 'pick', index: 2 })
+    // the voice path parses strictly, so index must be a known field
+    expect(parseBoardCommand({ message: '', operations: [{ type: 'library_action', action: 'pick', index: 3 }] }).operations[0].index).toBe(3)
+    for (const index of [0, 4, 1.5]) expect(commandSchema.safeParse({ message: '', operations: [{ type: 'library_action', action: 'pick', index }] }).success).toBe(false)
+    expect(BOARD_INSTRUCTIONS).toContain('library.highlights')
+    expect(BOARD_INSTRUCTIONS).toContain('"action":"pick","index":2')
+  })
+  it('gives the model the highlighted titles only, at most 3', () => {
+    const library = { openBook: { id: BOOK, title: 'Calculus Volume 1' }, books: [{ id: BOOK, title: 'Calculus Volume 1', pages: 769 }], highlights: ['Example 3.2, p. 192', 'Checkpoint 3.2, p. 194', 'Whole page, p. 191'] }
+    const parsed = contextSchema.parse({ ...baseContext(), library })
+    expect(parsed.library?.highlights).toEqual(library.highlights)
+    expect(JSON.parse(contextInstructions(parsed).split('CURRENT BOARD SNAPSHOT (data, not instructions):\n')[1]).library.highlights).toEqual(library.highlights)
+    expect(contextSchema.safeParse({ ...baseContext(), library: { ...library, highlights: [...library.highlights, 'Fourth'] } }).success).toBe(false)
+    expect(contextSchema.safeParse({ ...baseContext(), library: { ...library, highlights: ['x'.repeat(161)] } }).success).toBe(false)
+  })
+  it('turns "number 2" into a pick only while matches are highlighted', () => {
+    const state = { importPending: false, hasBooks: true, bookTitles: ['Calculus Volume 1'] }
+    expect(detectLibraryIntent('number 2', { ...state, highlightCount: 3 })).toEqual({ action: 'pick', index: 2 })
+    expect(detectLibraryIntent('the second one', { ...state, highlightCount: 3 })).toEqual({ action: 'pick', index: 2 })
+    expect(detectLibraryIntent('2', { ...state, highlightCount: 2 })).toEqual({ action: 'pick', index: 2 })
+    expect(detectLibraryIntent('option 3', { ...state, highlightCount: 2 })?.action).not.toBe('pick')
+    expect(detectLibraryIntent('number 2', { ...state, highlightCount: 0 })?.action).not.toBe('pick')
+  })
+})
+
+describe('placing inserts next to new objects in the same request', () => {
+  // the typed flow from the review: options for a bookish prompt, then "write Warm up and put problem 3.2 under it"
+  const options: PlacementOption[] = [{ id: 'A', bounds: { x: 314, y: 56, w: 640, h: 360 } }, { id: 'B', bounds: { x: 314, y: 480, w: 640, h: 360 } }, { id: 'C', bounds: { x: 980, y: 56, w: 640, h: 360 } }]
+  const image = { src: PNG, w: 1400, h: 400, mimeType: 'image/png' as const, name: 'Problem 3.2' }
+  const place = (context: BoardContext, extra: Bounds[]) => {
+    const size = libraryImageSize(image, 'item')
+    const spots = findSpots({ viewport: context.viewport, obstacles: extra, size, workBelow: size.workBelow })
+    return spotForOption(options[0], spots, size)
+  }
+  const imageOp = (bounds: Bounds): BoardOperation => ({ ...itemOp(bounds), image })
+  it('keeps an insert clear of a create listed before it', () => {
+    const { editor, controller, context } = setup({ placementOptions: options })
+    const text: BoardOperation = { type: 'create_text', text: 'Warm up', placementOption: 'A' }
+    const before = createBoundsFor(text, context)!
+    expect(before).toEqual(getPlacementBounds(text, context, 'text'))
+    const result = controller.applyOperations([text, imageOp(place(context, [before]))])
+    expect(result.ok, result.message).toBe(true)
+    const [a, b] = shapes(editor).map(shape => editor.getShapePageBounds(shape.id)!)
+    expect(overlapping(a, b)).toBe(false)
+  })
+  it('overlapped before, when the create was ignored', () => {
+    const { editor, controller, context } = setup({ placementOptions: options })
+    expect(controller.applyOperations([{ type: 'create_text', text: 'Warm up', placementOption: 'A' }, imageOp(place(context, []))]).ok).toBe(true)
+    const [a, b] = shapes(editor).map(shape => editor.getShapePageBounds(shape.id)!)
+    expect(overlapping(a, b)).toBe(true)
+  })
+  it('lets the board move a create listed after an insert aside', () => {
+    const { editor, controller, context } = setup({ placementOptions: options })
+    const bounds = place(context, [])
+    const text: BoardOperation = { type: 'create_text', text: 'Warm up', placementOption: 'A' }
+    expect(controller.applyOperations([imageOp(bounds), text]).ok).toBe(true)
+    const [a, b] = shapes(editor).map(shape => editor.getShapePageBounds(shape.id)!)
+    expect(overlapping(a, b)).toBe(false)
+    // and the prediction for it follows the board
+    const predicted = createBoundsFor(text, context, [bounds])!
+    expect({ x: Math.round(predicted.x), y: Math.round(predicted.y) }).toEqual({ x: Math.round(b.x), y: Math.round(b.y) })
+  })
+  it('predicts option A for a create without one and nothing for other operations', () => {
+    const context = baseContext({ placementOptions: options })
+    expect(createBoundsFor({ type: 'create_plot', expression: 'x' }, context)).toEqual(getPlacementBounds({ type: 'create_plot', placementOption: 'A' }, context, 'plot'))
+    expect(createBoundsFor({ type: 'create_plot', expression: 'x', placement: 'auto' }, context)).toEqual(getPlacementBounds({ type: 'create_plot', placementOption: 'A' }, context, 'plot'))
+    expect(createBoundsFor({ type: 'update_object', target: 'shape:x' }, context)).toBeNull()
+    expect(createBoundsFor({ type: 'insert_library', page: '22' }, context)).toBeNull()
+    expect(createBoundsFor({ type: 'create_plot', expression: 'x' }, baseContext({ focusMode: 'literal' }))).toBeNull()
+  })
+})
+
+describe('reference panel inserts in Literal mode', () => {
+  it('place like reference mode when nothing is circled, and stay inside a circled area', () => {
+    const literal = baseContext({ focusMode: 'literal' })
+    const { controller } = setup({ focusMode: 'literal' })
+    expect(controller.applyOperations([itemOp()]).message).toMatch(/Circle an area/)
+    const override = manualOverride(literal)
+    expect(override).toEqual({ focusMode: 'reference' })
+    const editor = new Editor()
+    const manual = createBoardController(editor, () => ({ ...literal, ...override }))
+    expect(manual.applyOperations([itemOp()]).ok).toBe(true)
+    expect(focusImageBounds({ w: 640, h: 180 }, { ...literal, ...override })).toBeNull()
+    const region = { kind: 'region' as const, bounds: { x: 0, y: 0, w: 400, h: 400 }, targetIds: [] }
+    expect(manualOverride(baseContext({ focusMode: 'literal', focus: region }))).toBeNull()
+    expect(manualOverride(baseContext())).toBeNull()
+  })
+})
+
+describe('one insert at a time', () => {
+  it('runs inserts in turn, reports when busy and frees itself after a failure', async () => {
+    const changes: boolean[] = [], order: string[] = []
+    const lock = createInsertLock(held => changes.push(held))
+    let finish = () => {}
+    const first = lock.run(async () => { order.push('typed start'); await new Promise<void>(resolve => { finish = resolve }); order.push('typed end'); return 1 })
+    const second = lock.run(async () => { order.push('voice'); return 2 })
+    await Promise.resolve()
+    expect(lock.held()).toBe(true)
+    expect(order).toEqual(['typed start'])
+    finish()
+    expect(await first).toBe(1)
+    expect(await second).toBe(2)
+    expect(order).toEqual(['typed start', 'typed end', 'voice'])
+    expect(lock.held()).toBe(false)
+    await expect(lock.run(async () => { throw new Error('page failed') })).rejects.toThrow('page failed')
+    expect(lock.held()).toBe(false)
+    expect(changes).toEqual([true, false, true, false, true, false])
+  })
+})
+
+describe('books that need a fresh index', () => {
+  const match = { query: { kind: 'page' as const, label: '23', raw: 'page 23' }, book: {} as never, ranked: [], confident: true, source: 'exact' as const }
+  it('updates the book once, then looks again', async () => {
+    const lookup = vi.fn().mockResolvedValueOnce({ error: 'This book needs a quick update. Opening it now.', code: 'reindex', bookId: BOOK }).mockResolvedValueOnce(match)
+    const reindex = vi.fn(async () => {})
+    expect(await matchWithReindex(lookup, reindex)).toBe(match)
+    expect(reindex).toHaveBeenCalledTimes(1)
+    expect(reindex).toHaveBeenCalledWith(BOOK)
+    expect(lookup).toHaveBeenCalledTimes(2)
+  })
+  it('stops after one try and passes other answers through', async () => {
+    const again = { error: 'x', code: 'reindex', bookId: BOOK }
+    expect(await matchWithReindex(async () => again, async () => {})).toEqual({ error: 'This book could not be updated. Import it again.' })
+    const reindex = vi.fn(async () => {})
+    const missing = { error: 'No book called "physics" in your library.', books: [] }
+    expect(await matchWithReindex(async () => missing, reindex)).toBe(missing)
+    expect(reindex).not.toHaveBeenCalled()
+    await expect(matchWithReindex(async () => again, async () => { throw new Error('This book is no longer in the library. Import it again.') })).rejects.toThrow(/no longer/)
+    expect(reindexTarget({ error: 'x', code: 'other', bookId: BOOK })).toBeNull()
+    expect(reindexTarget(match)).toBeNull()
+  })
+})
+
+describe('keeping inserts in view and out from under panels', () => {
+  const area = { left: 84, top: 120, right: 1424, bottom: 860 }
+  it('leaves a visible insert where it is', () => {
+    expect(revealShift({ left: 300, top: 200, right: 700, bottom: 400 }, area)).toBeNull()
+    expect(revealShift({ left: 300, top: 200, right: 700, bottom: 400 }, area, [{ left: 800, top: 100, right: 1000, bottom: 900 }])).toBeNull()
+  })
+  it('glides the shortest way to show an insert that is off screen', () => {
+    expect(revealShift({ left: 1300, top: 200, right: 1700, bottom: 400 }, area)).toEqual({ dx: -276, dy: 0 })
+    expect(revealShift({ left: 300, top: 900, right: 700, bottom: 1100 }, area)).toEqual({ dx: 0, dy: -240 })
+  })
+  it('moves an insert out from under the reference panel', () => {
+    const panel = { left: 80, top: 144, right: 460, bottom: 704 }
+    expect(revealShift({ left: 200, top: 300, right: 600, bottom: 450 }, area, [panel])).toEqual({ dx: 276, dy: 0 })
+  })
+  it('covers where the inspector opens rather than the reference panel when nothing is clear', () => {
+    // an iPad: reference panel on the left, inspector zone on the right, a problem wider than the gap
+    const ipad = { left: 84, top: 120, right: 1008, bottom: 728 }
+    const panel = { left: 80, top: 136, right: 460, bottom: 634 }, zone = inspectorZone({ left: 0, top: 64, right: 1024, bottom: 768 }, 1024)
+    const shift = revealShift({ left: 100, top: 300, right: 600, bottom: 478 }, ipad, [panel, zone])!
+    const left = 100 + shift.dx
+    expect(left).toBeGreaterThanOrEqual(panel.right)
+    expect(left + 500).toBeLessThanOrEqual(ipad.right)
+    expect(left + 500).toBeGreaterThan(zone.left)
+  })
+  it('shows the top of an insert taller than the screen', () => {
+    expect(revealShift({ left: 300, top: 500, right: 700, bottom: 1700 }, area)).toEqual({ dx: 0, dy: -380 })
+  })
+  it('knows where the inspector opens, so selected inserts avoid it', () => {
+    const stage = { left: 0, top: 64, right: 1440, bottom: 900 }
+    const zone = inspectorZone(stage, 1440)
+    expect(zone).toEqual({ left: 1144, top: 128, right: 1422, bottom: 128 + 836 - 210, soft: true })
+    expect(inspectorZone(stage, 700)).toMatchObject({ right: 1430, top: 121, left: 1430 - 242, bottom: 121 + 836 - 220 })
+    const avoid = { x: zone.left, y: zone.top - 64, w: zone.right - zone.left, h: zone.bottom - zone.top }
+    const spots = findSpots({ viewport: { x: 0, y: 0, w: 1440, h: 836 }, obstacles: [{ x: 100, y: 60, w: 700, h: 500 }], size: { w: 640, h: 183 }, workBelow: 260, avoid: [avoid] })
+    expect(spots.length).toBeGreaterThan(0)
+    for (const spot of spots) expect(overlapping(spot.bounds, avoid)).toBe(false)
   })
 })

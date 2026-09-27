@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { getPlacementBounds } from '../src/board/controller'
+import { createBoardController, getPlacementBounds } from '../src/board/controller'
+import { Editor } from '../src/canvas/editor'
 import { describeSpot, findSpots, guessContentSize, NATURAL_SIZES, obstaclesFromObjects, type Obstacle } from '../src/board/placementSpots'
-import type { BoardContext, BoardObject, Bounds } from '../shared/board'
+import type { BoardContext, BoardObject, Bounds, PlacementOption } from '../shared/board'
 import type { Spot } from '../src/library/types'
 
 const view: Bounds = { x: 0, y: 0, w: 1400, h: 800 }
@@ -195,5 +196,85 @@ describe('obstaclesFromObjects', () => {
       { x: 0, y: 0, w: 5, h: 5, label: 'textbook problem' }, { x: 0, y: 0, w: 5, h: 5, label: 'mystery thing' },
     ])
     expect(obstaclesFromObjects(null)).toEqual([])
+  })
+})
+
+describe('placement options without a choice from the model', () => {
+  const options: PlacementOption[] = [
+    { id: 'A', bounds: { x: 700, y: 100, w: 440, h: 320 } },
+    { id: 'B', bounds: { x: 100, y: 500, w: 440, h: 320 } },
+  ]
+  const context = (extra: Partial<BoardContext> = {}): BoardContext => ({
+    focus: null, pointer: { x: 50, y: 60 }, selectedIds: [], lastCreatedIds: [], objects: [], viewport: { x: 0, y: 0, w: 1400, h: 900 }, placementOptions: options, ...extra,
+  })
+  const inA = { x: 700, y: 100, w: 440, h: 320 }
+
+  it('uses option A, also for auto and for a focus placement with nothing focused', () => {
+    expect(getPlacementBounds({ type: 'create_plot' }, context(), 'plot')).toEqual(inA)
+    expect(getPlacementBounds({ type: 'create_plot', placement: 'auto' }, context(), 'plot')).toEqual(inA)
+    expect(getPlacementBounds({ type: 'create_plot', placement: 'focus' }, context(), 'plot')).toEqual(inA)
+    expect(getPlacementBounds({ type: 'create_math' }, context(), 'math')).toEqual({ x: 730, y: 187.5, w: 380, h: 145 })
+    expect(getPlacementBounds({ type: 'create_plot', placementOption: 'B' }, context(), 'plot')).toEqual({ x: 100, y: 500, w: 440, h: 320 })
+  })
+
+  it('leaves the pointer, a focus, explicit bounds, literal regions and missing options alone', () => {
+    expect(getPlacementBounds({ type: 'create_plot', placement: 'pointer' }, context(), 'plot')).toEqual({ x: 50 - 220, y: 60 - 160, w: 440, h: 320 })
+    const focus = { kind: 'point' as const, bounds: { x: 300, y: 300, w: 0, h: 0 }, targetIds: [] }
+    expect(getPlacementBounds({ type: 'create_plot' }, context({ focus }), 'plot')).toEqual({ x: 80, y: 140, w: 440, h: 320 })
+    const bounds = { x: 5, y: 6, w: 300, h: 200 }
+    expect(getPlacementBounds({ type: 'create_plot', bounds }, context(), 'plot')).toEqual(bounds)
+    const region = { kind: 'region' as const, bounds: { x: 0, y: 0, w: 500, h: 400 }, targetIds: [] }
+    expect(getPlacementBounds({ type: 'create_plot' }, context({ focus: region, focusMode: 'literal' }), 'plot')).toEqual(region.bounds)
+    expect(getPlacementBounds({ type: 'create_plot' }, context({ placementOptions: undefined }), 'plot')).toEqual({ x: 700 - 220, y: 450 - 160, w: 440, h: 320 })
+    expect(getPlacementBounds({ type: 'create_plot' }, context({ placementOptions: [options[1]] }), 'plot')).toEqual({ x: 700 - 220, y: 450 - 160, w: 440, h: 320 })
+  })
+
+  it('puts several new objects in option A side by side through the controller', () => {
+    const editor = new Editor()
+    const controller = createBoardController(editor, () => context({ pointer: null }))
+    const result = controller.applyOperations([{ type: 'create_plot', expression: 'x' }, { type: 'create_text', text: 'Warm up', placement: 'auto' }])
+    expect(result.ok, result.message).toBe(true)
+    const [plot, text] = result.ids.map(id => editor.getShapePageBounds(id as never)!)
+    expect({ x: plot.x, y: plot.y, w: plot.w, h: plot.h }).toEqual(inA)
+    expect(text.x).toBeCloseTo(plot.x + plot.w + 24)
+  })
+})
+
+describe('work space under earlier problems', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  function insertItem(workBelow?: number) {
+    const editor = new Editor()
+    const controller = createBoardController(editor, () => ({ focus: null, pointer: null, selectedIds: [], lastCreatedIds: [], objects: [], viewport: view }))
+    const library = { bookId: 'book', title: 'Calculus', pageIndex: 199, pageLabel: '191', kind: 'item', itemKind: 'example', itemLabel: '3.2', ...(workBelow === undefined ? {} : { workBelow }) }
+    const result = controller.applyOperations([
+      { type: 'create_image', image: { src: PNG, w: 1400, h: 400, mimeType: 'image/png', name: 'Example 3.2' }, bounds: { x: 100, y: 60, w: 640, h: 183 }, meta: { assetKey: 'k', library } },
+      { type: 'create_image', image: { src: PNG, w: 1391, h: 1800, mimeType: 'image/png', name: 'page' }, bounds: { x: 2000, y: 0, w: 700, h: 906 }, locked: true, meta: { assetKey: 'p', library: { ...library, kind: 'page' } } },
+    ])
+    expect(result.ok, result.message).toBe(true)
+    return controller.getObjects()
+  }
+
+  it('reports the reserved space for inserted problems, not for whole pages', () => {
+    const [page, item] = insertItem(420)
+    expect(item).toMatchObject({ kind: 'textbook_item', workBelow: 420 })
+    expect(page.kind).toBe('textbook_page')
+    expect(page).not.toHaveProperty('workBelow')
+    // problems inserted before the size was stored get the size a new insert would get
+    expect(insertItem()[1].workBelow).toBeCloseTo(Math.max(260, 1.2 * 183))
+    expect(obstaclesFromObjects([item])).toEqual([{ x: 100, y: 60, w: 640, h: 183 + 420, label: 'textbook problem' }])
+    expect(obstaclesFromObjects([{ ...item, workBelow: -5 }])[0].h).toBe(183)
+    expect(obstaclesFromObjects([{ ...item, workBelow: Number.NaN }])[0].h).toBe(183)
+  })
+
+  it('never puts the next problem inside the work space of the one before', () => {
+    const objects = insertItem(420)
+    const work = { x: 100, y: 60 + 183, w: 640, h: 420 }
+    const size = { w: 640, h: 183 }
+    const spots = findSpots({ viewport: view, obstacles: obstaclesFromObjects(objects), size, workBelow: 300, near: objects[1].bounds })
+    expect(spots.length).toBeGreaterThan(0)
+    for (const spot of spots) expect(hits({ ...spot.bounds, h: size.h + 300 }, work), spot.description).toBe(false)
+    // without the reservation the old behavior slid the new problem right under the first one
+    const naive = findSpots({ viewport: view, obstacles: objects.map(o => o.bounds), size, workBelow: 300, near: objects[1].bounds })
+    expect(naive.some(spot => hits(spot.bounds, work))).toBe(true)
   })
 })

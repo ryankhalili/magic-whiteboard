@@ -28,3 +28,7 @@
 @media(pointer:coarse){.object-inspector textarea,.object-inspector input[type=number]{font-size:16px}.object-inspector button{min-height:30px}.inspector-heading-actions button{min-width:28px}.marginalia-inline-editor textarea{font-size:16px}}
 .header-actions .plain-button:disabled{opacity:.45;cursor:default;background:none;color:inherit}
 @media(min-width:901px) and (max-width:1180px){.header-actions .plain-button.hide-small span{display:none}.header-left{min-width:0}.document-title input{width:190px}}
+/* the typing bar stays above the reference panel, and above the import backdrop while a PDF waits */
+.command-dock{z-index:41}
+.board-stage.import-open{z-index:71}
+.board-stage.import-open .command-dock{z-index:101}

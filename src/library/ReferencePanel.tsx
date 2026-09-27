@@ -9,11 +9,19 @@ type Props = {
   book: BookRecord; highlight: RankedCandidate[] | null
   onInsertPage(index: number): void; onInsertCrop(index: number, box: PageBox): void; onInsertCandidate(c: RankedCandidate): void
   onSearch(text: string): void; onClose(): void; busy: boolean; message?: string | null
+  /** changes with every lookup, so the same matches show and scroll again after the teacher hid them */
+  lookup?: number
+  /** the teacher hid the matches */
+  onDismiss?(): void
+  /** the page in the middle of the view */
+  onPageChange?(index: number): void
 }
 type Point = { x: number; y: number }
 export type PanelRect = { x: number; y: number; w: number; h: number }
 /** the part of the window the panel may use (below the app header) */
 export type PanelArea = { left: number; top: number; width: number; height: number }
+/** a window rectangle the panel must stay above, like the typing bar */
+export type KeepOut = { left: number; top: number; right: number; bottom: number }
 type CropState = { index: number; start: Point | null; end: Point | null; box: PageBox | null }
 
 export const PANEL_DEFAULT = { w: 380, h: 560 }
@@ -26,13 +34,23 @@ const KIND_NAMES: Record<AnchorKind, string> = { example: 'Example', exercise: '
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value))
 const finite = (value: unknown, fallback: number) => typeof value === 'number' && Number.isFinite(value) ? value : fallback
 
-/** keeps the panel fully inside the area and at least the minimum size (or the area, when smaller) */
-export function clampPanel(rect: Partial<PanelRect>, area: PanelArea, min = PANEL_MIN): PanelRect {
+/**
+ * keeps the panel fully inside the area and at least the minimum size (or the area, when smaller).
+ * Over the typing bar (keepOut) the panel moves up, then gets shorter, so the bar stays uncovered.
+ */
+export function clampPanel(rect: Partial<PanelRect>, area: PanelArea, min = PANEL_MIN, keepOut?: KeepOut | null): PanelRect {
   const maxW = Math.max(120, area.width - EDGE * 2), maxH = Math.max(120, area.height - EDGE * 2)
   const w = clamp(finite(rect.w, PANEL_DEFAULT.w), Math.min(min.w, maxW), maxW)
-  const h = clamp(finite(rect.h, PANEL_DEFAULT.h), Math.min(min.h, maxH), maxH)
+  let h = clamp(finite(rect.h, PANEL_DEFAULT.h), Math.min(min.h, maxH), maxH)
   const x = clamp(finite(rect.x, area.left + 80), area.left + EDGE, Math.max(area.left + EDGE, area.left + area.width - EDGE - w))
-  const y = clamp(finite(rect.y, area.top + 80), area.top + EDGE, Math.max(area.top + EDGE, area.top + area.height - EDGE - h))
+  let y = clamp(finite(rect.y, area.top + 80), area.top + EDGE, Math.max(area.top + EDGE, area.top + area.height - EDGE - h))
+  if (keepOut && [keepOut.left, keepOut.top, keepOut.right].every(Number.isFinite) && x < keepOut.right && x + w > keepOut.left) {
+    const limit = keepOut.top - EDGE, top = area.top + EDGE
+    if (y + h > limit && limit - top >= 120) {
+      y = Math.max(top, limit - h)
+      h = Math.min(h, limit - y)
+    }
+  }
   return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }
 }
 
@@ -72,6 +90,26 @@ export function visibleRange(tops: number[], heights: number[], scrollTop: numbe
   low = first; high = n - 1
   while (low < high) { const mid = (low + high + 1) >> 1; if (tops[mid] <= bottom) low = mid; else high = mid - 1 }
   return [Math.max(0, first - overscan), Math.min(n - 1, Math.max(first, low) + overscan)]
+}
+
+type Layout = { tops: number[]; heights: number[]; total?: number }
+/** the page at a height in the list */
+export const pageAt = (layout: Layout, y: number) => visibleRange(layout.tops, layout.heights, y, 1, 0)[0]
+
+/** the scroll position that keeps the page at the top of the view in place when the page sizes change */
+export function anchoredScroll(before: Layout, after: Layout, scrollTop: number): number {
+  const n = Math.min(before.tops.length, after.tops.length)
+  if (!n || !Number.isFinite(scrollTop)) return 0
+  const index = Math.min(n - 1, pageAt(before, scrollTop))
+  const offset = scrollTop - before.tops[index]
+  const scale = before.heights[index] > 0 ? after.heights[index] / before.heights[index] : 1
+  return Math.max(0, after.tops[index] + (offset > 0 ? offset * scale : offset))
+}
+
+/** the matches the panel shows as badges 1, 2, 3 */
+export function panelHits(highlight: readonly RankedCandidate[] | null | undefined, book: Pick<BookRecord, 'id' | 'pageCount'>): RankedCandidate[] {
+  const count = Math.max(0, Math.floor(finite(book.pageCount, 0)))
+  return (highlight ?? []).filter(c => c.bookId === book.id && c.pageIndex >= 0 && c.pageIndex < count).slice(0, 3)
 }
 
 /** longest edge in pixels to render a page shown `cssWidth` wide, in steps so resizing reuses renders */
@@ -133,6 +171,20 @@ function panelArea(): PanelArea {
   const top = bottom > 0 && bottom < window.innerHeight / 2 ? bottom : 0
   return { left: 0, top, width: window.innerWidth, height: window.innerHeight - top }
 }
+// the typing bar (or voice controls) and the caption under it
+const DOCK = '.command-dock .command-bar, .command-dock .command-caption, .command-dock .voice-panel'
+function dockRect(): KeepOut | null {
+  if (typeof document === 'undefined') return null
+  let out: KeepOut | null = null
+  for (const element of document.querySelectorAll(DOCK)) {
+    const r = element.getBoundingClientRect()
+    if (!(r.width > 0 && r.height > 0)) continue
+    out = out ? { left: Math.min(out.left, r.left), top: Math.min(out.top, r.top), right: Math.max(out.right, r.right), bottom: Math.max(out.bottom, r.bottom) } : { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+  }
+  return out
+}
+const fitPanel = (rect: Partial<PanelRect>) => clampPanel(rect, panelArea(), PANEL_MIN, dockRect())
+const samePanel = (a: PanelRect, b: PanelRect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h
 function savedRect(): Partial<PanelRect> | null {
   if (typeof window === 'undefined') return null
   try {
@@ -142,7 +194,7 @@ function savedRect(): Partial<PanelRect> | null {
 }
 function initialRect(): PanelRect {
   const saved = savedRect(), area = panelArea()
-  return saved ? clampPanel(saved, area) : defaultPanelRect(area)
+  return fitPanel(saved ?? defaultPanelRect(area))
 }
 function saveRect(rect: PanelRect) { try { window.localStorage.setItem(PANEL_KEY, JSON.stringify(rect)) } catch { /* storage can be blocked */ } }
 const media = (query: string) => { try { return typeof window !== 'undefined' && window.matchMedia(query).matches } catch { return false } }
@@ -152,7 +204,7 @@ const fractionOf = (event: React.PointerEvent<HTMLElement>): Point => {
   return { x: rect.width ? (event.clientX - rect.left) / rect.width : 0, y: rect.height ? (event.clientY - rect.top) / rect.height : 0 }
 }
 
-export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, onInsertCandidate, onSearch, onClose, busy, message }: Props) {
+export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, onInsertCandidate, onSearch, onClose, busy, message, lookup = 0, onDismiss, onPageChange }: Props) {
   const [rect, setRect] = useState<PanelRect>(initialRect)
   const [dragging, setDragging] = useState<'move' | 'resize' | null>(null)
   const [coarse, setCoarse] = useState(false)
@@ -173,6 +225,9 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   const running = useRef(new Set<string>()), failed = useRef(new Set<string>())
   const alive = useRef(true), scrollFrame = useRef(0), pumpTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const restored = useRef<string | null>(null), scrolledFor = useRef<string | null>(null)
+  // the list position as last scrolled, before a layout change can clamp it
+  const scrollAt = useRef(0), shownPage = useRef('')
+  const pageChanged = useRef(onPageChange); pageChanged.current = onPageChange
 
   const count = Math.max(0, Math.floor(finite(book.pageCount, 0)))
   const bar = coarse ? 52 : 38
@@ -181,18 +236,21 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   const layout = useMemo(() => layoutPages(aspects ?? new Array<number>(count).fill(DEFAULT_ASPECT), sheetWidth, bar), [aspects, count, sheetWidth, bar])
   const layoutRef = useRef(layout); layoutRef.current = layout
   const [first, last] = visibleRange(layout.tops, layout.heights, scrollTop, view.h, 1)
-  const hits = useMemo(() => (highlight ?? []).filter(c => c.bookId === book.id && c.pageIndex >= 0 && c.pageIndex < count).slice(0, 3), [highlight, book.id, count])
+  const hits = useMemo(() => panelHits(highlight, { id: book.id, pageCount: count }), [highlight, book.id, count])
   const hitKey = hits.map(c => c.id).join('|')
   const shownHits = hitKey && hitKey === dismissed ? [] : hits
 
   useEffect(() => { alive.current = true; setCoarse(media('(pointer: coarse)')); return () => { alive.current = false; cancelAnimationFrame(scrollFrame.current); clearTimeout(pumpTimer.current) } }, [])
   useEffect(() => { const t = setTimeout(() => setRenderWidth(sheetWidth), 220); return () => clearTimeout(t) }, [sheetWidth])
   useEffect(() => {
-    const resize = () => setRect(current => clampPanel(current, panelArea()))
+    const resize = () => setRect(current => { const next = fitPanel(current); return samePanel(next, current) ? current : next })
     // the header may not have been measurable on the first render
     setRect(initialRect())
     window.addEventListener('resize', resize)
-    return () => window.removeEventListener('resize', resize)
+    // the typing bar grows in voice mode; stay above it
+    const dock = document.querySelector('.command-dock'), observer = dock && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null
+    if (dock) observer?.observe(dock)
+    return () => { window.removeEventListener('resize', resize); observer?.disconnect() }
   }, [])
   useLayoutEffect(() => {
     const element = list.current
@@ -205,16 +263,22 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
     return () => observer.disconnect()
   }, [])
 
-  // page sizes and detected items, loaded once per book
+  // a different book starts fresh
+  useEffect(() => { setAspects(null); setAnchors(new Map()); setCrop(null); failed.current.clear() }, [book.id, count])
+  // page sizes, loaded once per book and again when its import finishes
   useEffect(() => {
     let current = true
-    setAspects(null); setAnchors(new Map()); setCrop(null); failed.current.clear()
     getPages(book.id).then((pages: PageRecord[]) => {
       if (!current) return
       const next = new Array<number>(count).fill(DEFAULT_ASPECT)
       for (const page of pages) if (page.index >= 0 && page.index < count) next[page.index] = safeAspect(page.width, page.height)
       setAspects(next)
-    }).catch(() => { if (current) setAspects(new Array<number>(count).fill(DEFAULT_ASPECT)) })
+    }).catch(() => { if (current) setAspects(prev => prev ?? new Array<number>(count).fill(DEFAULT_ASPECT)) })
+    return () => { current = false }
+  }, [book.id, count, book.indexed])
+  // detected items, loaded again after the book is read again
+  useEffect(() => {
+    let current = true
     getAnchors(book.id).then((found: Anchor[]) => {
       if (!current) return
       const byPage = new Map<number, Anchor[]>()
@@ -227,7 +291,7 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
       setAnchors(byPage)
     }).catch(() => { /* outlines are optional */ })
     return () => { current = false }
-  }, [book.id, count])
+  }, [book.id, count, book.indexed, book.indexVersion])
 
   const scrollToY = useCallback((top: number) => {
     const element = list.current
@@ -252,15 +316,33 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
     if (hits.length) return
     const top = scrollMemory.get(book.id) ?? 0
     if (list.current) list.current.scrollTop = top
-    setScrollTop(top)
+    scrollAt.current = top; setScrollTop(top)
   }, [aspects, book.id, hits.length])
+  // resizing changes every page height; keep the page at the top of the view where it was
+  const before = useRef<{ layout: typeof layout; bookId: string } | null>(null)
+  useLayoutEffect(() => {
+    const prev = before.current
+    before.current = aspects ? { layout, bookId: book.id } : null
+    const element = list.current
+    if (!prev || !aspects || !element || prev.bookId !== book.id || prev.layout === layout) return
+    const top = Math.round(anchoredScroll(prev.layout, layout, scrollAt.current))
+    if (Math.abs(top - scrollAt.current) < 1 && Math.abs(top - element.scrollTop) < 1) return
+    element.scrollTop = top; scrollAt.current = top
+    scrollMemory.set(book.id, top); setScrollTop(top)
+  }, [layout, aspects, book.id])
+  useEffect(() => {
+    const index = count ? pageAt(layout, scrollTop + view.h / 2) : -1, key = `${book.id}:${index}`
+    if (index < 0 || key === shownPage.current) return
+    shownPage.current = key
+    pageChanged.current?.(index)
+  }, [layout, scrollTop, view.h, count, book.id])
+  // a new lookup may return the same matches, so show and scroll to them again
+  useEffect(() => { scrolledFor.current = null; setDismissed(null) }, [lookup])
   useEffect(() => {
     if (!aspects || !hits.length || scrolledFor.current === hitKey) return
     scrolledFor.current = hitKey
     scrollToHit(hits[0])
-  }, [aspects, hitKey, hits, scrollToHit])
-  // a new lookup may return the same matches, so show and scroll to them again
-  useEffect(() => { if (busy) { scrolledFor.current = null; setDismissed(null) } }, [busy])
+  }, [aspects, hitKey, hits, scrollToHit, lookup])
   useEffect(() => {
     if (!crop) return
     const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') setCrop(null) }
@@ -295,6 +377,7 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   }, [first, last, renderWidth, aspects, book.id, pump])
 
   const scrolled = () => {
+    scrollAt.current = list.current?.scrollTop ?? 0
     if (scrollFrame.current) return
     scrollFrame.current = requestAnimationFrame(() => {
       scrollFrame.current = 0
@@ -314,9 +397,9 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   const dragged = (event: React.PointerEvent<HTMLElement>): PanelRect | null => {
     const d = drag.current
     if (!d || d.id !== event.pointerId) return null
-    const dx = event.clientX - d.x, dy = event.clientY - d.y, area = panelArea()
-    if (d.kind === 'move') return clampPanel({ ...d.rect, x: d.rect.x + dx, y: d.rect.y + dy }, area)
-    return clampPanel({ ...d.rect, w: Math.min(d.rect.w + dx, area.left + area.width - EDGE - d.rect.x), h: Math.min(d.rect.h + dy, area.top + area.height - EDGE - d.rect.y) }, area)
+    const dx = event.clientX - d.x, dy = event.clientY - d.y, area = panelArea(), dock = dockRect()
+    if (d.kind === 'move') return clampPanel({ ...d.rect, x: d.rect.x + dx, y: d.rect.y + dy }, area, PANEL_MIN, dock)
+    return clampPanel({ ...d.rect, w: Math.min(d.rect.w + dx, area.left + area.width - EDGE - d.rect.x), h: Math.min(d.rect.h + dy, area.top + area.height - EDGE - d.rect.y) }, area, PANEL_MIN, dock)
   }
   const moveDrag = (event: React.PointerEvent<HTMLElement>) => { const next = dragged(event); if (next) setRect(next) }
   const endDrag = (event: React.PointerEvent<HTMLElement>) => {
@@ -397,7 +480,7 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
     </form>
     {message && <p className="reference-status" role="status">{message}</p>}
     {shownHits.length > 0 && <div className="reference-legend">
-      <div className="reference-legend-top"><b>Tap the one you meant</b><button type="button" aria-label="Hide matches" onClick={() => setDismissed(hitKey)}><X size={13}/></button></div>
+      <div className="reference-legend-top"><b>Tap the one you meant</b><button type="button" aria-label="Hide matches" onClick={() => { setDismissed(hitKey); onDismiss?.() }}><X size={13}/></button></div>
       <div className="reference-legend-list">{shownHits.map((c, n) => <button type="button" key={c.id} title={c.description} onClick={() => scrollToHit(c)}><i>{n + 1}</i><span>{candidateTitle(c, book.labels)}</span></button>)}</div>
     </div>}
     <div ref={list} className="reference-pages" onScroll={scrolled} tabIndex={0}>

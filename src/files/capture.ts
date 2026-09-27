@@ -1,8 +1,16 @@
-import { Box, type Editor, type TLShapeId } from '../canvas/editor'
+import { Box, type Editor, type TLShape, type TLShapeId } from '../canvas/editor'
 import type { Focus } from '../../shared/board'
 
 const MAX_CAPTURE_EDGE = 1024
 const MAX_CAPTURE_LENGTH = 2_000_000
+
+// pages and problems from the textbook library; the model never sees book content
+const isLibraryShape = (shape: TLShape) => { const value = shape.meta?.library; return !!value && typeof value === 'object' }
+
+/** A screenshot is only worth sending when there is ink or an image that is not from the textbook library. */
+export function boardNeedsImage(editor: Editor): boolean {
+  return editor.getCurrentPageShapes().some(shape => shape.type === 'draw' || (shape.type === 'image' && !isLibraryShape(shape)))
+}
 
 /** Pad the user's gesture and complete selected strokes rather than cutting symbols at the lasso. */
 export function getCaptureBounds(editor: Editor, focus?: Focus | null): Box {
@@ -25,12 +33,14 @@ export function getCaptureBounds(editor: Editor, focus?: Focus | null): Box {
 /**
  * A small board-only image for multimodal context. Includes ink and locked homework
  * backgrounds, but never application chrome, transcripts, or server configuration.
+ * Textbook library images are left out; ink written on them still shows.
  */
 export async function captureBoardContext(editor: Editor, focus?: Focus | null): Promise<string | null> {
   try {
     const bounds = getCaptureBounds(editor, focus)
     if (![bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite) || bounds.w <= 0 || bounds.h <= 0) return null
     const ids = editor.getCurrentPageShapes().filter(shape => {
+      if (isLibraryShape(shape)) return false
       const box = editor.getShapePageBounds(shape)
       return box && box.maxX > bounds.x && box.maxY > bounds.y && box.x < bounds.maxX && box.y < bounds.maxY
     }).map(shape => shape.id)

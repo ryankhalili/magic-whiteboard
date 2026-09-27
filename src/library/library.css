@@ -101,3 +101,6 @@
   .reference-legend-list button{min-height:44px}.reference-resize{width:34px;height:34px}
 }
 @media(prefers-reduced-motion:reduce){.library-preview,.import-layer,.import-dialog,.reference-panel,.ref-sheet>img,.ref-sheet-empty,.ref-hit{animation:none!important;transition:none!important}}
+/* drawn inside the board: leave the typing bar below the dialog free */
+.board-stage .import-layer{padding-bottom:150px}
+.board-stage .import-dialog{max-height:calc(100dvh - 182px)}

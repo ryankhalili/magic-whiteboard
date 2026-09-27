@@ -1,11 +1,11 @@
 import 'fake-indexeddb/auto'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
-import { bookTitle, importBook, inspectPdf } from '../src/library/indexer'
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import { INDEX_VERSION, bookTitle, ensureIndexed, importBook, inspectPdf, needsReindex } from '../src/library/indexer'
 import { hasPdfHeader, isPdfFile, setPdfJsLoader, textLinesFrom } from '../src/library/pdfjs'
-import { getAnchors, getBook, getBookBytes, getPages, listBooks } from '../src/library/store'
-import type { ImportProgress } from '../src/library/types'
+import { bookIdFor, getAnchors, getBook, getBookBytes, getPages, getThumb, listBooks, putAnchors, putBookBytes, putThumb, saveBook } from '../src/library/store'
+import type { Anchor, BookRecord, ImportProgress } from '../src/library/types'
 
 const book = `${process.cwd()}/.local/test-books/calculus-volume-1.pdf`
 const fonts = `${process.cwd()}/node_modules/pdfjs-dist/standard_fonts/`
@@ -160,12 +160,155 @@ describe('importBook', () => {
     const started = Date.now()
     const record = await importBook(pdfFile(new Uint8Array(readFileSync(book)), 'calculus-volume-1.pdf'))
     expect(Date.now() - started).toBeLessThan(60_000)
-    expect(record).toMatchObject({ title: 'Calculus Volume 1', pageCount: 769, indexed: true })
+    expect(record).toMatchObject({ title: 'Calculus Volume 1', pageCount: 769, indexed: true, indexVersion: INDEX_VERSION })
     expect(record.labels[30]).toBe('23')
     expect(record.textPages).toBeGreaterThan(700)
     expect(record.outline.find(entry => entry.title === '3.2 The Derivative as a Function')?.pageIndex).toBe(210)
     const anchors = await getAnchors(record.id)
     expect(anchors.some(anchor => anchor.pageIndex === 199 && anchor.kind === 'example' && anchor.label === '3.2')).toBe(true)
     expect(anchors.length).toBeGreaterThan(1000)
-  }, 120_000)
+
+    // grid exercises end at the next row: exercise 6 on file page 206 used to run down through 9, 13, 16 and more
+    const at = (index: number, kind: string, label: string) => anchors.find(anchor => anchor.pageIndex === index && anchor.kind === kind && anchor.label === label)!
+    const six = at(206, 'exercise', '6')
+    expect(six.box.y + six.box.h).toBeLessThanOrEqual(0.2021)
+    // 57's own words run past 58's number and are kept whole
+    const fiftySeven = at(37, 'exercise', '57')
+    expect(fiftySeven.box.x + fiftySeven.box.w).toBeGreaterThanOrEqual(0.385)
+    // Theorem 3.4 goes on at the top of the next page, above its proof
+    const theorem = at(226, 'theorem', '3.4')
+    expect(theorem.continues?.pageIndex).toBe(227)
+    expect(theorem.continues!.box.y + theorem.continues!.box.h).toBeLessThan(0.1255)
+
+    const pages = await getPages(record.id)
+    const exercises = anchors.filter(anchor => anchor.kind === 'exercise')
+    const masked = (anchor: Anchor, x: number, y: number) => (anchor.mask ?? []).some(m => x >= m.x && x <= m.x + m.w && y >= m.y && y <= m.y + m.h)
+    const inBox = (anchor: Anchor, x: number, y: number) => x > anchor.box.x && x < anchor.box.x + anchor.box.w && y > anchor.box.y && y < anchor.box.y + anchor.box.h && !masked(anchor, x, y)
+    // no crop takes in the next group's "For the following exercises" line (134 did before)
+    const instructions = exercises.filter(anchor => pages[anchor.pageIndex].lines.some(line => /^(For|In) the following/.test(line.text)
+      && line.box.y > anchor.box.y + 0.01 && line.box.x + line.box.w > anchor.box.x + 0.01 && inBox(anchor, Math.max(line.box.x, anchor.box.x) + 0.005, line.box.y + line.box.h / 2)))
+    expect(instructions.map(anchor => anchor.id)).toEqual([])
+    // no crop takes in another exercise's number, except where the book itself prints two cells over each other
+    const spills = exercises.filter(anchor => exercises.some(other => other !== anchor && other.pageIndex === anchor.pageIndex
+      && pages[anchor.pageIndex].lines.some(line => line.text.startsWith(other.label) && Math.abs(line.box.y - other.box.y) < 0.012 && Math.abs(line.box.x - other.box.x - 0.01) < 0.012
+        && inBox(anchor, line.box.x + 0.003, line.box.y + line.box.h / 2))))
+    expect(spills.length).toBeLessThanOrEqual(6)
+    // a full reindex of the old version gives the same items
+    await saveBook({ ...record, indexVersion: undefined })
+    const again = await ensureIndexed(record.id)
+    expect(again.indexVersion).toBe(INDEX_VERSION)
+    expect((await getAnchors(record.id)).length).toBe(anchors.length)
+  }, 180_000)
+})
+
+type Placed = [text: string, x: number, top: number, size?: number]
+
+/** A theorem that runs off the foot of its page; its last formula (drawn, not text) and the proof are on the next. */
+async function splitBook(title = 'Split Theorem Book'): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create()
+  pdf.setTitle(title)
+  const font = await pdf.embedFont(StandardFonts.Helvetica)
+  const pages: Placed[][] = [
+    [[title, 72, 200, 28]],
+    [['Thus the rule holds for every power.', 72, 60], ['Theorem 3.4', 80, 420], ['Sum and Constant Multiple Rules', 80, 445],
+      ...Array.from({ length: 16 }, (_, i): Placed => [`rule text line number ${i} of the theorem statement`, 80, 465 + 16 * i]), ['that is,', 80, 722]],
+    [['Proof', 72, 140, 12], ['We prove the sum rule only.', 72, 162], ['EXAMPLE 3.20', 80, 220], ['Applying the Rule', 72, 240], ['Solution', 86, 270]],
+  ]
+  pages.forEach((lines, index) => {
+    const page = pdf.addPage([612, 792])
+    if (index >= 1) {
+      page.drawText(index % 2 ? `3.3 \u2022 Differentiation Rules ${index}` : `${index} 3 \u2022 Derivatives`, { x: index % 2 ? 380 : 72, y: 792 - 36, size: 8, font })
+      page.drawText('Access for free at example.org', { x: 72, y: 30, size: 8, font })
+    }
+    // the formula at the top of the second page is a drawing, like math in the real book
+    if (index === 2) page.drawRectangle({ x: 200, y: 792 - 110, width: 200, height: 30, color: rgb(0.1, 0.1, 0.1) })
+    for (const [text, x, top, size = 10] of lines) page.drawText(text, { x, y: 792 - top - size * 0.8, size, font })
+  })
+  return pdf.save()
+}
+
+describe('reindexing', () => {
+  it('knows which books need reading again', () => {
+    const base = { indexed: true, indexVersion: INDEX_VERSION } as BookRecord
+    expect(INDEX_VERSION).toBe(2)
+    expect(needsReindex(base)).toBe(false)
+    expect(needsReindex({ ...base, indexVersion: undefined })).toBe(true)
+    expect(needsReindex({ ...base, indexVersion: 1 })).toBe(true)
+    expect(needsReindex({ ...base, indexed: false })).toBe(true)
+  })
+
+  it('stitches a theorem that runs onto the next page', async () => {
+    const record = await importBook(pdfFile(await splitBook(), 'split.pdf'))
+    expect(record.indexVersion).toBe(INDEX_VERSION)
+    const theorem = (await getAnchors(record.id)).find(anchor => anchor.kind === 'theorem' && anchor.label === '3.4')!
+    expect(theorem.pageIndex).toBe(1)
+    expect(theorem.continues?.pageIndex).toBe(2)
+    const rest = theorem.continues!.box
+    // from under the running header down to just above "Proof", taking in the drawn formula at 82..112 points
+    expect(rest.y).toBeLessThan(82 / 792)
+    expect(rest.y + rest.h).toBeGreaterThan(112 / 792)
+    expect(rest.y + rest.h).toBeLessThanOrEqual(140 / 792)
+  })
+
+  it('reads an old book again from its stored bytes, keeping its name and dates and dropping stale items', async () => {
+    const bytes = await splitBook('Old Version Book')
+    const fresh = await importBook(pdfFile(bytes, 'old-version.pdf'))
+    const items = await getAnchors(fresh.id)
+    // what a version 1 index left behind: no version, a renamed title and an item the new finder does not see
+    const old: BookRecord = { ...fresh, title: 'Old Version Book (my copy)', indexVersion: undefined, addedAt: 1000, openedAt: 2000 }
+    await saveBook(old)
+    const stale: Anchor = { ...items[0], id: `${fresh.id}#1:exercise:99`, kind: 'exercise', label: '99' }
+    await putAnchors([stale])
+    // a page picture made before; the book is updated in place, never removed and written again
+    await putThumb(`${fresh.id}:2:240`, 'data:image/jpeg;base64,AAAA')
+    const events: ImportProgress[] = []
+    const first = ensureIndexed(fresh.id, p => events.push(p))
+    expect(ensureIndexed(fresh.id)).toBe(first)
+    const done = await first
+    expect(done).toMatchObject({ id: fresh.id, title: 'Old Version Book (my copy)', fileName: 'old-version.pdf', addedAt: 1000, openedAt: 2000, indexed: true, indexVersion: INDEX_VERSION })
+    expect(await getBook(fresh.id)).toEqual(done)
+    const now = await getAnchors(fresh.id)
+    expect(now.map(anchor => anchor.id).sort()).toEqual(items.map(anchor => anchor.id).sort())
+    expect(now.find(anchor => anchor.label === '3.4')?.continues?.pageIndex).toBe(2)
+    expect((await getBookBytes(fresh.id))?.byteLength).toBe(bytes.byteLength)
+    expect((await getPages(fresh.id)).length).toBe(3)
+    expect(await getThumb(`${fresh.id}:2:240`)).toBe('data:image/jpeg;base64,AAAA')
+    expect(events.some(event => event.phase === 'reading')).toBe(true)
+    expect(events.at(-1)).toEqual({ phase: 'saving', done: 3, total: 3 })
+    // an up to date book is returned as it is
+    const quiet: ImportProgress[] = []
+    expect(await ensureIndexed(fresh.id, p => quiet.push(p))).toEqual(done)
+    expect(quiet).toEqual([])
+  })
+
+  it('finishes an import that stopped half way, and importing an old book again updates it', async () => {
+    const bytes = await splitBook('Interrupted Book')
+    const id = await bookIdFor(bytes)
+    await putBookBytes(id, bytes)
+    await saveBook({ id, title: 'Interrupted Book', fileName: 'interrupted.pdf', size: bytes.byteLength, pageCount: 3, addedAt: 5, openedAt: 6, labels: [null, null, null], outline: [], cover: null, indexed: false, textPages: 0 })
+    const done = await ensureIndexed(id)
+    expect(done).toMatchObject({ id, indexed: true, indexVersion: INDEX_VERSION, addedAt: 5, fileName: 'interrupted.pdf' })
+    expect((await getAnchors(id)).some(anchor => anchor.kind === 'theorem')).toBe(true)
+    await saveBook({ ...done, indexVersion: 1 })
+    const reopened = await importBook(pdfFile(bytes, 'interrupted.pdf'))
+    expect(reopened.indexVersion).toBe(INDEX_VERSION)
+    expect(reopened.openedAt).toBeGreaterThan(6)
+    await expect(ensureIndexed('sha256:missing')).rejects.toThrow('This book is no longer in the library. Import it again.')
+  })
+
+  it('lets a lookup during an import wait for that import instead of reading the book twice', async () => {
+    const bytes = await splitBook('Busy Book')
+    const id = await bookIdFor(bytes)
+    let joined: Promise<BookRecord> | null = null
+    const extra: ImportProgress[] = []
+    const importing = importBook(pdfFile(bytes, 'busy.pdf'), p => {
+      // the teacher asks for a page while the book is still being read
+      if (!joined && p.phase === 'reading' && p.done > 0) joined = ensureIndexed(id, q => extra.push(q))
+    })
+    const done = await importing
+    expect(joined).not.toBeNull()
+    expect(await joined).toEqual(done)
+    expect(extra).toEqual([])
+    expect(done).toMatchObject({ id, indexed: true, indexVersion: INDEX_VERSION })
+  })
 })

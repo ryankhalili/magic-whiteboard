@@ -103,10 +103,13 @@ export function worksheetPages(editor: Editor): WorksheetPage[] {
   return pages.sort((a, b) => a.info.at - b.info.at || a.info.doc.localeCompare(b.info.doc) || a.info.page - b.info.page)
 }
 
+/** Image characters the notebook holds; images no object shows are dropped with the next image, so they do not count. */
 export function assetChars(editor: Editor): number {
+  const records = editor.store.allRecords(), used = new Set<unknown>()
+  for (const record of records) if (record.typeName === 'shape') used.add((record as { props?: { assetId?: unknown } }).props?.assetId)
   let total = 0
-  for (const record of editor.store.allRecords()) {
-    const src = record.typeName === 'asset' ? (record as { props?: { src?: unknown } }).props?.src : undefined
+  for (const record of records) {
+    const src = record.typeName === 'asset' && used.has(record.id) ? (record as { props?: { src?: unknown } }).props?.src : undefined
     if (typeof src === 'string') total += src.length
   }
   return total

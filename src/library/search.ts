@@ -12,9 +12,13 @@ const KIND_WORDS: Record<string, AnchorKind | null> = {
 }
 const KIND_PATTERN = Object.keys(KIND_WORDS).filter(word => word !== '#' && word !== 'no').sort((a, b) => b.length - a.length).join('|')
 const ITEM = new RegExp(`(?:\\b(${KIND_PATTERN})\\s*#?\\s*|#\\s*)(\\d{1,3}(?:\\.\\d{1,3}){0,2})(?![\\d.]*\\d)`, 'i')
+const ITEMS = new RegExp(ITEM.source, 'gi')
+const CHAPTER = /\b(?:chapter|chap|ch)\s*\.?\s*(\d{1,2})\b(?![\d.]*\d)/
+const IN_SECTION = /\b(?:in|from|of)\s+(\d{1,2}\.\d{1,2})(?![\d.]*\d)/
 // roman labels only after "page", so "pi" never reads as page i
 const PAGE = /\b(?:pages?|pgs?|p)\s*(\d{1,4})\b|\b(?:pages?|pgs?)\s+([ivxlcdm]{1,7})\b/i
 const LONE = /^(\d{1,3}(?:\.\d{1,3}){1,2})$/
+const LONE_SKIP = new Set(['the', 'a', 'an', 'in', 'from', 'of', 'on', 'to', 'at', 'for', 'me', 'us', 'up', 'onto', 'into'])
 
 // longest first so "show me" goes before "show"
 const FILLERS = [
@@ -26,7 +30,13 @@ const FILLERS = [
 ]
 const FILLER_WORDS = new Set(FILLERS.filter(phrase => !phrase.includes(' ')))
 const STOP = new Set(['the', 'a', 'an', 'of', 'on', 'in', 'to', 'from', 'for', 'me', 'us', 'up', 'and', 'this', 'that', 'it', 'onto', 'into', 'at', 'my', 'our', 'is', 'are', 'with', 'about', 'by', 'as', 'be', 'or', 'so', 'we', 'you', 'i', 'its', 'one', 'what', 'which', 'how', 'can', 'some', 'out', 'okay', 'ok', 'um', 'uh', 'then', 'next'])
-const GENERIC = new Set(['the', 'my', 'our', 'this', 'that', 'a', 'your', 'text', 'same', 'other', 'current', 'open', 'library', 'whole', 'board', 'it', 'there', 'here', 'detail', 'class', 'chapter', 'section', 'page', 'problem', 'example', 'exercise', 'these', 'those', 'which', 'what', 'order', 'general', 'fact', 'particular', 'front', 'back', 'color', 'red', 'blue', 'black', 'green'])
+const GENERIC = new Set(['the', 'my', 'our', 'this', 'that', 'a', 'your', 'text', 'same', 'other', 'current', 'open', 'library', 'whole', 'board', 'it', 'there', 'here', 'detail', 'class', 'chapter', 'section', 'page', 'problem', 'example', 'exercise', 'these', 'those', 'which', 'what', 'order', 'general', 'fact', 'particular', 'front', 'back', 'color', 'red', 'blue', 'black', 'green',
+  // words that follow "in" without naming a book: "problem 3.2 in pencil"
+  'pen', 'pencil', 'marker', 'ink', 'full', 'colour', 'colors', 'big', 'bigger', 'large', 'larger', 'small', 'smaller', 'bold', 'left', 'right', 'top', 'bottom',
+  'center', 'centre', 'middle', 'corner', 'margin', 'space', 'view', 'focus', 'panel', 'reference', 'place', 'advance', 'total', 'person', 'yellow', 'orange', 'purple', 'gray', 'grey',
+  'white', 'whiteboard', 'notebook', 'pdf', 'reader', 'sidebar', 'window', 'row', 'column', 'box', 'frame', 'context', 'case', 'print', 'blank', 'turn', 'answer', 'solution',
+  // words that say which book without naming it: "the new book"
+  'new', 'newest', 'latest', 'last', 'recent', 'old', 'main', 'usual', 'regular', 'course', 'assigned', 'correct', 'first', 'second'])
 const LIBRARY_WORDS = /\b(book|textbook|text book|library|chapter|in the text)\b/
 
 function escape(text: string) { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
@@ -60,6 +70,16 @@ export function analyzeLibraryText(text: string): { query: LibraryQuery | null; 
   const { hint, phrase } = bookHint(clean)
   if (phrase) clean = clean.replace(phrase, ' ').replace(/\s+/g, ' ').trim()
   const book = hint ? { book: hint } : {}
+  // "exercise 48 in section 5.1", "section 5.1 exercise 48", "exercise 48 from chapter 5"
+  const scope: { section?: string; chapter?: string } = {}
+  const found = [...clean.matchAll(ITEMS)]
+  const within = found.length > 1 ? found.find(match => match[1] && KIND_WORDS[match[1].toLowerCase()] === 'section' && match[2].includes('.')) : undefined
+  if (within) { scope.section = within[2]; clean = cut(clean, within) }
+  // "exercise 48 in 5.1"
+  const bare = !within && found.length === 1 ? IN_SECTION.exec(clean) : null
+  if (bare && bare.index > (found[0].index ?? 0)) { scope.section = bare[1]; clean = cut(clean, bare) }
+  const chapter = CHAPTER.exec(clean)
+  if (chapter) { scope.chapter = String(Number(chapter[1])); clean = cut(clean, chapter) }
   const rest = (removed: string) => strip(clean.replace(removed, ' '), FILLERS).split(' ').filter(word => word && !STOP.has(word) && !/^(book|textbook|text)$/.test(word))
 
   const item = ITEM.exec(clean)
@@ -73,16 +93,22 @@ export function analyzeLibraryText(text: string): { query: LibraryQuery | null; 
   if (item) {
     const word = item[1]?.toLowerCase()
     const itemKind = word ? KIND_WORDS[word] ?? undefined : undefined
-    return { query: { kind: 'item', label: item[2], ...(itemKind ? { itemKind } : {}), ...book, raw }, leftovers: rest(item[0]) }
+    return { query: { kind: 'item', label: item[2], ...(itemKind ? { itemKind } : {}), ...book, ...scope, raw }, leftovers: rest(item[0]) }
   }
   const stripped = strip(clean, FILLERS)
-  const lone = LONE.exec(stripped)
-  if (lone) return { query: { kind: 'item', label: lone[1], ...book, raw }, leftovers: [] }
-  if (hint || LIBRARY_WORDS.test(clean)) {
+  // "the 3.2", "3.2 in chapter 3", but never "what is 3.2"
+  const lone = LONE.exec(stripped.split(' ').filter(word => !LONE_SKIP.has(word)).join(' '))
+  if (lone) return { query: { kind: 'item', label: lone[1], ...book, ...scope, raw }, leftovers: [] }
+  if (hint || scope.chapter || LIBRARY_WORDS.test(clean)) {
     const terms = stripped.replace(LIBRARY_WORDS, ' ').split(/\s+/).filter(word => word && !STOP.has(word) && !/^(book|textbook|text|library)$/.test(word))
-    if (terms.length) return { query: { kind: 'topic', terms: terms.join(' '), ...book, raw }, leftovers: [] }
+    if (terms.length) return { query: { kind: 'topic', terms: terms.join(' '), ...book, ...scope, raw }, leftovers: [] }
   }
   return { query: null, leftovers: [] }
+}
+
+function cut(text: string, match: RegExpMatchArray): string {
+  const at = match.index ?? 0
+  return `${text.slice(0, at)} ${text.slice(at + match[0].length)}`.replace(/\s+/g, ' ').trim()
 }
 
 /** "page 22", "problem 3.2", "the chain rule example from the book"; null when it is not about the library. */
@@ -93,7 +119,10 @@ export function parseLibraryQuery(text: string): LibraryQuery | null {
 const PRIOR: Record<AnchorKind | 'page', number> = {
   problem: 0.9, exercise: 0.85, example: 0.8, checkpoint: 0.7, question: 0.7, section: 0.4, theorem: 0.5, definition: 0.4, figure: 0.1, table: 0.1, page: 0.3,
 }
-const GENERAL = new Set<AnchorKind>(['example', 'exercise', 'problem', 'checkpoint'])
+/** What "problem", "exercise", "question" or a bare number can mean. Sections, theorems and figures only when named. */
+export const PRACTICE = new Set<AnchorKind>(['example', 'exercise', 'problem', 'checkpoint', 'question'])
+// "problem 3.2", "number 12", "#12": a practice item of any kind
+const GENERAL_WORD = /\b(?:prob|problems?|number|no)\b|#/
 const TOPIC_KINDS = new Set<AnchorKind>(['example', 'exercise', 'problem', 'checkpoint', 'theorem', 'definition'])
 const KIND_NAME: Record<AnchorKind, string> = {
   example: 'Example', exercise: 'Exercise', problem: 'Problem', checkpoint: 'Checkpoint', section: 'Section', theorem: 'Theorem',
@@ -200,10 +229,10 @@ export function anchorCandidate(book: BookRecord, anchor: Anchor, features: Reco
 }
 
 /** The numbered section each page belongs to, from the section headings before it. */
-function sections(anchors: Anchor[], count: number): (string | null)[] {
+export function pageSections(anchors: Anchor[], count: number): (string | null)[] {
   const starts = anchors.filter(anchor => anchor.kind === 'section' && /^\d+\.\d+$/.test(anchor.label))
     .sort((a, b) => a.pageIndex - b.pageIndex || a.box.y - b.box.y)
-  const out: (string | null)[] = new Array(count).fill(null)
+  const out: (string | null)[] = new Array(Math.max(0, count)).fill(null)
   let k = 0, current: string | null = null
   for (let index = 0; index < count; index++) {
     while (k < starts.length && starts[k].pageIndex <= index) current = starts[k++].label
@@ -218,51 +247,78 @@ function localScore(features: Record<string, number>) {
   return score
 }
 
-/** Things in the book that could be what the teacher asked for, with features for the ranker. */
-export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: PageRecord[], anchors: Anchor[], limit = 40): Candidate[] {
+/**
+ * Things in the book that could be what the teacher asked for, with features for the ranker.
+ * near is the page the teacher is on (reference panel or last insert), so repeated numbers prefer that chapter.
+ */
+export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: PageRecord[], anchors: Anchor[], limit = 40, near: number | null = null): Candidate[] {
   if (query.kind === 'page') return []
   const count = Math.max(book.pageCount || 0, pages.length, ...anchors.map(anchor => anchor.pageIndex + 1))
   const early = (index: number) => count > 1 ? 1 - index / (count - 1) : 1
-  const sectionOf = sections(anchors, count)
+  const sectionOf = pageSections(anchors, count)
   const chapterOf = sectionOf.map(section => section ? Number(section.split('.')[0]) : null)
   const byIndex = new Map(pages.map(page => [page.index, page]))
   const out: Candidate[] = []
+  const scoped = !!(query.section || query.chapter)
+  const inScope = (index: number) => (!query.section || sectionOf[index] === query.section) && (!query.chapter || chapterOf[index] === Number(query.chapter))
+  const here = near !== null && Number.isInteger(near) && near >= 0 && near < count ? { chapter: chapterOf[near], section: sectionOf[near] } : null
+  // where the item sits compared with what the teacher asked for and where the teacher is
+  const askedChapter = query.chapter ? Number(query.chapter) : query.section ? Number(query.section.split('.')[0]) : null
+  const place = (index: number): Record<string, number> => {
+    const features: Record<string, number> = {}
+    // the right chapter but another section still beats another chapter
+    if (scoped) features.inSection = inScope(index) ? 1 : chapterOf[index] !== null && chapterOf[index] === askedChapter ? .5 : 0
+    if (here) {
+      const chapter = chapterOf[index]
+      features.nearChapter = here.chapter !== null && chapter !== null ? (chapter === here.chapter ? 1 : Math.max(0, .8 - .2 * Math.abs(chapter - here.chapter))) : 0
+      features.nearSection = here.section !== null && sectionOf[index] === here.section ? 1 : 0
+    }
+    return features
+  }
 
   if (query.kind === 'item') {
     const label = query.label
     const labelChapter = /^\d+\.\d/.test(label) ? Number(label.split('.')[0]) : null
     const words = tokenize(query.raw.replace(new RegExp(escape(label), 'g'), ' '))
-      .filter(word => !(word in KIND_WORDS) && !FILLER_WORDS.has(word) && !/^\d+$/.test(word) && !(query.book ?? '').includes(word))
+      .filter(word => !(word in KIND_WORDS) && !FILLER_WORDS.has(word) && !/^\d+$/.test(word) && !/^(chapter|chap|ch)$/.test(word) && !(query.book ?? '').includes(word))
     const sameChapter = (index: number) => labelChapter !== null && chapterOf[index] !== null ? (chapterOf[index] === labelChapter ? 1 : 0) : 0
-    const kindMatch = (kind: AnchorKind) => query.itemKind ? (query.itemKind === kind ? 1 : 0) : (GENERAL.has(kind) ? 1 : 0)
-    const found = new Set<number>()
-    for (const anchor of anchors) {
-      if (anchor.label !== label) continue
-      found.add(anchor.pageIndex)
+    const kindMatch = (kind: AnchorKind) => query.itemKind ? (query.itemKind === kind ? 1 : 0) : (PRACTICE.has(kind) ? 1 : 0)
+    const labelled = anchors.filter(anchor => anchor.label === label)
+    // "problem 3.2", "exercise 48", "question 5" and "3.2" mean practice items; a bare number falls back to anything with it
+    let pool = !query.itemKind || PRACTICE.has(query.itemKind) ? labelled.filter(anchor => PRACTICE.has(anchor.kind)) : labelled
+    if (!pool.length && !query.itemKind && !GENERAL_WORD.test(query.raw.toLowerCase())) pool = labelled
+    const found = new Set(labelled.map(anchor => anchor.pageIndex))
+    for (const anchor of pool) {
       out.push(anchorCandidate(book, anchor, {
         exactLabel: 1, kindMatch: kindMatch(anchor.kind), kindPrior: PRIOR[anchor.kind] ?? 0.2,
         textMatch: overlap(words, `${anchor.heading} ${anchor.snippet}`), early: early(anchor.pageIndex), sameChapter: sameChapter(anchor.pageIndex),
+        ...place(anchor.pageIndex),
       }, sectionOf[anchor.pageIndex]))
     }
-    // pages that name the item in their text, for books where it was not detected
-    if (out.length < 3) {
-      const named = new RegExp(`\\b(problem|exercise|example|question|checkpoint|theorem|definition)s?\\s+${escape(label)}(?![\\d]|\\.\\d)`, 'i')
+    // pages that name the item in their text, for books where it was not detected; once items were found,
+    // only a page that names the asked for kind ("Exercise 7.3"), never a bare number like an answer key line
+    const detected = out.length > 0
+    if (!detected || (query.itemKind && !out.some(candidate => candidate.features.kindMatch === 1))) {
+      const kinds = query.itemKind && (detected || !PRACTICE.has(query.itemKind)) ? escape(query.itemKind) : 'problem|exercise|example|question|checkpoint'
+      const named = new RegExp(`\\b(${kinds})s?\\s+${escape(label)}(?![\\d]|\\.\\d)`, 'i')
       const leading = new RegExp(`(^|\\n)\\s*${escape(label)}\\s*[.)]?\\s+\\S`)
       const extra: Candidate[] = []
       for (const page of pages) {
         if (found.has(page.index)) continue
-        const match = named.exec(page.text), lead = leading.test(page.text)
+        const match = named.exec(page.text), lead = !detected && leading.test(page.text)
         if (!match && !lead) continue
         const kind = match ? (KIND_WORDS[match[1].toLowerCase()] ?? null) : null
         extra.push(pageCandidate(book, page.index, page, {
           exactLabel: 0, kindMatch: kind && query.itemKind === kind ? 1 : 0, kindPrior: PRIOR.page,
-          textMatch: lead ? 1 : 0.5, early: early(page.index), sameChapter: sameChapter(page.index),
+          textMatch: lead ? 1 : 0.5, early: early(page.index), sameChapter: sameChapter(page.index), ...place(page.index),
         }))
       }
       out.push(...extra.sort((p, q) => localScore(q.features) - localScore(p.features)).slice(0, 5))
     }
   } else {
-    const hits = searchPages(pages, query.terms, 30)
+    let hits = searchPages(pages, query.terms, scoped ? 400 : 30)
+    // "limits examples in chapter 2" looks inside that chapter first
+    if (scoped) hits = (hits.some(hit => inScope(hit.index)) ? hits.filter(hit => inScope(hit.index)) : hits).slice(0, 30)
     if (!hits.length) return []
     const best = hits[0].score
     const words = [...new Set(tokenize(query.terms))].filter(word => !(word in KIND_WORDS))
@@ -272,13 +328,13 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
       const score = pageScore.get(anchor.pageIndex)
       if (score === undefined || !TOPIC_KINDS.has(anchor.kind)) continue
       out.push(anchorCandidate(book, anchor, {
-        exactLabel: 0, kindMatch: wanted ? (wanted === anchor.kind ? 1 : 0) : (GENERAL.has(anchor.kind) ? 1 : 0), kindPrior: PRIOR[anchor.kind] ?? 0.2,
-        textMatch: Math.max(overlap(words, `${anchor.heading} ${anchor.snippet}`), 0.6 * score), early: early(anchor.pageIndex),
+        exactLabel: 0, kindMatch: wanted ? (wanted === anchor.kind ? 1 : 0) : (PRACTICE.has(anchor.kind) ? 1 : 0), kindPrior: PRIOR[anchor.kind] ?? 0.2,
+        textMatch: Math.max(overlap(words, `${anchor.heading} ${anchor.snippet}`), 0.6 * score), early: early(anchor.pageIndex), ...place(anchor.pageIndex),
       }, sectionOf[anchor.pageIndex]))
     }
     for (const hit of hits) {
       out.push(pageCandidate(book, hit.index, byIndex.get(hit.index), {
-        exactLabel: 0, kindMatch: 0, kindPrior: PRIOR.page, textMatch: pageScore.get(hit.index) ?? 0, early: early(hit.index),
+        exactLabel: 0, kindMatch: 0, kindPrior: PRIOR.page, textMatch: pageScore.get(hit.index) ?? 0, early: early(hit.index), ...place(hit.index),
       }))
     }
   }
@@ -287,6 +343,26 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
     .sort((p, q) => q.score - p.score || p.order - q.order)
     .slice(0, Math.max(1, limit))
     .map(entry => entry.candidate)
+}
+
+// kind words a teacher uses for any practice problem, so any practice item with the number fits them
+const LOOSE_KINDS = new Set<AnchorKind>(['problem', 'exercise', 'question'])
+
+/**
+ * The item to insert without asking, else null and the teacher picks from the top matches: the teacher named the kind
+ * and exactly one item of that kind has the number (in the section or chapter asked for), or exactly one item fits at all.
+ * Two kinds sharing a number (Example 3.2, Checkpoint 3.2) always ask; the ranker only orders the choices.
+ */
+export function certainItem(query: LibraryQuery, candidates: Candidate[]): Candidate | null {
+  if (query.kind !== 'item') return null
+  const scoped = !!(query.section || query.chapter)
+  const fits = candidates.filter(c => c.kind === 'item' && !!c.anchor && c.features.exactLabel === 1 && (!scoped || c.features.inSection === 1))
+  // "problem 1.2" names the kind in books that print "Problem 1.2"
+  const kind = query.itemKind ?? (/\bprob(?:lem)?s?\b/i.test(query.raw) ? 'problem' : undefined)
+  const named = kind ? fits.filter(c => c.anchor!.kind === kind) : []
+  if (named.length === 1) return named[0]
+  if (!named.length && (!kind || LOOSE_KINDS.has(kind)) && fits.length === 1) return fits[0]
+  return null
 }
 
 function titleTokens(text: string): string[] {

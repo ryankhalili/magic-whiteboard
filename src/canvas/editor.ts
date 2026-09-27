@@ -19,7 +19,9 @@ const defaultMagic: MagicShapeProps = {
 const clone = <T,>(value: T): T => structuredClone(value)
 const ASSET_SRC = /^data:image\/(png|jpeg|webp|gif);base64,[a-z\d+/=\s]+$/i
 const MAX_ASSET_CHARS = 56_000_000
+const NO_ROOM = 'This notebook has no room for more images. Start a new notebook for this.'
 const isShape = (record: DocumentRecord | undefined): record is TLShape => record?.typeName === 'shape'
+const srcLength = (record: DocumentRecord) => String((record as AssetRecord).props?.src ?? '').length
 type DocumentState = { records: Map<string, DocumentRecord>; pageId: string }
 type HistoryMark = { state: DocumentState; undoLength: number; redo: DocumentState[] }
 type RunOptions = { history?: 'ignore' | 'record'; ignoreShapeLock?: boolean }
@@ -51,6 +53,9 @@ export class Editor {
   private handledEvents = new WeakSet<object>()
   private interactionCompleter: (() => void) | null = null
   private completingInteraction = false
+  // images added but not yet used by any shape; kept until a shape uses them
+  private freshAssets = new Set<string>()
+  private assetsAdded = false
 
   readonly user = { updateUserPreferences: (_preferences: unknown) => {} }
   readonly store = {
@@ -147,12 +152,45 @@ export class Editor {
     const pending = this.pendingBefore, previousIgnore = this.ignoreHistory, previousLocks = this.ignoreLocks
     const undo = [...this.undoStack], redo = [...this.redoStack]
     this.batchDepth++; this.ignoreHistory ||= options.history === 'ignore'; this.ignoreLocks ||= !!options.ignoreShapeLock
-    try { return fn() }
+    try {
+      const result = fn()
+      // shapes are final once the outermost edit ends, so images nothing uses can go in the same undo step
+      if (this.batchDepth === 1) this.settleAssets()
+      return result
+    }
     catch (error) {
       this.records = state.records; this.pageId = state.pageId; this.selected = selected; this.editing = editing
       this.pendingBefore = pending; this.undoStack = undo; this.redoStack = redo; this.documentDirty = true; this.sessionDirty = true
       throw error
-    } finally { this.batchDepth--; this.ignoreHistory = previousIgnore; this.ignoreLocks = previousLocks; if (!this.batchDepth) this.flush() }
+    } finally {
+      this.batchDepth--; this.ignoreHistory = previousIgnore; this.ignoreLocks = previousLocks
+      if (!this.batchDepth) { this.assetsAdded = false; this.flush() }
+    }
+  }
+  /** Asset ids some shape (on any page) still shows. */
+  private usedAssetIds() {
+    const used = new Set<string>()
+    for (const record of this.records.values()) {
+      const id = isShape(record) ? (record.props as { assetId?: unknown }).assetId : undefined
+      if (typeof id === 'string') used.add(id)
+    }
+    return used
+  }
+  private settleAssets() {
+    if (!this.assetsAdded && !this.freshAssets.size) return
+    const used = this.usedAssetIds()
+    for (const id of this.freshAssets) if (used.has(id) || this.records.get(id)?.typeName !== 'asset') this.freshAssets.delete(id)
+    if (!this.assetsAdded) return
+    let total = 0
+    const unused: string[] = []
+    for (const record of this.records.values()) {
+      if (record.typeName !== 'asset') continue
+      if (used.has(record.id) || this.freshAssets.has(record.id)) total += srcLength(record)
+      else unused.push(record.id)
+    }
+    if (total > MAX_ASSET_CHARS) throw new Error(NO_ROOM)
+    // undo keeps its own copy of the records, so a deleted image comes back with its pixels
+    if (unused.length) { this.beforeMutation(); for (const id of unused) this.records.delete(id); this.changed(true) }
   }
 
   getCurrentPageId() { return this.pageId }
@@ -255,9 +293,12 @@ export class Editor {
   }
   createAssets(assets: AssetRecord[]) {
     // same rules as normalizeSnapshot, so a bad image fails now instead of when the notebook reloads
-    const replaced = new Set(assets.map(asset => asset?.id))
+    const replaced = new Set(assets.map(asset => asset?.id)), used = this.usedAssetIds()
     let total = 0
-    for (const record of this.records.values()) if (record.typeName === 'asset' && !replaced.has(record.id)) total += String((record as AssetRecord).props?.src ?? '').length
+    // images of deleted objects do not count; they are dropped when this edit ends
+    for (const record of this.records.values()) {
+      if (record.typeName === 'asset' && !replaced.has(record.id) && (used.has(record.id) || this.freshAssets.has(record.id))) total += srcLength(record)
+    }
     for (const asset of assets) {
       const props = asset?.props, existing = typeof asset?.id === 'string' ? this.records.get(asset.id) : undefined
       if (typeof asset?.id !== 'string' || !asset.id || asset.id.length > 300 || asset.id === '__proto__' || (existing && existing.typeName !== 'asset') ||
@@ -267,16 +308,21 @@ export class Editor {
       if ([props.w, props.h].some(n => n !== undefined && (typeof n !== 'number' || !Number.isFinite(n) || n <= 0 || n > 1e6))) throw new Error('This image has an invalid size.')
       total += props.src.length
     }
-    if (total > MAX_ASSET_CHARS) throw new Error('This notebook has no room for more images. Start a new notebook for this.')
-    return this.run(() => { for (const asset of assets) { this.beforeMutation(); this.records.set(asset.id, clone(asset)); this.changed(true) } return this })
+    if (total > MAX_ASSET_CHARS) throw new Error(NO_ROOM)
+    return this.run(() => {
+      for (const asset of assets) { this.beforeMutation(); this.records.set(asset.id, clone(asset)); this.freshAssets.add(asset.id); this.changed(true) }
+      if (assets.length) this.assetsAdded = true
+      return this
+    })
   }
-  sendToBack(ids: TLShapeId[]) {
-    return this.reorderLayers(ids, false)
+  /** aboveLocked: behind every unlocked object but above locked pages and backgrounds, like paper. */
+  sendToBack(ids: TLShapeId[], options: { aboveLocked?: boolean } = {}) {
+    return this.reorderLayers(ids, false, options.aboveLocked === true)
   }
   bringToFront(ids: TLShapeId[]) {
     return this.reorderLayers(ids, true)
   }
-  private reorderLayers(ids: TLShapeId[], front: boolean) {
+  private reorderLayers(ids: TLShapeId[], front: boolean, aboveLocked = false) {
     const selected = new Set(ids.filter(id => this.getShape(id) && (this.ignoreLocks || !this.isShapeOrAncestorLocked(id))))
     const siblings = new Map<string, TLShape[]>()
     for (const shape of this.getCurrentPageShapesSorted()) {
@@ -288,7 +334,9 @@ export class Editor {
       const moving = list.filter(shape => selected.has(shape.id))
       if (!moving.length) continue
       const rest = list.filter(shape => !selected.has(shape.id))
-      const ordered = front ? [...rest, ...moving] : [...moving, ...rest]
+      const unlocked = aboveLocked ? rest.findIndex(shape => !this.isShapeOrAncestorLocked(shape)) : 0
+      const at = front ? rest.length : unlocked < 0 ? rest.length : unlocked
+      const ordered = [...rest.slice(0, at), ...moving, ...rest.slice(at)]
       if (ordered.every((shape, index) => shape.id === list[index].id)) continue
       ordered.forEach((shape, index) => updates.push({ id: shape.id, type: shape.type, index } as TLShapePartial))
     }
@@ -402,7 +450,9 @@ export class Editor {
     return boxes.length ? this.zoomToBounds(Box.Common(boxes), { inset: 96 }) : this.setCamera({ x: 0, y: 0, z: 1 })
   }
   getSnapshot(): TLEditorSnapshot {
-    return clone({ document: { schema: { schemaVersion: 1, engine: 'magic-whiteboard' }, store: Object.fromEntries(this.records) },
+    // saved notebooks and project files leave out images no object shows any more
+    const used = this.usedAssetIds(), store = Object.fromEntries([...this.records].filter(([id, record]) => record.typeName !== 'asset' || used.has(id)))
+    return clone({ document: { schema: { schemaVersion: 1, engine: 'magic-whiteboard' }, store },
       session: { currentPageId: this.pageId, camera: this.camera, selectedShapeIds: this.selected } })
   }
   loadSnapshot(input: unknown) {
@@ -413,7 +463,7 @@ export class Editor {
     this.records = records; this.pageId = requested && records.get(requested)?.typeName === 'page' ? requested : firstPage ?? 'page:main'
     this.camera = snapshot.session?.camera ? { ...snapshot.session.camera } : { x: 0, y: 0, z: 1 }
     this.selected = (snapshot.session?.selectedShapeIds ?? []).filter(id => !!this.getShape(id)); this.editing = null
-    this.pendingBefore = null; this.undoStack = []; this.redoStack = []; this.marks.clear(); this.changed(true); return this
+    this.pendingBefore = null; this.undoStack = []; this.redoStack = []; this.marks.clear(); this.freshAssets.clear(); this.changed(true); return this
   }
   setImageExporter(exporter: ImageExporter) { this.imageExporter = exporter; return this }
   toImage(ids: TLShapeId[], options: ImageExportOptions = {}) {

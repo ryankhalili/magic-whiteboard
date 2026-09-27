@@ -269,13 +269,14 @@ const KIND_LABELS: Record<string, string> = {
   textbook_page: 'textbook page', textbook_item: 'textbook problem', pdf_page: 'PDF page',
 }
 
-/** Board objects as labeled obstacles for findSpots. */
+/** Board objects as labeled obstacles for findSpots. An inserted problem also blocks its work space below. */
 export function obstaclesFromObjects(objects: readonly BoardObject[] | null | undefined): Obstacle[] {
   const out: Obstacle[] = []
   for (const o of objects ?? []) {
     if (!o || !isBox(o.bounds)) continue
     const { x, y, w, h } = o.bounds
-    out.push({ x, y, w, h, label: KIND_LABELS[o.kind] ?? String(o.kind ?? 'object').replace(/_/g, ' ') })
+    const work = typeof o.workBelow === 'number' && Number.isFinite(o.workBelow) && o.workBelow > 0 ? Math.min(o.workBelow, LIMIT) : 0
+    out.push({ x, y, w, h: h + work, label: KIND_LABELS[o.kind] ?? String(o.kind ?? 'object').replace(/_/g, ' ') })
   }
   return out
 }

@@ -6,7 +6,7 @@ vi.mock('../src/library/render', () => ({ renderPage: vi.fn(async () => ({ src: 
 
 import { ImportDialog, defaultImportTarget, formatBytes, importProgressText, progressFraction } from '../src/library/ImportDialog'
 import { LibraryPanel, bookDescription, followStep, openedText, previewTarget, PREVIEW_SIZE } from '../src/library/LibraryPanel'
-import { ReferencePanel, anchorCandidate, anchorTitle, candidateTitle, clampPanel, defaultPanelRect, layoutPages, normalizeCrop, pageFromQuery, pageLabelText, renderEdge, safeAspect, visibleRange, DEFAULT_ASPECT, PANEL_MIN } from '../src/library/ReferencePanel'
+import { ReferencePanel, anchorCandidate, anchorTitle, anchoredScroll, candidateTitle, clampPanel, defaultPanelRect, layoutPages, normalizeCrop, pageAt, pageFromQuery, pageLabelText, panelHits, renderEdge, safeAspect, visibleRange, DEFAULT_ASPECT, PANEL_MIN } from '../src/library/ReferencePanel'
 import type { Anchor, BookRecord, RankedCandidate } from '../src/library/types'
 
 const labels = Array.from({ length: 769 }, (_, i) => i < 7 ? ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii'][i] : String(i - 7))
@@ -214,5 +214,82 @@ describe('reference panel', () => {
     expect(html).not.toContain('Elsewhere')
     expect(html).toContain('Pick one of the 3 highlighted matches.')
     expect(html).toContain('Insert match 3: Whole page, file page 1')
+  })
+})
+
+describe('reference panel beside the typing bar', () => {
+  const area = { left: 0, top: 64, width: 1024, height: 704 }
+  // an iPad in landscape: the typing bar and its caption, centered at the bottom
+  const dock = { left: 187, top: 640, right: 837, bottom: 720 }
+  it('moves up, then gets shorter, so the typing bar stays uncovered', () => {
+    const rect = clampPanel({ x: 80, y: 144, w: 380, h: 560 }, area, PANEL_MIN, dock)
+    expect(rect.y + rect.h).toBeLessThanOrEqual(dock.top - 8)
+    expect(rect).toEqual({ x: 80, y: 72, w: 380, h: 560 })
+    const tall = clampPanel({ x: 80, y: 144, w: 380, h: 900 }, area, PANEL_MIN, dock)
+    expect(tall).toEqual({ x: 80, y: 72, w: 380, h: 560 })
+  })
+  it('keeps its size away from the typing bar', () => {
+    expect(clampPanel({ x: 8, y: 144, w: 170, h: 560 }, area, { w: 120, h: 320 }, dock)).toEqual({ x: 8, y: 144, w: 170, h: 560 })
+    expect(clampPanel({ x: 80, y: 80, w: 380, h: 400 }, area, PANEL_MIN, dock)).toEqual({ x: 80, y: 80, w: 380, h: 400 })
+    expect(clampPanel({ x: 80, y: 144, w: 380, h: 560 }, area, PANEL_MIN, null)).toEqual({ x: 80, y: 144, w: 380, h: 560 })
+  })
+  it('never squeezes below a usable height on a tiny window', () => {
+    const tiny = { left: 0, top: 64, width: 700, height: 260 }
+    const rect = clampPanel({ x: 80, y: 100, w: 380, h: 560 }, tiny, PANEL_MIN, { left: 0, top: 200, right: 700, bottom: 300 })
+    expect(rect.h).toBeGreaterThanOrEqual(120)
+  })
+})
+
+describe('resizing the reference panel', () => {
+  const aspects = Array.from({ length: 769 }, () => safeAspect(612, 792))
+  it('keeps the page at the top of the view where it was', () => {
+    const wide = layoutPages(aspects, 340, 38), narrow = layoutPages(aspects, 240, 38), wider = layoutPages(aspects, 520, 38)
+    const top = wide.tops[199] + 120
+    for (const next of [narrow, wider]) {
+      const scroll = anchoredScroll(wide, next, top)
+      expect(pageAt(next, scroll)).toBe(199)
+      expect((scroll - next.tops[199]) / next.heights[199]).toBeCloseTo(120 / wide.heights[199], 3)
+    }
+    // the plain scroll position would show a different page after the resize
+    expect(pageAt(narrow, top)).not.toBe(199)
+    expect(anchoredScroll(wide, narrow, 0)).toBe(0)
+    const gap = wide.tops[5] - 4
+    expect(anchoredScroll(wide, narrow, gap)).toBe(narrow.tops[5] - 4)
+  })
+  it('finds the page in the middle of the view', () => {
+    const layout = layoutPages(aspects, 340, 38)
+    expect(pageAt(layout, 0)).toBe(0)
+    expect(pageAt(layout, layout.tops[30] + 5)).toBe(30)
+  })
+})
+
+describe('highlighted matches', () => {
+  it('are the badges shown for the open book, in order, at most 3', () => {
+    const top = anchorCandidate(book, anchor)
+    const list: RankedCandidate[] = [
+      { ...top, id: 'elsewhere', bookId: 'sha256:other' },
+      top,
+      { ...top, id: 'b', pageIndex: 201 },
+      { ...top, id: 'out', pageIndex: 9999 },
+      { ...top, id: 'c', pageIndex: 29 },
+      { ...top, id: 'd', pageIndex: 30 },
+    ]
+    expect(panelHits(list, book).map(c => c.id)).toEqual([top.id, 'b', 'c'])
+    expect(panelHits(null, book)).toEqual([])
+  })
+  it('render with a lookup number and a way to hide them', () => {
+    const highlight = [anchorCandidate(book, anchor)]
+    const html = renderToString(<ReferencePanel book={book} highlight={highlight} lookup={3} onDismiss={noop} onPageChange={noop} onInsertPage={noop} onInsertCrop={noop} onInsertCandidate={noop} onSearch={noop} onClose={noop} busy={false}/>)
+    expect(html).toContain('Hide matches')
+    expect(html).toContain('Example 3.2, p. 192')
+  })
+})
+
+describe('import dialog over the board', () => {
+  it('renders the same when given a container', () => {
+    const file = new File([new Uint8Array(10)], 'notes.pdf', { type: 'application/pdf' })
+    const html = renderToString(<ImportDialog file={file} info={{ pageCount: 1, title: 'Notes', size: 10 }} defaultTarget="board" progress={null} busy={false} onChoose={noop} onCancel={noop} container={null}/>)
+    expect(html).toContain('import-layer')
+    expect(html).toContain('You can also say')
   })
 })

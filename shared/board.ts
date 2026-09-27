@@ -20,6 +20,8 @@ export type BoardObject = {
   color?: string; geometry?: string; locked?: boolean; fontSize?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
   showGrid?: boolean; showAxes?: boolean; vertices?: Point[]; angles?: number[]; sides?: number; crop?: ImageCrop
+  /** board units kept free under an inserted textbook problem for the teacher's work */
+  workBelow?: number
 }
 /** A free board area offered to the model; placementOption picks one. */
 export type PlacementOption = { id: 'A' | 'B' | 'C'; bounds: Bounds; note?: string }
@@ -30,6 +32,8 @@ export type LibraryContext = {
   openBook: { id: string; title: string } | null
   books: { id: string; title: string; pages: number }[]
   pendingImport?: { name: string; pages: number } | null
+  /** titles of the matches waiting for a tap, badge 1 first ("Example 3.2, p. 192") */
+  highlights?: string[]
 }
 export type BoardContext = {
   focus: Focus | null; pointer: Point | null; selectedIds: string[];
@@ -38,7 +42,7 @@ export type BoardContext = {
   contentSelection?: ContentSelection | null; dictationMode?: DictationMode; focusMode?: FocusMode
   library?: LibraryContext; placementOptions?: PlacementOption[]
 }
-export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import'
+export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import' | 'pick'
 /** A rendered raster for create_image; src is a data:image/(png|jpeg) base64 URL. */
 export type BoardImage = { src: string; w: number; h: number; mimeType: 'image/png' | 'image/jpeg'; name: string }
 export type BoardOperation = {
@@ -58,6 +62,8 @@ export type BoardOperation = {
   field?: ContentField; start?: number; end?: number; replacement?: string; find?: string; replace?: string
   // insert_library carries references only; the app resolves it into create_image
   book?: string; page?: string; item?: string; query?: string; placementOption?: PlacementOption['id']; action?: LibraryAction
+  // library_action pick: the highlighted match number, 1 based
+  index?: number
   // create_image is made by the app, never by the model
   image?: BoardImage; locked?: boolean; meta?: Record<string, unknown>
 }

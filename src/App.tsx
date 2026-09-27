@@ -4,7 +4,7 @@ import { DefaultColorStyle, DefaultSizeStyle, type Editor, type TLShapeId } from
 import { WhiteboardCanvas } from './canvas/WhiteboardCanvas'
 import { ArrowUp, Check, ChevronDown, CircleHelp, Download, Eraser, FileImage, FileUp, Hand, ImagePlus, Keyboard, Library, LoaderCircle, Maximize, Mic, MicOff, Minus, MousePointer2, Pencil, Plus, Redo2, RotateCcw, RotateCw, Save, Scan, Settings2, Sparkles, Trash2, Type, Sigma, Undo2, Volume2, VolumeX, X } from 'lucide-react'
 import { createBoardController, getPlacementBounds, MagicShapeView } from './board'
-import { focusImageBounds, libraryAssetId, libraryImageSize, libraryQueryFromOperation, spotForOption, type LibraryImageKind } from './board/controller'
+import { focusImageBounds, libraryAssetId, libraryImageSize, libraryItemKey, libraryQueryFromOperation, spotForOption, type LibraryImageKind } from './board/controller'
 import { findSpots, guessContentSize, NATURAL_SIZES, obstaclesFromObjects } from './board/placementSpots'
 import { finishPointerFollow, focusFromGesture, movePointerFollow, startPointerFollow, type PointerFollow } from './board/interactions'
 import { createRealtimeClient, checkVoiceConnection, type ContentPreview } from './ai/realtime'
@@ -15,12 +15,13 @@ import { prepareBoardRepair, pinBoardRepair } from './ai/board-repair'
 import { useImageGeneration } from './images/useImageGeneration'
 import { ImageGenerationPanel } from './images/ImageGenerationPanel'
 import { downloadOriginalNotebook, exportBoard, exportRegionPdf, importImageFile, installBoardImageExporter, loadProject, regionFromSelection, saveProject } from './files/boardFiles'
-import { captureBoardContext } from './files/capture'
+import { boardNeedsImage, captureBoardContext } from './files/capture'
 import { boardImportLimit, isPdfFile, overlaps } from './files/pdfPages'
-import { defaultImportTarget, ImportDialog, type ImportInfo, type ImportTarget } from './library/ImportDialog'
+import { defaultImportTarget, ImportDialog, importProgressText, type ImportInfo, type ImportTarget } from './library/ImportDialog'
 import { LibraryPanel } from './library/LibraryPanel'
-import { ReferencePanel } from './library/ReferencePanel'
-import { importBook, inspectPdf } from './library/indexer'
+import { candidateTitle, panelHits, ReferencePanel } from './library/ReferencePanel'
+import { ensureIndexed, importBook, inspectPdf, needsReindex } from './library/indexer'
+import { createBoundsFor, createInsertLock, easeInOut, FLOATING_UI, INSPECTOR_UI, inspectorZone, manualOverride, matchWithReindex, revealShift, type ScreenRect } from './library/insertLayout'
 import { detectLibraryIntent, type LibraryIntent } from './library/intent'
 import { rankItems } from './library/rank'
 import { renderCrop, renderPage } from './library/render'
@@ -43,11 +44,14 @@ let importId = 0
 type PendingImport = { id: number; file: File; info: ImportInfo | null; progress: ImportProgress | null; busy: boolean; choosing: ImportTarget | null }
 type LibrarySource = { book: BookRecord; pageIndex: number; candidate?: Candidate; box?: PageBox }
 type ResolvedInsert = { op: BoardOperation; reserve: Bounds } | { result: BoardResult }
+type PlaceOptions = { option?: PlacementOption; extra?: Bounds[]; manual?: boolean }
+type BookPage = { bookId: string; pageIndex: number }
 // library catalog and ranked spots refresh on their own, so they never count as a board change
 const boardOnly = (context: BoardContext): BoardContext => ({ ...context, library: undefined, placementOptions: undefined })
 const isLibraryOp = (op: BoardOperation | undefined) => op?.type === 'insert_library' || op?.type === 'library_action' || op?.type === 'create_image'
 const pickText = (count: number) => count > 1 ? `Pick one of the ${count} highlighted matches.` : 'Tap the highlighted match to insert it.'
 const errorText = (error: unknown, fallback: string) => error instanceof Error && error.message ? error.message : fallback
+const union = (a: Bounds, b: Bounds): Bounds => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y); return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y } }
 
 export default function App() {
   const library = useNotebookLibrary()
@@ -81,6 +85,15 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const openBookRef = useRef<BookRecord | null>(null)
   const importRef = useRef<PendingImport | null>(null)
   const placementRef = useRef<PlacementOption[] | null>(null)
+  const highlightRef = useRef<RankedCandidate[] | null>(null)
+  // the page shown in the reference panel and the last inserted page, for "exercise 48" near where the teacher is
+  const panelPageRef = useRef<BookPage | null>(null)
+  const lastInsertRef = useRef<BookPage | null>(null)
+  // set only while a panel insert runs, so it places like reference mode
+  const contextOverride = useRef<Partial<BoardContext> | null>(null)
+  const reindexing = useRef(new Map<string, Promise<BookRecord>>())
+  const glideFrame = useRef(0)
+  const showHistoryRef = useRef(false)
   const spotsKey = useRef('')
   const progressAt = useRef(0)
   const focusUsed = useRef(false)
@@ -124,11 +137,15 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const [menu, setMenu] = useState<'paper' | 'export' | 'help' | 'library' | null>(null)
   const [books, setBooksState] = useState<BookRecord[]>([])
   const [openBook, setOpenBookState] = useState<BookRecord | null>(null)
-  const [highlight, setHighlight] = useState<RankedCandidate[] | null>(null)
+  const [highlight, setHighlightState] = useState<RankedCandidate[] | null>(null)
+  const [lookup, setLookup] = useState(0)
   const [refBusy, setRefBusy] = useState(false)
+  const [inserting, setInserting] = useState(false)
+  const [insertLock] = useState(() => createInsertLock(setInserting))
   const [refMessage, setRefMessage] = useState<string | null>(null)
   const [pendingImport, setImportState] = useState<PendingImport | null>(null)
   const [showHistory, setShowHistory] = useState(false)
+  showHistoryRef.current = showHistory
   const [api, setApi] = useState<ApiStatus | null>(null)
   const [pairCode, setPairCode] = useState('')
   const [pairing, setPairing] = useState(false)
@@ -145,6 +162,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const setBooks = useCallback((list: BookRecord[]) => { booksRef.current = list; setBooksState(list) }, [])
   const setOpenBook = useCallback((book: BookRecord | null) => { openBookRef.current = book; setOpenBookState(book) }, [])
   const setImport = useCallback((next: PendingImport | null) => { importRef.current = next; setImportState(next) }, [])
+  const setHighlight = useCallback((next: RankedCandidate[] | null) => { highlightRef.current = next; setHighlightState(next) }, [])
+  // the matches showing as badges 1, 2, 3 in the reference panel
+  const shownMatches = useCallback((): RankedCandidate[] => openBookRef.current ? panelHits(highlightRef.current, openBookRef.current) : [], [])
   const patchImport = useCallback((id: number, patch: Partial<PendingImport>) => {
     const current = importRef.current
     if (current?.id === id) setImport({ ...current, ...patch })
@@ -163,11 +183,13 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const pagesInView = new Set(boardObjects.filter(o => o.kind === 'pdf_page' && o.text && !important.has(o.id)))
     const relevantObjects = [...boardObjects.filter(o => important.has(o.id)), ...pagesInView, ...boardObjects.filter(o => !important.has(o.id) && !pagesInView.has(o)).reverse()].slice(0, 120)
     const shelf = booksRef.current, open = openBookRef.current, pending = importRef.current
+    const matches = open ? panelHits(highlightRef.current, open) : []
     // titles only: the model never receives book text
     const library: LibraryContext | undefined = shelf.length || open || pending ? {
       openBook: open ? { id: open.id.slice(0, 120), title: (open.title || open.fileName || 'Untitled book').slice(0, 200) } : null,
       books: shelf.slice(0, 20).map(book => ({ id: book.id.slice(0, 120), title: (book.title || book.fileName || 'Untitled book').slice(0, 200), pages: Math.min(100_000, Math.max(0, Math.floor(book.pageCount) || 0)) })),
       pendingImport: pending && !pending.busy ? { name: pending.file.name.slice(0, 240), pages: Math.min(100_000, pending.info?.pageCount ?? 0) } : null,
+      ...(open && matches.length ? { highlights: matches.map(c => candidateTitle(c, open.labels).slice(0, 160)) } : {}),
     } : undefined
     return {
       focus: currentFocus,
@@ -181,6 +203,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       contentSelection: contentSelectionRef.current && selectedIds.includes(contentSelectionRef.current.shapeId) ? contentSelectionRef.current : undefined,
       ...(library ? { library } : {}),
       ...(placementRef.current?.length && !currentFocus ? { placementOptions: placementRef.current } : {}),
+      ...contextOverride.current,
     }
   }, [])
   const getVisualContext = useCallback(async () => {
@@ -271,7 +294,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }, [])
 
   const flushNotebook = useCallback(async () => {
-    if (busy) throw new Error('Wait for the current instruction or import to finish before switching notebooks.')
+    if (busy || insertLock.held()) throw new Error('Wait for the current instruction or import to finish before switching notebooks.')
     await snapshotLoad.current
     const ed = editorRef.current
     if (snapshotFailed.current) {
@@ -288,7 +311,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     setSaveState('Saving…')
     try { await saveNotebookSnapshot(notebook.id, ed.getSnapshot()); setSaveState('Saved on this device') }
     catch (error) { setSaveState('Not saved'); throw error }
-  }, [notebook.id, busy, stopFollowing])
+  }, [notebook.id, busy, stopFollowing, insertLock])
 
   const onMount = useCallback((editor: Editor) => {
     editorRef.current = editor
@@ -482,7 +505,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   const runPrompt = async (text = prompt) => {
     if (!text.trim() || busy || recovery || voiceStatus === 'connecting') return
-    const intent = detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0 })
+    const intent = detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0, bookTitles: booksRef.current.map(book => book.title), highlightCount: shownMatches().length })
     if (intent) {
       setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
       try {
@@ -503,7 +526,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       setCommandProgress('Working on your request…')
       progressTimer = setTimeout(() => setCommandProgress('This request is taking a little longer than usual. I’m checking it before changing the board…'), 3500)
       const before = structuredClone(getContext())
-      const needsImage = editorRef.current?.getCurrentPageShapes().some(s => s.type === 'image' || s.type === 'draw')
+      // ink or a non library image; book pages never go to the model
+      const needsImage = !!editorRef.current && boardNeedsImage(editorRef.current)
       const visual = needsImage ? await getVisualContext() : null
       // without a focus, the server ranks these free spots into placement options A, B, C
       const placementCandidates = before.focus ? undefined : typedCandidates(text)
@@ -647,35 +671,53 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     try {
       const list = await listBooks()
       setBooks(list)
-      const open = openBookRef.current
-      if (open && !list.some(book => book.id === open.id)) { setOpenBook(null); setHighlight(null) }
+      const open = openBookRef.current, fresh = open && list.find(book => book.id === open.id)
+      // a book being read again stays open
+      if (open && !fresh && !reindexing.current.has(open.id)) { setOpenBook(null); setHighlight(null); panelPageRef.current = null }
+      else if (open && fresh && (fresh.indexed !== open.indexed || fresh.indexVersion !== open.indexVersion)) setOpenBook(fresh)
       return list
     } catch { return booksRef.current }
-  }, [setBooks, setOpenBook])
+  }, [setBooks, setOpenBook, setHighlight])
   useEffect(() => { void refreshBooks() }, [refreshBooks])
   useEffect(() => { if (menu === 'library') void refreshBooks() }, [menu, refreshBooks])
-  useEffect(() => { voiceRef.current?.updateContext() }, [books, openBook, pendingImport?.id, pendingImport?.info, pendingImport?.busy])
+  useEffect(() => { voiceRef.current?.updateContext() }, [books, openBook, highlight, pendingImport?.id, pendingImport?.info, pendingImport?.busy])
 
+  // floating panels on screen; content that will be selected also keeps clear of where the inspector opens
+  const floatingRects = useCallback((selects: boolean): ScreenRect[] => {
+    if (typeof document === 'undefined') return []
+    const rects: ScreenRect[] = []
+    for (const element of document.querySelectorAll(FLOATING_UI)) {
+      // a page insert clears the selection, so the inspector goes away
+      if (!selects && element.matches(INSPECTOR_UI)) continue
+      const r = element.getBoundingClientRect()
+      if (r.width > 0 && r.height > 0) rects.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom, ...(element.matches(INSPECTOR_UI) ? { soft: true } : {}) })
+    }
+    const stage = stageRef.current?.getBoundingClientRect()
+    if (selects && stage && !showHistoryRef.current) rects.push(inspectorZone(stage, window.innerWidth))
+    return rects
+  }, [])
   // free spots for new content of this size, avoiding floating panels and everything on the page
-  const boardSpots = useCallback((size: { w: number; h: number }, workBelow: number, extra: Bounds[] = []): Spot[] => {
+  const boardSpots = useCallback(function boardSpots(size: { w: number; h: number }, workBelow: number, extra: Bounds[] = [], selects = true): Spot[] {
     const ed = editorRef.current
     if (!ed) return []
     const vp = ed.getViewportPageBounds(), zoom = ed.getZoomLevel() || 1
     const objects = controller.current?.getObjects() ?? []
-    const avoid: Bounds[] = []
-    if (typeof document !== 'undefined') for (const element of document.querySelectorAll('.reference-panel, .object-inspector, .history-panel, .command-dock')) {
-      const r = element.getBoundingClientRect()
-      if (!(r.width > 0 && r.height > 0)) continue
+    const avoid = floatingRects(selects).map((r): Bounds => {
       const a = ed.screenToPage({ x: r.left, y: r.top }), b = ed.screenToPage({ x: r.right, y: r.bottom })
-      avoid.push({ x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y })
-    }
+      return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y }
+    })
     const selectedIds = ed.getSelectedShapeIds() as string[], last = controller.current?.lastCreatedIds ?? []
     const near = objects.find(o => o.id === selectedIds[0]) ?? objects.find(o => o.id === last[0])
-    return findSpots({
+    const spots = findSpots({
       viewport: { x: vp.x, y: vp.y, w: vp.w, h: vp.h }, obstacles: [...obstaclesFromObjects(objects), ...extra], size, workBelow,
       near: near?.bounds ?? null, max: 12, avoid, insets: { left: 84 / zoom, top: 56 / zoom, right: 16 / zoom, bottom: 40 / zoom },
     })
-  }, [])
+    // on a small screen new content may go where the inspector opens when nothing else is in view; it folds away
+    const inView = (list: Spot[]) => list.some(spot => (spot.features.inView ?? 0) >= .7)
+    if (!selects || inView(spots)) return spots
+    const loose = boardSpots(size, workBelow, extra, false)
+    return inView(loose) ? loose : spots
+  }, [floatingRects])
   // best first; the ranker (Jev or local) gets 1.5 s, then the local order stands
   const rankSpots = useCallback(async (spots: Spot[], query: string): Promise<Spot[]> => {
     if (spots.length < 2) return spots
@@ -718,20 +760,41 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     return () => { stale = true; clearTimeout(timer) }
   }, [voiceStatus, focus, tick, boardSpots, rankSpots])
 
-  const reveal = (b: Bounds) => {
+  const stopGlide = () => { cancelAnimationFrame(glideFrame.current); glideFrame.current = 0 }
+  useEffect(() => () => cancelAnimationFrame(glideFrame.current), [])
+  // moves the camera smoothly at the same zoom
+  const glideTo = (target: { x: number; y: number }) => {
     const ed = editorRef.current
     if (!ed) return
-    const vp = ed.getViewportPageBounds()
-    if (b.x >= vp.x && b.y >= vp.y && b.x + b.w <= vp.x + vp.w && b.y + b.h <= vp.y + vp.h) return
-    const x = b.w <= vp.w * .9 ? b.x + b.w / 2 - vp.w / 2 : b.x - vp.w * .06
-    const y = b.h <= vp.h * .8 ? b.y + b.h / 2 - vp.h / 2 : b.y - vp.h * .06
-    ed.setCamera({ x: -x, y: -y, z: ed.getCamera().z })
+    stopGlide()
+    const from = ed.getCamera()
+    let still = false
+    try { still = window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch { /* no media queries */ }
+    if (still) { ed.setCamera({ x: target.x, y: target.y, z: from.z }); return }
+    const start = performance.now()
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / 420), e = easeInOut(t)
+      ed.setCamera({ x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e, z: from.z })
+      glideFrame.current = t < 1 ? requestAnimationFrame(step) : 0
+    }
+    glideFrame.current = requestAnimationFrame(step)
+  }
+  // a new insert that is off screen or under a panel glides into full view; a visible one stays put
+  const revealInserted = (b: Bounds, selects: boolean) => {
+    const ed = editorRef.current, stage = stageRef.current?.getBoundingClientRect()
+    if (!ed || !stage) return
+    const a = ed.pageToScreen({ x: b.x, y: b.y }), c = ed.pageToScreen({ x: b.x + b.w, y: b.y + b.h })
+    const area = { left: stage.left + 84, top: stage.top + 56, right: stage.right - 16, bottom: stage.bottom - 40 }
+    const shift = revealShift({ left: a.x, top: a.y, right: c.x, bottom: c.y }, area, floatingRects(selects))
+    if (!shift) return
+    const camera = ed.getCamera(), z = camera.z || 1
+    glideTo({ x: camera.x + shift.dx / z, y: camera.y + shift.dy / z })
   }
   // at the magic pen focus when there is one, else the best free spot (or the model's placementOption) with work space below
-  const placeImage = async (image: { w: number; h: number }, kind: LibraryImageKind, query: string, option?: PlacementOption, extra: Bounds[] = []): Promise<{ bounds: Bounds; reserve: Bounds }> => {
+  const placeImage = async (image: { w: number; h: number }, kind: LibraryImageKind, query: string, { option, extra = [], manual = false }: PlaceOptions = {}): Promise<{ bounds: Bounds; reserve: Bounds; workBelow: number }> => {
     const size = libraryImageSize(image, kind)
-    const context = getContext()
-    const withRoom = (b: Bounds) => ({ bounds: b, reserve: { ...b, h: b.h + size.workBelow } })
+    const base = getContext(), context = manual ? { ...base, ...manualOverride(base) } : base
+    const withRoom = (b: Bounds) => ({ bounds: b, reserve: { ...b, h: b.h + size.workBelow }, workBelow: size.workBelow })
     const focused = focusImageBounds(size, context)
     if (focused) {
       focusUsed.current = true
@@ -739,7 +802,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       const below = context.focusMode !== 'literal' && extra.length ? Math.max(...extra.map(b => b.y + b.h)) + 24 : null
       return withRoom(below === null ? focused : { ...focused, y: Math.max(focused.y, below) })
     }
-    const spots = boardSpots(size, size.workBelow, extra)
+    // pages are not selected after the insert, so they may go where the inspector would open
+    const spots = boardSpots(size, size.workBelow, extra, kind !== 'page')
     if (option) return withRoom(spotForOption(option, spots, size))
     const top = (await rankSpots(spots, query))[0]?.bounds
     if (top) return withRoom({ x: top.x, y: top.y, w: size.w, h: size.h })
@@ -747,12 +811,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     return withRoom({ x: vp.x + (vp.w - size.w) / 2, y: vp.y + Math.max(24, vp.h * .08), w: size.w, h: size.h })
   }
   // renders a page, a detected item or a manual crop and turns it into a create_image operation
-  const libraryImageOp = async (source: LibrarySource, query: string, option?: PlacementOption, extra: Bounds[] = []): Promise<{ op: BoardOperation; reserve: Bounds }> => {
+  const libraryImageOp = async (source: LibrarySource, query: string, place: PlaceOptions = {}): Promise<{ op: BoardOperation; reserve: Bounds }> => {
     const { book, pageIndex, candidate, box } = source
     const anchor = candidate?.kind === 'item' ? candidate.anchor : undefined
     const kind: LibraryImageKind = box ? 'crop' : anchor ? 'item' : 'page'
     const assetKey = kind === 'crop' && box ? `${book.id}#${pageIndex}:crop:${[box.x, box.y, box.w, box.h].map(v => v.toFixed(4)).join(',')}`
-      : kind === 'item' && anchor ? `${anchor.id}:item` : `${book.id}#${pageIndex}:page`
+      : kind === 'item' && anchor ? libraryItemKey(anchor.id, book.indexVersion) : `${book.id}#${pageIndex}:page`
     // the same page or problem again reuses the image already in this notebook
     const existing = editorRef.current?.getAsset(libraryAssetId(assetKey))
     const image: RenderedImage = existing && typeof existing.props.src === 'string'
@@ -760,19 +824,52 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       : kind === 'crop' && box ? await renderCrop(book.id, pageIndex, box) : kind === 'item' && candidate ? await problemImage(candidate) : await renderPage(book.id, pageIndex)
     const label = book.labels?.[pageIndex] ?? null, where = label ? `page ${label}` : `file page ${pageIndex + 1}`
     const name = kind === 'page' ? `${book.title}, ${where}` : kind === 'item' && anchor ? `${kindName(anchor.kind)}${anchor.label ? ` ${anchor.label}` : ''}, ${book.title}` : `Part of ${where}, ${book.title}`
-    const placed = await placeImage(image, kind, query, option, extra)
+    const placed = await placeImage(image, kind, query, place)
+    // workBelow keeps the teacher's work space free from later inserts
     return { reserve: placed.reserve, op: {
       type: 'create_image', image: { ...image, name: name.slice(0, 200) }, bounds: placed.bounds, locked: kind === 'page',
-      meta: { assetKey, library: { bookId: book.id, title: book.title.slice(0, 160), pageIndex, pageLabel: label, kind, ...(anchor ? { itemKind: anchor.kind, itemLabel: anchor.label, anchorId: anchor.id } : {}) } },
+      meta: { assetKey, library: { bookId: book.id, title: book.title.slice(0, 160), pageIndex, pageLabel: label, kind, ...(anchor ? { itemKind: anchor.kind, itemLabel: anchor.label, anchorId: anchor.id } : {}), ...(placed.workBelow > 0 ? { workBelow: Math.round(placed.workBelow) } : {}) } },
     } }
   }
-  const closeBook = () => { setOpenBook(null); setHighlight(null); setRefMessage(null) }
-  const showMatches = (book: BookRecord, ranked: RankedCandidate[]) => { setOpenBook(book); setHighlight(ranked); setRefMessage(null) }
+  const closeBook = () => { setOpenBook(null); setHighlight(null); setRefMessage(null); panelPageRef.current = null }
+  const showMatches = (book: BookRecord, ranked: RankedCandidate[]) => { setOpenBook(book); setHighlight(ranked); setRefMessage(null); setLookup(n => n + 1) }
+  // the reference panel page, else the last inserted page
+  const nearPage = (): BookPage | null => {
+    const open = openBookRef.current, page = panelPageRef.current
+    return open && page?.bookId === open.id ? page : lastInsertRef.current
+  }
+  // an older index is rebuilt from the stored PDF, with progress in the reference panel; one run per book
+  const reindexBook = (bookId: string): Promise<BookRecord> => {
+    const running = reindexing.current.get(bookId)
+    if (running) return running
+    const book = bookFor(bookId)
+    if (book && openBookRef.current?.id !== bookId) { setOpenBook(book); setHighlight(null) }
+    const show = (text: string | null) => { if (openBookRef.current?.id === bookId) setRefMessage(text) }
+    let shownAt = 0
+    show('Updating this book so problems come out cleanly.')
+    const job = ensureIndexed(bookId, progress => {
+      const now = performance.now()
+      if (progress.phase === 'reading' && progress.done < progress.total && now - shownAt < 150) return
+      shownAt = now
+      show(`Updating this book. ${importProgressText(progress)}.`)
+    }).then(async updated => {
+      forgetBookData(bookId)
+      await refreshBooks()
+      if (openBookRef.current?.id === bookId) { setOpenBook(updated); setRefMessage(null) }
+      return updated
+    }, error => {
+      show(errorText(error, 'This book could not be updated. Import it again.'))
+      throw error
+    }).finally(() => reindexing.current.delete(bookId))
+    reindexing.current.set(bookId, job)
+    return job
+  }
+  const lookupLibrary = (query: LibraryQuery, openBookId: string | null) => matchWithReindex(() => matchLibrary(query, { openBookId, near: nearPage() }), reindexBook)
   // confident: an operation to apply; unsure: the top matches wait in the reference panel
-  const resolveQuery = async (query: LibraryQuery, option?: PlacementOption, extra: Bounds[] = []): Promise<ResolvedInsert> => {
-    const match = await matchLibrary(query, { openBookId: openBookRef.current?.id ?? null })
+  const resolveQuery = async (query: LibraryQuery, place: PlaceOptions = {}): Promise<ResolvedInsert> => {
+    const match = await lookupLibrary(query, openBookRef.current?.id ?? null)
     if ('error' in match) {
-      if (match.books?.length) setMenu('library')
+      if ('books' in match && match.books?.length) setMenu('library')
       return { result: { ok: false, message: match.error, ids: [] } }
     }
     if (!match.confident || !match.ranked.length) {
@@ -780,7 +877,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       return { result: { ok: true, message: match.ranked.length ? pickText(match.ranked.length) : `Nothing in ${match.book.title} matches that.`, ids: [] } }
     }
     const best = match.ranked[0]
-    return libraryImageOp({ book: match.book, pageIndex: best.pageIndex, candidate: best }, query.raw, option, extra)
+    return libraryImageOp({ book: match.book, pageIndex: best.pageIndex, candidate: best }, query.raw, place)
   }
   const insertedText = (ops: BoardOperation[]) => {
     const names = ops.flatMap(op => {
@@ -793,7 +890,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     return names.length ? `Added ${names.join(' and ')}.` : ''
   }
   // runs resolved operations as one undo step, then brings a new book image into view
-  const applyResolved = (ready: BoardOperation[], notes: string[], reportFailure: boolean): BoardResult => {
+  const applyResolved = (ready: BoardOperation[], notes: string[], reportFailure: boolean, manual = false): BoardResult => {
     if (!ready.length) {
       const message = notes.join(' ') || 'Done.'
       notify(message)
@@ -801,12 +898,19 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     }
     const usedFocus = focusUsed.current
     focusUsed.current = false
-    const result = execute(ready, reportFailure)
+    contextOverride.current = manual ? manualOverride(getContext()) : null
+    let result: BoardResult
+    try { result = execute(ready, reportFailure) }
+    finally { contextOverride.current = null }
     if (!result.ok) return result
     // the circled spot now holds the book content, so the next insert finds its own space
     if (usedFocus) { setFocus(null); voiceRef.current?.updateContext() }
-    const image = ready.find(op => op.type === 'create_image')
-    if (image?.bounds) reveal(image.bounds)
+    const images = ready.filter(op => op.type === 'create_image' && op.bounds)
+    if (images.length) {
+      const info = images[images.length - 1].meta?.library as { bookId?: unknown; pageIndex?: unknown } | undefined
+      if (typeof info?.bookId === 'string' && typeof info.pageIndex === 'number') lastInsertRef.current = { bookId: info.bookId, pageIndex: info.pageIndex }
+      revealInserted(images.map(op => op.bounds!).reduce(union), images.some(op => !op.locked))
+    }
     const message = [insertedText(ready), ...notes].filter(Boolean).join(' ') || result.message
     notify(message)
     return { ...result, message }
@@ -882,8 +986,10 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   const openFromLibrary = async (book: BookRecord) => {
     setMenu(null); setOpenBook(book); setHighlight(null); setRefMessage(null)
+    // an unfinished import or an older index finishes reading while the book is open
+    if (needsReindex(book)) void reindexBook(book.id).catch(() => {})
     const touched = await touchBook(book.id).catch(() => null)
-    if (touched && openBookRef.current?.id === book.id) setOpenBook(touched)
+    if (touched && openBookRef.current?.id === book.id && !reindexing.current.has(book.id)) setOpenBook(touched)
     void refreshBooks()
   }
   const removeFromLibrary = async (book: BookRecord) => {
@@ -915,6 +1021,22 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     await openFromLibrary(book)
     return done(`Opened ${book.title}.`)
   }
+  // "number 2" while matches are highlighted: the match with that badge
+  const pickedMatch = (index: number | undefined): { c: RankedCandidate; book: BookRecord } | { error: string } => {
+    const shown = shownMatches(), c = index ? shown[index - 1] : undefined
+    const book = c && (bookFor(c.bookId) ?? openBookRef.current)
+    if (c && book) return { c, book }
+    return { error: !shown.length ? 'There are no highlighted matches to pick from.' : shown.length === 1 ? 'Only match 1 is highlighted.' : `Pick a number from 1 to ${shown.length}.` }
+  }
+  const pickMatch = async (index: number): Promise<BoardResult> => {
+    const picked = pickedMatch(index)
+    if ('error' in picked) return { ok: false, message: picked.error, ids: [] }
+    focusUsed.current = false
+    const { op } = await libraryImageOp({ book: picked.book, pageIndex: picked.c.pageIndex, candidate: picked.c }, picked.c.description)
+    const result = applyResolved([op], [], true)
+    if (result.ok) setHighlight(null)
+    return result
+  }
   // insert_library and library_action become board operations here, for typed and voice commands alike
   const executeResolved = async (ops: BoardOperation[], reportFailure = true, options: PlacementOption[] | null = null): Promise<BoardResult> => {
     const fail = (message: string): BoardResult => { if (reportFailure) setError(message); return { ok: false, message, ids: [] } }
@@ -922,29 +1044,56 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     // images only come from the library, never straight from the model
     if (ops.some(op => op?.type === 'create_image')) return fail('That whiteboard action is not supported.')
     if (!ops.some(isLibraryOp)) return execute(ops, reportFailure)
-    const ready: BoardOperation[] = [], notes: string[] = [], placed: Bounds[] = []
-    focusUsed.current = false
-    try {
-      for (const op of ops) {
-        if (op.type === 'library_action') {
-          const result = await runLibraryAction(op.action, op.book ?? '')
-          if (!result.ok) return fail(result.message)
-          notes.push(result.message); continue
+    // one insert at a time, so each one finds its spot on the board as the last one left it
+    return insertLock.run(async () => {
+      const ready: BoardOperation[] = [], notes: string[] = [], placed: Bounds[] = []
+      // where the board will put each new object, in order; creates listed before an insert do not know about it
+      const created: Bounds[] = []
+      const context = getContext(), offered = !!context.placementOptions?.length && !context.focus
+      let picked = false
+      focusUsed.current = false
+      try {
+        for (const op of ops) {
+          const pick = op.type === 'library_action' && op.action === 'pick'
+          if (op.type === 'library_action' && !pick) {
+            const result = await runLibraryAction(op.action, op.book ?? '')
+            if (!result.ok) return fail(result.message)
+            notes.push(result.message); continue
+          }
+          if (op.type !== 'insert_library' && !pick) {
+            ready.push(op)
+            const b = createBoundsFor(op, context, created)
+            if (b) created.push(b)
+            continue
+          }
+          // A is the default whenever options are offered
+          const optionId = op.placementOption ?? (offered ? 'A' : undefined)
+          const option = optionId ? (options ?? placementRef.current)?.find(o => o.id === optionId) : undefined
+          const place = { option, extra: [...placed, ...created] }
+          let resolved: ResolvedInsert
+          if (pick) {
+            const match = pickedMatch(op.index)
+            if ('error' in match) return fail(match.error)
+            resolved = await libraryImageOp({ book: match.book, pageIndex: match.c.pageIndex, candidate: match.c }, match.c.description, place)
+            picked = true
+          } else {
+            const query = libraryQueryFromOperation(op)
+            if (!query) return fail('Say a page number or a problem number to insert from the book.')
+            resolved = await resolveQuery(query, place)
+          }
+          if ('result' in resolved) {
+            if (!resolved.result.ok) return fail(resolved.result.message)
+            notes.push(resolved.result.message); continue
+          }
+          placed.push(resolved.reserve)
+          if (resolved.op.bounds) created.push(resolved.op.bounds)
+          ready.push(resolved.op)
         }
-        if (op.type !== 'insert_library') { ready.push(op); continue }
-        const query = libraryQueryFromOperation(op)
-        if (!query) return fail('Say a page number or a problem number to insert from the book.')
-        const option = op.placementOption ? (options ?? placementRef.current)?.find(o => o.id === op.placementOption) : undefined
-        const resolved = await resolveQuery(query, option, placed)
-        if ('result' in resolved) {
-          if (!resolved.result.ok) return fail(resolved.result.message)
-          notes.push(resolved.result.message); continue
-        }
-        placed.push(resolved.reserve)
-        ready.push(resolved.op)
-      }
-    } catch (error) { return fail(errorText(error, 'The book could not be read.')) }
-    return applyResolved(ready, notes, reportFailure)
+      } catch (error) { return fail(errorText(error, 'The book could not be read.')) }
+      const result = applyResolved(ready, notes, reportFailure)
+      if (result.ok && picked) setHighlight(null)
+      return result
+    })
   }
   const executeResolvedRef = useRef(executeResolved)
   executeResolvedRef.current = executeResolved
@@ -953,20 +1102,28 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (intent.action === 'route_import') return routeImport(intent.to)
     if (intent.action === 'close_reference') return runLibraryAction('close_reference')
     if (intent.action === 'open_book') return runLibraryAction('open_book', intent.book)
-    focusUsed.current = false
-    const resolved = await resolveQuery(intent.query)
-    if ('result' in resolved) return resolved.result
-    return applyResolved([resolved.op], [], true)
+    if (intent.action === 'pick') return insertLock.run(() => pickMatch(intent.index))
+    const query = intent.query
+    return insertLock.run(async () => {
+      focusUsed.current = false
+      const resolved = await resolveQuery(query)
+      if ('result' in resolved) return resolved.result
+      return applyResolved([resolved.op], [], true)
+    })
   }
+  // reference panel buttons; placed like reference mode when nothing is circled, even in Literal
   const panelInsert = async (make: () => Promise<{ op: BoardOperation }>) => {
-    if (refBusy) return
-    setRefBusy(true); setRefMessage(null); focusUsed.current = false
-    try {
-      const { op } = await make()
-      const result = applyResolved([op], [], false)
-      if (result.ok) setHighlight(null); else setRefMessage(result.message)
-    } catch (error) { setRefMessage(errorText(error, 'That page could not be drawn.')) }
-    finally { setRefBusy(false) }
+    if (refBusy || insertLock.held()) return
+    setRefMessage(null)
+    await insertLock.run(async () => {
+      setRefBusy(true); focusUsed.current = false
+      try {
+        const { op } = await make()
+        const result = applyResolved([op], [], false, true)
+        if (result.ok) setHighlight(null); else setRefMessage(result.message)
+      } catch (error) { setRefMessage(errorText(error, 'That page could not be drawn.')) }
+      finally { setRefBusy(false) }
+    })
   }
   const bookFor = (id: string) => booksRef.current.find(book => book.id === id) ?? (openBookRef.current?.id === id ? openBookRef.current : null)
   const searchBook = async (text: string) => {
@@ -977,9 +1134,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const query: LibraryQuery = parsed ? { ...parsed, book: undefined } : { kind: 'topic', terms: text.trim(), raw: text.trim() }
     setRefBusy(true); setRefMessage(null)
     try {
-      const match = await matchLibrary(query, { openBookId: book.id })
+      const match = await lookupLibrary(query, book.id)
       if ('error' in match) { setHighlight(null); setRefMessage(match.error); return }
-      setHighlight(match.ranked)
+      setHighlight(match.ranked); setLookup(n => n + 1)
       if (!match.ranked.length) setRefMessage(`Nothing in ${book.title} matches that.`)
     } catch (error) { setRefMessage(errorText(error, 'This book could not be searched.')) }
     finally { setRefBusy(false) }
@@ -1032,7 +1189,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     editor.run(() => editor.deleteShapes(editor.getCurrentPageShapes().filter(s => s.meta.marginaliaBackground === true).map(s => s.id)), { ignoreShapeLock: true })
     setMenu(null); notify('Background removed. Undo will restore it.')
   }
-  const save = () => { if (editor) { flushSourceEdits(); editor.completeInteraction(); stopFollowing(); saveProject(editor, settings); notify('Editable notebook downloaded.') } }
+  const save = () => {
+    if (!editor) return
+    flushSourceEdits(); editor.completeInteraction(); stopFollowing()
+    // a notebook too large to open again is refused with a message
+    try { saveProject(editor, settings); notify('Editable notebook downloaded.') } catch (e) { setError(errorText(e, 'This notebook could not be saved.')) }
+  }
   const downloadOriginal = async () => {
     try { await downloadOriginalNotebook(notebook.id, settings); notify('Original notebook backup downloaded. Your current board is unchanged.') }
     catch (error) { setError((error as Error).message) }
@@ -1082,7 +1244,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       </div>
     </header>
 
-    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDropCapture={e => { const f = e.dataTransfer.files[0]; if (f && isPdfFile(f)) { e.preventDefault(); e.stopPropagation(); importFile(f, true) } else if (f?.type.startsWith('image/')) { e.preventDefault(); e.stopPropagation(); importAsBackground.current = true; void importImage(f) } }}>
+    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode} ${pendingImport ? 'import-open' : ''}`} style={paperStyle} onPointerMoveCapture={pointerMove} onPointerDownCapture={stopGlide} onWheelCapture={stopGlide} onDragOver={e => e.preventDefault()} onDropCapture={e => { const f = e.dataTransfer.files[0]; if (f && isPdfFile(f)) { e.preventDefault(); e.stopPropagation(); importFile(f, true) } else if (f?.type.startsWith('image/')) { e.preventDefault(); e.stopPropagation(); importAsBackground.current = true; void importImage(f) } }}>
       <div className="paper-pattern"/>
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
       <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
@@ -1115,10 +1277,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {menu === 'paper' && <div className="popover paper-popover"><div className="popover-heading">Page settings<button aria-label="Close page settings" onClick={()=>setMenu(null)}><X size={16}/></button></div><span className="field-caption">Layout</span><div className="segmented"><button className={settings.mode === 'infinite' ? 'selected' : ''} onClick={() => changeMode('infinite')}>Infinite</button><button className={settings.mode === 'page' ? 'selected' : ''} onClick={() => changeMode('page')}>A4 page</button></div><span className="field-caption">Paper</span><div className="paper-swatches">{(['plain','dots', 'grid', 'ruled'] as const).map(p => <button aria-label={`${p} paper`} title={p} key={p} className={`swatch-${p} ${settings.paper === p ? 'selected' : ''}`} onClick={() => setSettings(s => ({ ...s, paper: p }))}/>)}</div><div className="paper-colors">{['#ffffff', '#f8f9fa', '#fffde7', '#eef5ff'].map(c => <button key={c} aria-label={`Paper color ${c}`} style={{ background: c }} className={settings.backgroundColor === c ? 'selected' : ''} onClick={() => setSettings(s => ({ ...s, backgroundColor: c }))}/>)}</div><button className="menu-row" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/>Set image background</button><button className="menu-row" onClick={() => { importAsBackground.current = false; imageInput.current?.click() }}><FileImage size={17}/>Insert movable image</button><button className="menu-row" onClick={() => projectInput.current?.click()}><FileUp size={17}/>Open notebook file</button><button className="menu-row" onClick={() => { save(); setMenu(null) }}><Save size={17}/>Save editable notebook</button>{editor?.getCurrentPageShapes().some(s => s.meta.marginaliaBackground === true) && <button className="menu-row" onClick={removeBackground}><Trash2 size={17}/>Remove background</button>}</div>}
       {menu === 'export' && <div className="popover export-popover"><div className="popover-heading">Export<button aria-label="Close export" onClick={()=>setMenu(null)}><X size={16}/></button></div><button className="menu-row" onClick={() => void doExport('png')}><FileImage size={18}/><span>PNG image<small>Include the whole board</small></span></button><button className="menu-row" onClick={() => void doExport('pdf')}><Download size={18}/><span>PDF<small>{settings.mode === 'page' ? 'A4 portrait page' : 'Fitted to your canvas'}</small></span></button><button className="menu-row" onClick={() => void exportArea()}><Scan size={18}/><span>Selected area PDF<small>{focus?.kind === 'region' ? 'The area you circled' : 'Circle an area or select objects first'}</small></span></button><button className="menu-row" onClick={() => {save();setMenu(null)}}><Save size={18}/><span>Editable notebook<small>Keep the objects and images</small></span></button></div>}
       {menu === 'library' && <LibraryPanel books={books} openBookId={openBook?.id ?? null} onOpen={book => void openFromLibrary(book)} onImport={() => importInput.current?.click()} onRemove={book => void removeFromLibrary(book)} onClose={() => setMenu(null)}/>}
-      {openBook && <ReferencePanel book={openBook} highlight={highlight} busy={refBusy} message={refMessage} onClose={closeBook} onSearch={text => void searchBook(text)}
-        onInsertPage={index => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index }, `page ${book.labels?.[index] ?? index + 1}`)) }}
-        onInsertCrop={(index, box) => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index, box }, 'part of a textbook page')) }}
-        onInsertCandidate={c => { const book = bookFor(c.bookId) ?? openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: c.pageIndex, candidate: c }, c.description)) }}/>}
+      {openBook && <ReferencePanel book={openBook} highlight={highlight} busy={refBusy || inserting} message={refMessage} lookup={lookup} onClose={closeBook} onSearch={text => void searchBook(text)}
+        onDismiss={() => setHighlight(null)} onPageChange={index => { panelPageRef.current = { bookId: openBook.id, pageIndex: index } }}
+        onInsertPage={index => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index }, `page ${book.labels?.[index] ?? index + 1}`, { manual: true })) }}
+        onInsertCrop={(index, box) => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index, box }, 'part of a textbook page', { manual: true })) }}
+        onInsertCandidate={c => { const book = bookFor(c.bookId) ?? openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: c.pageIndex, candidate: c }, c.description, { manual: true })) }}/>}
       {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}<br/>Images: {api.models.image || 'gpt-image-2.5-flare'} · Low quality</p>}<small>Voice uses API credit while connected. Pause microphone closes the voice connection; turning spoken replies off only silences the assistant. Sessions renew automatically while active, with a {api?.limits?.voiceMinutesLimit ?? 180}-minute local allowance. Voice pauses after 90 seconds of inactivity.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
 
       {api?.pairingRequired && !api.authorized && <form className="pair-banner" onSubmit={e=>{e.preventDefault();void pair()}}><div><b>Connect your iPad to AI</b><span>On your laptop, open Help & iPad connection to find the code.</span></div><input aria-label="Pairing code" placeholder="6-digit code" value={pairCode} onChange={e => setPairCode(e.target.value)} inputMode="numeric" maxLength={6}/><button disabled={pairing}>{pairing?'Connecting…':'Connect'}</button></form>}
@@ -1144,7 +1307,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     <input className="hidden-input" ref={importInput} type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" onChange={e => { const f = e.target.files?.[0]; if (f) importFile(f, false); e.target.value = '' }}/>
     {pendingImport && <ImportDialog file={pendingImport.file} info={pendingImport.info} progress={pendingImport.progress} busy={pendingImport.busy} choosing={pendingImport.choosing}
       defaultTarget={pendingImport.info ? defaultImportTarget(pendingImport.info.pageCount) : 'library'} boardLimit={boardImportLimit(pendingImport.info?.pageCount ?? 0, pendingImport.file.size)}
-      onChoose={to => { const result = routeImport(to); if (!result.ok) setError(result.message) }} onCancel={() => { if (!importRef.current?.busy) setImport(null) }}/>}
+      onChoose={to => { const result = routeImport(to); if (!result.ok) setError(result.message) }} onCancel={() => { if (!importRef.current?.busy) setImport(null) }} container={stageRef.current}/>}
     <input className="hidden-input" ref={projectInput} type="file" accept=".json,.marginalia" onChange={async e => { const f = e.target.files?.[0]; if (f && editor) { setBusy(true); try { flushSourceEdits(); editor.completeInteraction(); stopFollowing(); setSettings(await loadProject(editor, f)); notify('Notebook opened.'); setMenu(null); setFocus(null) } catch (error) { setError((error as Error).message) } finally { setBusy(false) } } e.target.value = '' }}/>
   </div>
 }

@@ -13,6 +13,8 @@ type Props = {
   /** the choice being carried out when it was made by voice or typing rather than a click */
   choosing?: ImportTarget | null
   onChoose(target: ImportTarget): void; onCancel(): void
+  /** where the dialog is drawn (the board, so the typing bar can sit above its backdrop); the page body by default */
+  container?: Element | null
 }
 
 export const defaultImportTarget = (pageCount: number): ImportTarget => pageCount <= 1 ? 'board' : 'library'
@@ -40,7 +42,7 @@ export function importProgressText(progress: ImportProgress): string {
 
 const pageText = (count: number) => `${count} ${count === 1 ? 'page' : 'pages'}`
 
-export function ImportDialog({ file, info, defaultTarget, progress, busy, boardLimit, choosing, onChoose, onCancel }: Props) {
+export function ImportDialog({ file, info, defaultTarget, progress, busy, boardLimit, choosing, onChoose, onCancel, container }: Props) {
   const [picked, setPicked] = useState<ImportTarget | null>(null)
   const dialog = useRef<HTMLDivElement>(null)
   const cancelRef = useRef(onCancel); cancelRef.current = onCancel
@@ -63,7 +65,12 @@ export function ImportDialog({ file, info, defaultTarget, progress, busy, boardL
     window.addEventListener('keydown', keydown)
     return () => { window.removeEventListener('keydown', keydown); try { previous?.focus() } catch { /* element may be gone */ } }
   }, [])
-  useEffect(() => { dialog.current?.querySelector<HTMLElement>('.import-choice.selected:not(:disabled)')?.focus() }, [selected])
+  useEffect(() => {
+    // leave the typing bar alone when the teacher is typing "store it"
+    const active = document.activeElement
+    if (active && active !== document.body && !dialog.current?.contains(active) && active.closest('input,textarea,[contenteditable=true]')) return
+    dialog.current?.querySelector<HTMLElement>('.import-choice.selected:not(:disabled)')?.focus()
+  }, [selected])
   const choose = (target: ImportTarget) => { if (busy || (target === 'board' && boardBlocked)) return; setPicked(target); onChoose(target) }
   const meta = info ? [pageText(info.pageCount), formatBytes(info.size || file.size)].filter(Boolean).join(' · ') : `${formatBytes(file.size)} · Checking the PDF…`
   const fraction = progressFraction(progress)
@@ -92,5 +99,5 @@ export function ImportDialog({ file, info, defaultTarget, progress, busy, boardL
       <div className="import-actions"><button type="button" onClick={onCancel} disabled={busy}>Cancel</button></div>
     </div>
   </aside>
-  return typeof document === 'undefined' ? content : createPortal(content, document.body)
+  return typeof document === 'undefined' ? content : createPortal(content, container ?? document.body)
 }

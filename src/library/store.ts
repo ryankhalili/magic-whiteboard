@@ -131,6 +131,12 @@ export async function putAnchors(anchors: Anchor[]): Promise<void> {
   await transact(['anchors'], 'readwrite', tx => { const store = tx.objectStore('anchors'); for (const anchor of anchors) store.put(anchor) })
 }
 
+/** Drops items by id, for items a newer item finder no longer sees. */
+export async function removeAnchors(ids: string[]): Promise<void> {
+  if (!ids.length) return
+  await transact(['anchors'], 'readwrite', tx => { const store = tx.objectStore('anchors'); for (const id of ids) store.delete(id) })
+}
+
 export async function getAnchors(bookId: string): Promise<Anchor[]> {
   const anchors = await transact(['anchors'], 'readonly', tx => request(tx.objectStore('anchors').index('bookId').getAll(bookId) as IDBRequest<Anchor[]>))
   return anchors.sort((a, b) => a.pageIndex - b.pageIndex || a.box.y - b.box.y || a.box.x - b.box.x)

@@ -145,6 +145,247 @@ describe('detectAnchors', () => {
   })
 })
 
+/** The number's line an anchor was found on, as a point inside another box would show. */
+const inside = (box: Anchor['box'], x: number, y: number) => x > box.x && x < box.x + box.w && y > box.y && y < box.y + box.h
+const bottom = (anchor: Anchor) => anchor.box.y + anchor.box.h
+
+describe('grid exercise crops', () => {
+  it('ends a cell at the next row even when that row starts further left', () => {
+    const cells: Array<[string, number, number]> = [
+      ['1 .', 0.118, 0.15], ['2 .', 0.355, 0.15], ['3 .', 0.602, 0.15],
+      ['4 .', 0.118, 0.176], ['5 .', 0.415, 0.176], ['6 .', 0.644, 0.176],
+      ['7 .', 0.118, 0.202], ['8 .', 0.344, 0.202], ['9 .', 0.603, 0.202],
+    ]
+    const { anchors } = page(20, [
+      line('SECTION 3.1 EXERCISES', 0.17, 0.09, 14),
+      ...cells.map(([text, x, y]) => line(text, x, y, 10, 0.012)),
+      line('10.', 0.118, 0.228, 10, 0.02),
+      line('For the following exercises, given the function', 0.118, 0.262, 10, 0.4),
+      line('a. find the slope of the secant line', 0.093, 0.285, 10, 0.3), line('with value given in the table.', 0.513, 0.285, 10, 0.2),
+      footer,
+    ])
+    expect(anchors.map(anchor => anchor.label)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'])
+    const at = (label: string) => find(anchors, 'exercise', label)!
+    expect(bottom(at('6'))).toBeLessThanOrEqual(0.202)
+    expect(bottom(at('5'))).toBeLessThanOrEqual(0.202)
+    expect(bottom(at('3'))).toBeLessThanOrEqual(0.176)
+    expect(bottom(at('9'))).toBeLessThanOrEqual(0.228)
+    // the next group's instructions are not part of exercise 10
+    expect(bottom(at('10'))).toBeLessThanOrEqual(0.262)
+    expect(at('10').snippet).not.toContain('For the following')
+    for (const anchor of anchors) {
+      for (const [text, x, y] of cells) if (text !== `${anchor.label} .`) expect(inside(anchor.box, x + 0.003, y + 0.007)).toBe(false)
+    }
+  })
+
+  it('keeps a cell’s own words that run past the next number and paints out the neighbours', () => {
+    const { anchors } = page(21, [
+      line('SECTION 1.1 EXERCISES', 0.17, 0.05, 14),
+      line('57. [T] The manager at a skateboard', 0.118, 0.075, 10, 0.235),
+      line('58 . [T] Use a graphing calculator to', 0.372, 0.075, 10, 0.227),
+      line('shop pays his workers a monthly', 0.146, 0.09, 10, 0.208),
+      line('graph the half-circle', 0.401, 0.09, 10, 0.126),
+      line('graphing calculator to determine', 0.176, 0.105, 10, 0.209),
+      line('of both the intercepts.', 0.401, 0.12, 10, 0.14),
+      line('the number of skateboards sold.', 0.176, 0.135, 10, 0.2),
+      footer,
+    ])
+    const left = find(anchors, 'exercise', '57')!, right = find(anchors, 'exercise', '58')!
+    // 57's longest line ends at .385, past 58's number at .372
+    expect(left.box.x + left.box.w).toBeGreaterThanOrEqual(0.385)
+    expect(left.snippet).toContain('graphing calculator to determine')
+    expect(left.snippet).not.toContain('half-circle')
+    // 58's number inside 57's crop is painted out, and 57's words inside 58's crop too
+    expect(left.mask?.some(m => m.x <= 0.373 && m.x + m.w >= 0.38 && m.y <= 0.08 && m.y + m.h >= 0.08)).toBe(true)
+    expect(right.mask?.some(m => m.y <= 0.11 && m.y + m.h >= 0.11 && m.x <= right.box.x + 0.001 && m.x + m.w >= 0.385)).toBe(true)
+    expect(right.snippet).not.toContain('skateboard')
+    // masks never cover the item's own number
+    for (const m of right.mask ?? []) expect(inside(m, 0.375, 0.08)).toBe(false)
+  })
+
+  it('stops at an instruction row split into pieces by math', () => {
+    const { anchors } = page(22, [
+      line('SECTION 2.1 EXERCISES', 0.17, 0.05, 14),
+      line('1 . [T] Complete the following table', 0.118, 0.1366, 10, 0.224),
+      line('2 . Use the values in the right', 0.365, 0.1366, 10, 0.187),
+      line('3 . Use the value in the', 0.591, 0.1366, 10, 0.146),
+      line('with the appropriate values:', 0.139, 0.1512, 10, 0.177),
+      line('column of the table in the', 0.387, 0.1512, 10, 0.162),
+      line('preceding exercise to find', 0.612, 0.1512, 10, 0.163),
+      line('For the following exercises, points', 0.118, 0.4538, 10, 0.214),
+      line('and', 0.386, 0.4538, 10, 0.024), line('are on the graph of the function', 0.465, 0.4538, 10, 0.203),
+      line('4 . [T] Complete the following table', 0.118, 0.4764, 10, 0.224),
+      line('5 . Use the values in the right', 0.365, 0.4764, 10, 0.187),
+      footer,
+    ])
+    for (const label of ['1', '2', '3']) {
+      const anchor = find(anchors, 'exercise', label)!
+      expect(bottom(anchor)).toBeLessThanOrEqual(0.4538)
+      expect(anchor.snippet).not.toMatch(/graph of the function|For the following/)
+      expect(anchor.box.x + anchor.box.w).toBeLessThan(0.9)
+    }
+  })
+
+  it('drops a hanging exercise at a line back at its number’s margin', () => {
+    const { anchors } = page(23, [
+      line('11. Show that the sequence converges and find', 0.118, 0.26, 10, 0.3),
+      line('its limit.', 0.146, 0.275, 10, 0.1),
+      line('12. Find the limit of the function as x grows', 0.118, 0.3, 10, 0.3),
+      line('without bound.', 0.146, 0.315, 10, 0.1),
+      line('13. Explain the result in words.', 0.118, 0.34, 10, 0.25),
+      line('Body text picks up again at the margin.', 0.118, 0.358, 10, 0.3),
+      line('14. Show the steps.', 0.118, 0.4, 10, 0.2),
+      footer,
+    ], true)
+    const thirteen = find(anchors, 'exercise', '13')!
+    expect(bottom(thirteen)).toBeLessThanOrEqual(0.358)
+    expect(thirteen.snippet).not.toContain('Body text')
+    expect(find(anchors, 'exercise', '12')!.snippet).toContain('without bound')
+  })
+})
+
+describe('other layouts', () => {
+  it('finds a mixed case "Example 1." right under a subsection heading', () => {
+    for (const gap of [18, 20, 22]) {
+      const { anchors } = page(30, [
+        line('Some text ends the paragraph before.', 0.1, 0.07),
+        line('2.3 Limits at Infinity', 0.1, 0.1, 12),
+        line('Example 1. Find the limit of the function.', 0.1, 0.1 + gap / 792),
+        line('The answer follows from the rules.', 0.1, 0.1 + gap / 792 + 0.0175),
+      ])
+      expect(anchors.map(anchor => `${anchor.kind} ${anchor.label}`)).toContain('example 1')
+    }
+    // after a centered equation or a short caption line too
+    const { anchors } = page(31, [
+      line('y = 3x', 0.25, 0.3, 10, 0.1),
+      line('Example 2. Evaluate the limit.', 0.1, 0.3175),
+      line('Figure 2.1 The graph of f', 0.2, 0.5, 10, 0.25),
+      line('Example 3. Sketch the graph.', 0.1, 0.5175),
+    ])
+    expect(anchors.map(anchor => `${anchor.kind} ${anchor.label}`)).toEqual(expect.arrayContaining(['example 2', 'example 3']))
+  })
+
+  it('still reads a wrapped reference as part of its sentence', () => {
+    const { anchors } = page(32, [
+      line('We computed this limit with the squeeze theorem, which was the result of', 0.1, 0.3, 10, 0.79),
+      line('Example 3.5. The limit exists because the bounds agree.', 0.1, 0.3175),
+    ])
+    expect(anchors).toEqual([])
+  })
+
+  it('never drops an item heading at the top or bottom edge as a running header', () => {
+    const top = page(33, [
+      line('Example 4', 0.1, 0.05), line('Find the derivative of the function below.', 0.1, 0.066),
+      line('More text follows here in the body.', 0.1, 0.082),
+    ])
+    expect(top.anchors.map(anchor => anchor.label)).toEqual(['4'])
+    const low = page(34, [
+      line('Body text near the foot of the page.', 0.1, 0.885), line('More body text right above.', 0.1, 0.9),
+      line('Example 4', 0.1, 0.919),
+    ])
+    expect(low.anchors.map(anchor => anchor.label)).toEqual(['4'])
+    // a real running header and footer are still left out
+    const paged = page(35, [header('3.1 • Defining the Derivative 193'), line('EXAMPLE 3.1', 0.1, 0.1), line('Finding a slope.', 0.1, 0.12), footer])
+    expect(paged.anchors.map(anchor => anchor.label)).toEqual(['3.1'])
+    expect(paged.anchors[0].snippet).not.toContain('Defining')
+  })
+
+  it('ends exercise mode at any heading as big as the one that started it, or at "Section N.N"', () => {
+    const first = page(40, [line('Exercises', 0.1, 0.1, 14), line('1. Find the limit.', 0.1, 0.15), line('2. Find the derivative.', 0.1, 0.18)])
+    expect(first.anchors.map(anchor => anchor.label)).toEqual(['1', '2'])
+    expect(first.exerciseMode).toBe(true)
+    expect(first.exerciseSize).toBeCloseTo(14 / 792, 6)
+    const next = detectAnchors('book', {
+      index: 41, exerciseMode: first.exerciseMode, exerciseSize: first.exerciseSize,
+      lines: [line('Continuity', 0.1, 0.1, 14), line('EXAMPLE 4', 0.1, 0.15), line('Solution', 0.12, 0.2), line('1. Let f be continuous.', 0.1, 0.22), line('2. Check the limit.', 0.1, 0.24)],
+    }, BODY)
+    expect(next.exerciseMode).toBe(false)
+    expect(next.anchors.map(anchor => `${anchor.kind} ${anchor.label}`)).toEqual(['example 4'])
+    // callers that only carry the flag still stop at a "Section 2.3" heading
+    const section = page(42, [line('Section 2.3 Limit Laws', 0.1, 0.1, 12), line('1. Let f be a function.', 0.1, 0.15)], true)
+    expect(section.exerciseMode).toBe(false)
+    expect(section.anchors).toEqual([])
+    // smaller headings inside an exercise set keep it going
+    const inside = detectAnchors('book', { index: 43, exerciseMode: true, exerciseSize: 14 / 792, lines: [line('Applications', 0.1, 0.1, 12), line('7. Model the growth.', 0.1, 0.15)] }, BODY)
+    expect(inside.anchors.map(anchor => anchor.label)).toEqual(['7'])
+  })
+})
+
+describe('items split across pages', () => {
+  const theoremPage = (index: number) => page(index, [
+    header('3.3 • Differentiation Rules 219'),
+    line('Thus the rule holds for every power.', 0.118, 0.075, 10, 0.5),
+    line('Theorem 3.4', 0.127, 0.51),
+    line('Sum, Difference, and Constant Multiple Rules', 0.127, 0.541),
+    ...Array.from({ length: 16 }, (_, i) => line(`rule text line number ${i} of the theorem`, 0.127, 0.56 + i * 0.02, 10, 0.6)),
+    line('that is,', 0.127, 0.884, 10, 0.04),
+    footer,
+  ])
+
+  it('finds the rest of a theorem above "Proof" on the next page', () => {
+    const first = theoremPage(226)
+    const theorem = find(first.anchors, 'theorem', '3.4')!
+    expect(first.open.map(item => item.id)).toEqual([theorem.id])
+    // the next page opens with the rest (a formula drawn as graphics, so no text) and then the proof
+    const next = detectAnchors('book', {
+      index: 227, exerciseMode: false, carry: first.open,
+      lines: [header('220 3 • Derivatives'), line('Proof', 0.118, 0.1255, 12), line('We provide only the proof of the sum rule.', 0.118, 0.1415, 10, 0.5), footer],
+    }, BODY)
+    expect(next.continued).toHaveLength(1)
+    const { id, continues } = next.continued[0]
+    expect(id).toBe(theorem.id)
+    expect(continues.pageIndex).toBe(227)
+    expect(continues.box.y).toBeLessThan(0.06)
+    expect(continues.box.y + continues.box.h).toBeLessThanOrEqual(0.1255)
+    expect(continues.box.x).toBeCloseTo(theorem.box.x, 3)
+    expect(continues.box.w).toBeCloseTo(theorem.box.w, 3)
+  })
+
+  it('does not stitch when the next page starts right away with something else', () => {
+    const first = theoremPage(226)
+    const proof = detectAnchors('book', { index: 227, exerciseMode: false, carry: first.open, lines: [header('220 3 • Derivatives'), line('Proof', 0.118, 0.075, 12), line('We provide the proof.', 0.118, 0.095), footer] }, BODY)
+    expect(proof.continued).toEqual([])
+    // a boxed item stops at a figure caption: whatever follows the figure is not its rest
+    const figure = detectAnchors('book', { index: 227, exerciseMode: false, carry: first.open, lines: [header('220 3 • Derivatives'), line('Figure 3.18 The derivative of a sum.', 0.3, 0.25, 10, 0.3), line('Body text after the figure.', 0.118, 0.28, 10, 0.5), footer] }, BODY)
+    for (const { continues } of figure.continued) expect(continues.box.y + continues.box.h).toBeLessThanOrEqual(0.25)
+    // a grid exercise at the foot of the page is followed by new exercises, not by its own rest
+    const grid = page(300, [line('41. Find the limit.', 0.43, 0.9, 10, 0.2), line('40. Find the value.', 0.118, 0.9, 10, 0.2), footer], true)
+    const after = detectAnchors('book', { index: 301, exerciseMode: true, carry: grid.open, lines: [header('134 2 • Limits'), line('42.', 0.118, 0.083, 10, 0.02), line('43 .', 0.343, 0.083, 10, 0.02), line('x', 0.538, 0.13, 10, 0.01), footer] }, BODY)
+    expect(after.continued).toEqual([])
+  })
+
+  it('continues an example with its parts on the next page, down to "Solution"', () => {
+    const first = page(22, [
+      line('Text before the example.', 0.118, 0.075, 10, 0.5),
+      line('EXAMPLE 1.4', 0.127, 0.86),
+      line('Using Zeros and Intercepts to Sketch a Graph', 0.118, 0.887, 10, 0.4),
+      line('Consider the function below.', 0.118, 0.905, 10, 0.3),
+      footer,
+    ])
+    const example = find(first.anchors, 'example', '1.4')!
+    const next = detectAnchors('book', {
+      index: 23, exerciseMode: false, carry: first.open,
+      lines: [line('a. Find all zeros of f.', 0.123, 0.075, 10, 0.2), line('b. Find the intercept (if any).', 0.123, 0.093, 10, 0.25), line('Solution', 0.141, 0.13), line('a. To find the zeros, solve.', 0.118, 0.15, 10, 0.3), footer],
+    }, BODY)
+    expect(next.continued.map(entry => entry.id)).toEqual([example.id])
+    const box = next.continued[0].continues.box
+    expect(box.y).toBeLessThan(0.075)
+    expect(box.y + box.h).toBeGreaterThan(0.093 + 0.012)
+    expect(box.y + box.h).toBeLessThanOrEqual(0.13)
+  })
+
+  it('continues a left column item at the top of the right column on the same page', () => {
+    const left = Array.from({ length: 30 }, (_, i) => line(`left column body text line ${i}`, 0.08, 0.2 + i * 0.024, 10, 0.36))
+    const right = [line('the rest of the definition text', 0.53, 0.075, 10, 0.36), line('and its last words here.', 0.53, 0.095, 10, 0.3),
+      ...Array.from({ length: 8 }, (_, i) => line(`right column body text line ${i}`, 0.52, 0.2 + i * 0.024, 10, 0.36))]
+    const { anchors } = page(50, [line('text above', 0.08, 0.075, 10, 0.36), line('Definition', 0.09, 0.17), ...left.map(l => ({ ...l, box: { ...l.box, x: 0.09 } })), ...right, footer])
+    const definition = find(anchors, 'definition', '')!
+    expect(definition.continues?.pageIndex).toBe(50)
+    expect(definition.continues!.box.x).toBeGreaterThan(0.45)
+    expect(definition.continues!.box.y + definition.continues!.box.h).toBeLessThanOrEqual(0.2)
+  })
+})
+
 describe('the real test book', () => {
   it.skipIf(!existsSync(book))('finds the items teachers ask for and no false exercises', async () => {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')

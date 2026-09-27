@@ -6,7 +6,7 @@ import { setPdfJsLoader } from '../src/library/pdfjs'
 import { rankItems } from '../src/library/rank'
 import type { RankRequest } from '../shared/ranking'
 import { clampBox, cropScale, inkBounds, renderCrop, renderPage, renderThumb } from '../src/library/render'
-import { forgetBookData, matchLibrary, problemImage } from '../src/library/resolve'
+import { LIBRARY_CONTEXT, forgetBookData, matchLibrary, problemImage } from '../src/library/resolve'
 import { parseLibraryQuery } from '../src/library/search'
 import { getThumb, removeBook, saveBook, touchBook } from '../src/library/store'
 import type { BookRecord, LibraryMatch } from '../src/library/types'
@@ -58,9 +58,10 @@ beforeAll(async () => {
 afterEach(() => { fetchMock.mockReset(); fetchMock.mockImplementation(async () => { throw new TypeError('offline') }) })
 afterAll(() => { vi.unstubAllGlobals() })
 
-async function match(text: string, openBookId: string | null = null) {
-  return matchLibrary(parseLibraryQuery(text)!, { openBookId })
+async function match(text: string, openBookId: string | null = null, near: { bookId: string; pageIndex: number } | null = null) {
+  return matchLibrary(parseLibraryQuery(text)!, { openBookId, near })
 }
+const sentBody = (call = 0) => JSON.parse(String((fetchMock.mock.calls[call] as unknown as [string, RequestInit])[1].body))
 
 describe('matchLibrary', () => {
   it('finds printed pages exactly, with no ranking call', async () => {
@@ -82,12 +83,12 @@ describe('matchLibrary', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('offers the top 3 when several kinds share the label, ranked locally when the server is away', async () => {
+  it('offers the practice items when several kinds share the label, ranked locally when the server is away', async () => {
     const result = await match('problem 3.2') as LibraryMatch
     expect(result.confident).toBe(false)
     expect(result.source).toBe('local')
-    expect(result.ranked.map(candidate => candidate.anchor?.kind)).toEqual(['example', 'checkpoint', 'section'])
-    expect(result.ranked[0].p).toBeGreaterThan(result.ranked[2].p)
+    expect(result.ranked.map(candidate => candidate.anchor?.kind)).toEqual(['example', 'checkpoint'])
+    expect(result.ranked[0].p).toBeGreaterThan(result.ranked[1].p)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('/api/rank')
@@ -96,19 +97,54 @@ describe('matchLibrary', () => {
     const sent = JSON.parse(String(init.body))
     expect(sent.task).toBe('library')
     expect(sent.query).toBe('problem 3.2')
+    expect(sent.context).toBe(LIBRARY_CONTEXT)
     expect(sent.items.every((item: { text: string }) => item.text.length <= 300)).toBe(true)
   })
 
-  it('uses the server ranking when it answers', async () => {
+  it('uses the server ranking to order the choices, but never inserts when two kinds share the number', async () => {
     fetchMock.mockImplementation(async (_url: unknown, init: unknown) => {
       const items = JSON.parse(String((init as RequestInit).body)).items as { id: string; text: string }[]
       const checkpoint = items.find(item => item.text.startsWith('Checkpoint'))!
       return new Response(JSON.stringify({ ranked: [{ id: checkpoint.id, p: 0.9 }], confident: true, source: 'jev', model: 'jev-1', ms: 20 }), { status: 200 })
     })
     const result = await match('3.2') as LibraryMatch
-    expect(result).toMatchObject({ confident: true, source: 'jev' })
-    expect(result.ranked[0].anchor?.kind).toBe('checkpoint')
-    expect(result.ranked).toHaveLength(3)
+    expect(result).toMatchObject({ confident: false, source: 'jev' })
+    expect(result.ranked.map(candidate => candidate.anchor?.kind)).toEqual(['checkpoint', 'example'])
+  })
+
+  it('still lets the ranker decide for a described item', async () => {
+    fetchMock.mockImplementation(async (_url: unknown, init: unknown) => {
+      const items = JSON.parse(String((init as RequestInit).body)).items as { id: string; text: string }[]
+      return new Response(JSON.stringify({ ranked: [{ id: items[0].id, p: 0.95 }], confident: true, source: 'jev', ms: 20 }), { status: 200 })
+    })
+    expect(await match('the chain rule example from the book')).toMatchObject({ confident: true, source: 'jev' })
+  })
+
+  it('prefers the repeated exercise in the chapter and section the teacher is on', async () => {
+    const at = (pageIndex: number) => ({ bookId: calc.id, pageIndex })
+    const first = async (near: { bookId: string; pageIndex: number } | null) => (await match('exercise 48', null, near) as LibraryMatch)
+    const plain = await first(null)
+    expect(plain.confident).toBe(false)
+    expect(plain.ranked.map(candidate => candidate.pageIndex)).toEqual([3, 5])
+    const there = await first(at(5))
+    expect(there.confident).toBe(false)
+    expect(there.ranked[0].pageIndex).toBe(5)
+    expect(sentBody(1).context).toBe(`${LIBRARY_CONTEXT} The teacher is currently working in chapter 3, on page 14. When the same number is in several chapters, the teacher means the one in chapter 3.`)
+    expect((await first(at(3))).ranked[0].pageIndex).toBe(3)
+    // near another book, or off the end of this one, changes nothing
+    expect((await first({ bookId: 'sha256:other', pageIndex: 5 })).ranked[0].pageIndex).toBe(3)
+    expect((await first(at(500))).ranked[0].pageIndex).toBe(3)
+  })
+
+  it('inserts right away when a section or chapter leaves one exercise', async () => {
+    fetchMock.mockClear()
+    for (const text of ['exercise 48 in section 3.2', 'section 3.2 exercise 48', 'exercise 48 in 3.2']) {
+      const result = await match(text) as LibraryMatch
+      expect(result).toMatchObject({ confident: true, source: 'exact' })
+      expect(result.ranked[0].pageIndex).toBe(5)
+    }
+    expect((await match('exercise 48 in section 3.1') as LibraryMatch).ranked[0].pageIndex).toBe(3)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('tells the teacher when an item or topic is missing', async () => {
@@ -120,6 +156,16 @@ describe('matchLibrary', () => {
   it('finds topics through the page text', async () => {
     const result = await match('the chain rule example from the book') as LibraryMatch
     expect(result.ranked[0].anchor?.label).toBe('3.12')
+  })
+
+  it('never swaps a named book that is not in the library for another one', async () => {
+    const result = await match('page 12 from the chemistry book') as { error: string; books: BookRecord[] }
+    expect(result.error).toBe('No book called "chemistry" in your library.')
+    expect(result.books.map(book => book.id)).toEqual([calc.id])
+    expect(await match('problem 3.2 in physics', calc.id)).toMatchObject({ error: 'No book called "physics" in your library.' })
+    // words that are not book names still work
+    expect(await match('page 12 in the new book')).toMatchObject({ confident: true, book: { id: calc.id } })
+    expect(await match('example 3.12 in pencil')).toMatchObject({ confident: true, source: 'exact' })
   })
 
   it('picks the recent book, asks when unsure, and follows the open or named book', async () => {
@@ -141,10 +187,28 @@ describe('matchLibrary', () => {
     }
   })
 
+  it('asks for a re index of an unfinished or older book instead of using another one', async () => {
+    const other = await importBook(file(await fixtureBook('University Physics'), 'physics.pdf'))
+    try {
+      await saveBook({ ...calc, indexed: false })
+      const reindex = { error: 'This book needs a quick update. Opening it now.', code: 'reindex', bookId: calc.id }
+      expect(await match('page 12', calc.id)).toEqual(reindex)
+      expect(await match('problem 3.2', calc.id)).toEqual(reindex)
+      expect(await match('page 12 from the calculus book')).toEqual(reindex)
+      // an index made by an older version: pages still work, items are read again first
+      await saveBook({ ...calc, indexVersion: undefined })
+      expect(await match('page 12', calc.id)).toMatchObject({ confident: true, book: { id: calc.id } })
+      expect(await match('example 3.12', calc.id)).toEqual(reindex)
+    } finally {
+      await removeBook(other.id); forgetBookData(other.id)
+      await saveBook(calc); await touchBook(calc.id)
+    }
+  })
+
   it('reports an empty library', async () => {
-    await saveBook({ ...calc, indexed: false })
+    await removeBook(calc.id)
     try { expect(await match('page 12')).toEqual({ error: 'The library is empty. Import a textbook first.' }) }
-    finally { await saveBook(calc); await touchBook(calc.id) }
+    finally { forgetBookData(calc.id); calc = await importBook(file(await fixtureBook('Calculus Volume 1'), 'calc.pdf')) }
   })
 })
 

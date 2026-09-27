@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { localRank } from '../shared/ranking'
-import { buildCandidates, parseLibraryQuery, pickBook, searchPages, titleMatch } from '../src/library/search'
+import { buildCandidates, certainItem, parseLibraryQuery, pickBook, searchPages, titleMatch } from '../src/library/search'
 import type { Anchor, AnchorKind, BookRecord, PageRecord } from '../src/library/types'
 
 describe('parseLibraryQuery', () => {
@@ -43,6 +43,27 @@ describe('parseLibraryQuery', () => {
     expect(q('example 1.4 in calculus volume 1')).toMatchObject({ book: 'calculus volume 1' })
     expect(q('problem 3.2 from the book')).not.toHaveProperty('book')
     expect(q('page 4 in the book')).not.toHaveProperty('book')
+    // words that say which book without naming one
+    for (const text of ['page 4 in the new book', 'problem 3.2 from the last book', 'example 1.2 in the main textbook']) expect(q(text)).not.toHaveProperty('book')
+  })
+
+  it('reads a section or chapter that narrows a repeated number', () => {
+    const wanted = { kind: 'item', label: '48', itemKind: 'exercise', section: '5.1' }
+    expect(q('exercise 48 in section 5.1')).toMatchObject(wanted)
+    expect(q('section 5.1 exercise 48')).toMatchObject(wanted)
+    expect(q('exercise 48 in 5.1')).toMatchObject(wanted)
+    expect(q('put exercise 48 from section 5.1 on the board')).toMatchObject(wanted)
+    expect(q('exercise 48 from chapter 5')).toMatchObject({ kind: 'item', label: '48', itemKind: 'exercise', chapter: '5' })
+    expect(q('chapter 5 exercise 48')).toMatchObject({ label: '48', chapter: '5' })
+    expect(q('exercise 48 in section 5.1 of the calculus book')).toMatchObject({ ...wanted, book: 'calculus' })
+    expect(q('problem 3.2 in chapter 3')).toMatchObject({ kind: 'item', label: '3.2', chapter: '3' })
+    expect(q('exercise 48')).not.toHaveProperty('section')
+    expect(q('section 5.1')).toMatchObject({ kind: 'item', label: '5.1', itemKind: 'section' })
+    expect(q('section 5.1')).not.toHaveProperty('section')
+    expect(q('limits examples in chapter 2')).toMatchObject({ kind: 'topic', chapter: '2' })
+    expect(q('3.2 in chapter 3')).toMatchObject({ kind: 'item', label: '3.2', chapter: '3' })
+    expect(q('the 3.2')).toMatchObject({ kind: 'item', label: '3.2' })
+    expect(q('what is 3.2')).toBeNull()
   })
 
   it('returns a topic for other library requests and null for board requests', () => {
@@ -82,10 +103,11 @@ const PAGES: PageRecord[] = Array.from({ length: 12 }, (_, index) => ({
 }))
 
 describe('buildCandidates', () => {
-  it('lists every item with the label, all kinds, with features', () => {
-    const query = parseLibraryQuery('problem 3.2')!
-    const candidates = buildCandidates(query, BOOK, PAGES, ANCHORS)
-    expect(candidates.map(candidate => candidate.anchor?.kind).sort()).toEqual(['checkpoint', 'example', 'figure', 'section'])
+  const kinds = (text: string) => buildCandidates(parseLibraryQuery(text)!, BOOK, PAGES, ANCHORS).map(candidate => candidate.anchor?.kind ?? candidate.kind).sort()
+
+  it('offers only practice items for problem, question, exercise and a bare number', () => {
+    const candidates = buildCandidates(parseLibraryQuery('problem 3.2')!, BOOK, PAGES, ANCHORS)
+    expect(candidates.map(candidate => candidate.anchor?.kind).sort()).toEqual(['checkpoint', 'example'])
     const example = candidates.find(candidate => candidate.anchor?.kind === 'example')!
     expect(example.features).toMatchObject({ exactLabel: 1, kindMatch: 1, kindPrior: 0.8, sameChapter: 1 })
     expect(example.features.early).toBeGreaterThan(0)
@@ -93,16 +115,26 @@ describe('buildCandidates', () => {
     expect(example.id).toBe(ANCHORS[3].id)
     expect(example.kind).toBe('item')
     expect(example.label).toBe('185')
-    expect(candidates.find(candidate => candidate.anchor?.kind === 'section')!.features.kindMatch).toBe(0)
     expect(candidates.every(candidate => candidate.description.length <= 300)).toBe(true)
+    // sections, theorems and figures never answer these words
+    for (const text of ['3.2', 'question 3.2', 'exercise 3.2', 'number 3.2', 'bring up problem 3.2']) expect(kinds(text)).toEqual(['checkpoint', 'example'])
   })
 
-  it('ranks the three likely matches first and stays unsure when kinds share a label', () => {
+  it('shows sections and other kinds only when named, or for a bare number nothing else has', () => {
+    expect(kinds('section 3.2')).toEqual(['checkpoint', 'example', 'figure', 'section'])
+    expect(buildCandidates(parseLibraryQuery('section 3.2')!, BOOK, PAGES, ANCHORS)[0].anchor?.kind).toBe('section')
+    expect(kinds('figure 3.2')).toContain('figure')
+    expect(kinds('2.4')).toEqual(['section'])
+    expect(kinds('problem 2.4')).toEqual([])
+    expect(kinds('question 2.4')).toEqual([])
+  })
+
+  it('ranks the likely matches first and stays unsure when kinds share a label', () => {
     const candidates = buildCandidates(parseLibraryQuery('problem 3.2')!, BOOK, PAGES, ANCHORS)
     const result = localRank({ task: 'library', query: 'problem 3.2', items: candidates.map(c => ({ id: c.id, text: c.description, features: c.features })) })
     const kinds = result.ranked.slice(0, 3).map(entry => candidates.find(c => c.id === entry.id)!.anchor!.kind)
-    expect(kinds).toEqual(['example', 'checkpoint', 'section'])
-    expect(result.confident).toBe(false)
+    expect(kinds).toEqual(['example', 'checkpoint'])
+    expect(certainItem(parseLibraryQuery('problem 3.2')!, candidates)).toBeNull()
   })
 
   it('matches only the named kind and says which section an exercise is in', () => {
@@ -115,13 +147,66 @@ describe('buildCandidates', () => {
     expect(exercises.every(c => c.features.sameChapter === 0)).toBe(true)
   })
 
+  it('prefers the chapter and section the teacher is on for repeated numbers', () => {
+    const query = parseLibraryQuery('exercise 48')!
+    const first = (near: number | null) => buildCandidates(query, BOOK, PAGES, ANCHORS, 40, near)[0]
+    expect(first(null).pageIndex).toBe(3)
+    expect(first(8).pageIndex).toBe(8)
+    expect(first(8).features).toMatchObject({ nearChapter: 1, nearSection: 1 })
+    expect(first(10).pageIndex).toBe(8)
+    expect(first(2).pageIndex).toBe(3)
+    // a page outside the book is ignored
+    expect(first(99).features).not.toHaveProperty('nearChapter')
+  })
+
+  it('narrows to the section or chapter the teacher named', () => {
+    const top = (text: string) => buildCandidates(parseLibraryQuery(text)!, BOOK, PAGES, ANCHORS)[0]
+    expect(top('exercise 48 in section 3.2')).toMatchObject({ pageIndex: 8, features: { inSection: 1 } })
+    expect(top('section 2.4 exercise 48')).toMatchObject({ pageIndex: 3, features: { inSection: 1 } })
+    expect(top('exercise 48 from chapter 3')).toMatchObject({ pageIndex: 8 })
+    expect(top('exercise 48 in 2.4').pageIndex).toBe(3)
+    // another section of the asked for chapter still beats another chapter
+    expect(top('exercise 48 in section 3.5')).toMatchObject({ pageIndex: 8, features: { inSection: 0.5 } })
+  })
+
+  it('knows when one item is certain and when the teacher must pick', () => {
+    const sure = (text: string, near: number | null = null) => {
+      const query = parseLibraryQuery(text)!
+      return certainItem(query, buildCandidates(query, BOOK, PAGES, ANCHORS, 40, near))
+    }
+    expect(sure('example 3.12')).toMatchObject({ anchor: { kind: 'example', label: '3.12' } })
+    expect(sure('example 3.2')).toMatchObject({ anchor: { kind: 'example', label: '3.2' } })
+    expect(sure('checkpoint 3.2')).toMatchObject({ anchor: { kind: 'checkpoint' } })
+    expect(sure('section 3.2')).toMatchObject({ anchor: { kind: 'section' } })
+    expect(sure('exercise 60')).toMatchObject({ anchor: { kind: 'exercise', label: '60' } })
+    expect(sure('problem 60')).toMatchObject({ anchor: { kind: 'exercise', label: '60' } })
+    expect(sure('2.4')).toMatchObject({ anchor: { kind: 'section', label: '2.4' } })
+    expect(sure('exercise 48 in section 3.2')).toMatchObject({ pageIndex: 8 })
+    expect(sure('exercise 48 from chapter 2')).toMatchObject({ pageIndex: 3 })
+    for (const text of ['problem 3.2', '3.2', 'question 3.2', 'exercise 3.2', 'exercise 48', 'problem 48', 'example 60', 'exercise 48 in section 3.5']) {
+      expect(sure(text)).toBeNull()
+    }
+    // being near one of them orders the choices but never decides
+    expect(sure('exercise 48', 8)).toBeNull()
+    expect(certainItem(parseLibraryQuery('page 3')!, [])).toBeNull()
+  })
+
   it('falls back to pages that name the item when nothing was detected', () => {
     const pages = PAGES.map(page => page.index === 11 ? { ...page, text: 'Problem 7.3 Show that the series converges.' } : page)
     const candidates = buildCandidates(parseLibraryQuery('problem 7.3')!, BOOK, pages, ANCHORS)
     expect(candidates).toHaveLength(1)
     expect(candidates[0]).toMatchObject({ kind: 'page', pageIndex: 11, id: `${BOOK.id}#11:page` })
     expect(candidates[0].features.exactLabel).toBe(0)
+    expect(certainItem(parseLibraryQuery('problem 7.3')!, candidates)).toBeNull()
     expect(buildCandidates(parseLibraryQuery('problem 9.9')!, BOOK, PAGES, ANCHORS)).toEqual([])
+  })
+
+  it('never adds answer key lines once the number was found, only a page naming the asked for kind', () => {
+    const pages = PAGES.map(page => page.index === 11 ? { ...page, text: 'Answer Key\n3.2 The slope is 6.\nExercise 3.2 was hard.' } : page)
+    expect(buildCandidates(parseLibraryQuery('question 3.2')!, BOOK, pages, ANCHORS).map(c => c.kind)).toEqual(['item', 'item'])
+    expect(buildCandidates(parseLibraryQuery('3.2')!, BOOK, pages, ANCHORS).some(c => c.kind === 'page')).toBe(false)
+    const named = buildCandidates(parseLibraryQuery('exercise 3.2')!, BOOK, pages, ANCHORS)
+    expect(named.filter(c => c.kind === 'page').map(c => c.pageIndex)).toEqual([11])
   })
 
   it('searches page text for topics and prefers the asked for kind', () => {

@@ -1,13 +1,26 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import { bodyFontSize, detectAnchors } from './anchors'
+import { bodyFontSize, detectAnchors, type OpenItem } from './anchors'
 import { assignPrintedLabels } from './labels'
 import { closePdf, hasPdfHeader, openPdf, pageLines } from './pdfjs'
 import { thumbFromPage } from './render'
-import { bookIdFor, getBook, putAnchors, putBookBytes, putPages, putThumb, removeBook, requestPersistentStorage, saveBook, touchBook } from './store'
+import { bookIdFor, getAnchors, getBook, getBookBytes, putAnchors, putBookBytes, putPages, putThumb, removeAnchors, removeBook, requestPersistentStorage, saveBook, touchBook } from './store'
 import type { Anchor, BookRecord, ImportProgress, PageRecord } from './types'
 
 export const MAX_BOOK_BYTES = 400 * 1024 * 1024
 const BATCH = 25
+/** bumped whenever finding items changes, so books indexed before are read again */
+export const INDEX_VERSION = 2
+
+/** True when a book never finished indexing or was indexed by an older item finder. */
+export function needsReindex(book: BookRecord): boolean {
+  return !book?.indexed || (book.indexVersion ?? 1) < INDEX_VERSION
+}
+
+type Report = (phase: ImportProgress['phase'], done: number, total: number) => void
+
+function reporter(onProgress?: (p: ImportProgress) => void): Report {
+  return (phase, done, total) => { try { onProgress?.({ phase, done, total }) } catch { /* ui errors never stop an import */ } }
+}
 
 async function readPdf(file: File): Promise<Uint8Array> {
   if (!file || !(file.size > 0)) throw new Error('This file is empty.')
@@ -73,17 +86,93 @@ async function flatOutline(doc: PDFDocumentProxy): Promise<BookRecord['outline']
   return out
 }
 
+type Read = { pages: PageRecord[]; anchors: Anchor[]; labels: (string | null)[]; outline: BookRecord['outline']; textPages: number }
+
+/** Text of every page, printed page labels, the items a teacher can ask for and the outline. */
+async function readBook(id: string, doc: PDFDocumentProxy, report: Report): Promise<Read> {
+  const count = doc.numPages
+  const pages: PageRecord[] = []
+  for (let start = 0; start < count; start += BATCH) {
+    for (let index = start; index < Math.min(count, start + BATCH); index++) {
+      let record: PageRecord = { bookId: id, index, label: null, width: 612, height: 792, text: '', lines: [] }
+      try {
+        const page = await doc.getPage(index + 1)
+        try {
+          const { width, height, lines } = await pageLines(page)
+          record = { ...record, width, height, lines, text: lines.map(line => line.text).join('\n').slice(0, 8000) }
+        } finally { page.cleanup() }
+      } catch { /* a broken page stays empty and keeps its place */ }
+      pages.push(record)
+      if (index % 5 === 4 || index === count - 1) report('reading', index + 1, count)
+    }
+    await yieldNow()
+  }
+
+  report('indexing', 0, count)
+  const pdfLabels = await doc.getPageLabels().catch(() => null)
+  const labels = assignPrintedLabels(pages.map(page => ({
+    index: page.index, edges: [...page.lines.slice(0, 2), ...page.lines.slice(Math.max(2, page.lines.length - 3))].map(line => line.text),
+  })), pdfLabels)
+  pages.forEach(page => { page.label = labels[page.index] ?? null })
+  const sample = pages.length > 120 ? pages.filter((_, i) => i % Math.ceil(pages.length / 120) === 0) : pages
+  const body = bodyFontSize(sample.flatMap(page => page.lines))
+  const anchors: Anchor[] = [], byId = new Map<string, Anchor>()
+  let exerciseMode = false, answers = 0, exerciseSize = 0, carry: OpenItem[] = []
+  for (const page of pages) {
+    const found = detectAnchors(id, { index: page.index, lines: page.lines, exerciseMode, answers, exerciseSize, carry }, body)
+    // items that ran off the page before learn where they go on
+    for (const { id: anchorId, continues } of found.continued) { const anchor = byId.get(anchorId); if (anchor) anchor.continues = continues }
+    for (const anchor of found.anchors) byId.set(anchor.id, anchor)
+    anchors.push(...found.anchors)
+    exerciseMode = found.exerciseMode; answers = found.answers; exerciseSize = found.exerciseSize; carry = found.open
+  }
+  const outline = await flatOutline(doc)
+  await yieldNow()
+  return { pages, anchors, labels: labels.slice(0, count), outline, textPages: pages.filter(page => page.text.replace(/\s/g, '').length >= 20).length }
+}
+
+async function writeBook(read: Read, report: Report) {
+  const count = read.pages.length
+  for (let start = 0; start < count; start += BATCH) {
+    await putPages(read.pages.slice(start, start + BATCH))
+    report('saving', Math.min(count, start + BATCH), count)
+  }
+  for (let start = 0; start < read.anchors.length; start += 500) await putAnchors(read.anchors.slice(start, start + 500))
+}
+
+async function coverOf(id: string, doc: PDFDocumentProxy, fallback: string | null): Promise<string | null> {
+  try {
+    const page = await doc.getPage(1)
+    let cover: string
+    try { cover = await thumbFromPage(page, 240) } finally { page.cleanup() }
+    await putThumb(`${id}:0:240`, cover).catch(() => undefined)
+    return cover
+  } catch { return fallback /* no cover outside the browser or for a broken first page */ }
+}
+
 /**
  * Saves a PDF to the library: the original bytes, then the text of every page, printed page labels
  * and the items a teacher can ask for. Importing the same file again just reopens it.
  */
 export async function importBook(file: File, onProgress?: (p: ImportProgress) => void): Promise<BookRecord> {
-  const report = (phase: ImportProgress['phase'], done: number, total: number) => { try { onProgress?.({ phase, done, total }) } catch { /* ui errors never stop an import */ } }
+  const report = reporter(onProgress)
   report('reading', 0, 0)
   const bytes = await readPdf(file)
   const id = await bookIdFor(bytes)
   const existing = await getBook(id)
-  if (existing?.indexed) return (await touchBook(id)) ?? existing
+  if (existing?.indexed) {
+    if (needsReindex(existing)) await ensureIndexed(id, onProgress)
+    return (await touchBook(id)) ?? existing
+  }
+  // a lookup that asks for this book while it is still being read waits for this import instead of reading it twice
+  const running = updating.get(id)
+  if (running) return running
+  const task = readNewBook(id, bytes, file, existing, report)
+  updating.set(id, task)
+  try { return await task } finally { if (updating.get(id) === task) updating.delete(id) }
+}
+
+async function readNewBook(id: string, bytes: Uint8Array, file: File, existing: BookRecord | undefined | null, report: Report): Promise<BookRecord> {
   void requestPersistentStorage()
   await putBookBytes(id, bytes)
   let doc: PDFDocumentProxy
@@ -100,59 +189,10 @@ export async function importBook(file: File, onProgress?: (p: ImportProgress) =>
       indexed: false, textPages: 0,
     }
     await saveBook(book)
-
-    const pages: PageRecord[] = []
-    for (let start = 0; start < count; start += BATCH) {
-      for (let index = start; index < Math.min(count, start + BATCH); index++) {
-        let record: PageRecord = { bookId: id, index, label: null, width: 612, height: 792, text: '', lines: [] }
-        try {
-          const page = await doc.getPage(index + 1)
-          try {
-            const { width, height, lines } = await pageLines(page)
-            record = { ...record, width, height, lines, text: lines.map(line => line.text).join('\n').slice(0, 8000) }
-          } finally { page.cleanup() }
-        } catch { /* a broken page stays empty and keeps its place */ }
-        pages.push(record)
-        if (index % 5 === 4 || index === count - 1) report('reading', index + 1, count)
-      }
-      await yieldNow()
-    }
-
-    report('indexing', 0, count)
-    const pdfLabels = await doc.getPageLabels().catch(() => null)
-    const labels = assignPrintedLabels(pages.map(page => ({
-      index: page.index, edges: [...page.lines.slice(0, 2), ...page.lines.slice(Math.max(2, page.lines.length - 3))].map(line => line.text),
-    })), pdfLabels)
-    pages.forEach(page => { page.label = labels[page.index] ?? null })
-    const sample = pages.length > 120 ? pages.filter((_, i) => i % Math.ceil(pages.length / 120) === 0) : pages
-    const body = bodyFontSize(sample.flatMap(page => page.lines))
-    const anchors: Anchor[] = []
-    let exerciseMode = false, answers = 0
-    for (const page of pages) {
-      const found = detectAnchors(id, { index: page.index, lines: page.lines, exerciseMode, answers }, body)
-      anchors.push(...found.anchors)
-      exerciseMode = found.exerciseMode; answers = found.answers
-    }
-    const outline = await flatOutline(doc)
-    await yieldNow()
-
-    for (let start = 0; start < count; start += BATCH) {
-      await putPages(pages.slice(start, start + BATCH))
-      report('saving', Math.min(count, start + BATCH), count)
-    }
-    for (let start = 0; start < anchors.length; start += 500) await putAnchors(anchors.slice(start, start + 500))
-
-    let cover = book.cover
-    try {
-      const page = await doc.getPage(1)
-      try { cover = await thumbFromPage(page, 240) } finally { page.cleanup() }
-      await putThumb(`${id}:0:240`, cover).catch(() => undefined)
-    } catch { /* no cover outside the browser or for a broken first page */ }
-
-    const done: BookRecord = {
-      ...book, labels: labels.slice(0, count), outline, cover, indexed: true,
-      textPages: pages.filter(page => page.text.replace(/\s/g, '').length >= 20).length,
-    }
+    const read = await readBook(id, doc, report)
+    await writeBook(read, report)
+    const cover = await coverOf(id, doc, book.cover)
+    const done: BookRecord = { ...book, labels: read.labels, outline: read.outline, cover, indexed: true, textPages: read.textPages, indexVersion: INDEX_VERSION }
     await saveBook(done)
     report('saving', count, count)
     return done
@@ -160,6 +200,50 @@ export async function importBook(file: File, onProgress?: (p: ImportProgress) =>
     if (!existing) await removeBook(id).catch(() => undefined)
     if (error instanceof Error && /storage|library|PDF|pages|browser/i.test(error.message)) throw error
     throw new Error('This PDF could not be saved to the library.')
+  } finally {
+    await closePdf(doc)
+  }
+}
+
+const updating = new Map<string, Promise<BookRecord>>()
+
+/**
+ * Reads a saved book again from its stored PDF when it never finished indexing or was indexed by an
+ * older item finder. Keeps its id, title, file name and dates; pages and items are replaced.
+ */
+export function ensureIndexed(bookId: string, onProgress?: (p: ImportProgress) => void): Promise<BookRecord> {
+  const running = updating.get(bookId)
+  if (running) return running
+  const task = reindex(bookId, reporter(onProgress)).finally(() => updating.delete(bookId))
+  updating.set(bookId, task)
+  return task
+}
+
+async function reindex(bookId: string, report: Report): Promise<BookRecord> {
+  const book = await getBook(bookId)
+  if (!book) throw new Error('This book is no longer in the library. Import it again.')
+  if (!needsReindex(book)) return book
+  report('reading', 0, book.pageCount || 0)
+  const bytes = await getBookBytes(bookId)
+  if (!bytes || !hasPdfHeader(bytes)) throw new Error('This book is no longer in the library. Import it again.')
+  const doc = await openPdf(bytes)
+  try {
+    const count = doc.numPages
+    if (count < 1) throw new Error('This PDF has no pages.')
+    const read = await readBook(bookId, doc, report)
+    const base: BookRecord = { ...book, size: bytes.byteLength, pageCount: count, labels: read.labels, outline: read.outline, textPages: read.textPages, indexed: false }
+    // items the new finder no longer sees are dropped; the stored PDF is never touched, so closing the tab now loses nothing
+    const fresh = new Set(read.anchors.map(anchor => anchor.id))
+    await removeAnchors((await getAnchors(bookId)).filter(anchor => !fresh.has(anchor.id)).map(anchor => anchor.id))
+    await writeBook(read, report)
+    const cover = book.cover ?? await coverOf(bookId, doc, null)
+    const done: BookRecord = { ...base, cover, indexed: true, indexVersion: INDEX_VERSION }
+    await saveBook(done)
+    report('saving', count, count)
+    return done
+  } catch (error) {
+    if (error instanceof Error && /storage|library|PDF|pages|browser/i.test(error.message)) throw error
+    throw new Error('This book could not be updated. Import it again.')
   } finally {
     await closePdf(doc)
   }

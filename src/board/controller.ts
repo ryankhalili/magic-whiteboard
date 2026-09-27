@@ -68,9 +68,10 @@ export function getPlacementBounds(operation: BoardOperation, context: BoardCont
     requireLiteralSize(region, kind)
     return validateBounds({ ...region })
   }
-  // a ranked free area chosen by the model, only offered when nothing is circled
-  const option = !region && !context.focus && operation.placement !== 'pointer' && operation.placementOption
-    ? context.placementOptions?.find(o => o.id === operation.placementOption && isFiniteBox(o.bounds)) : undefined
+  // a ranked free area, only offered when nothing is circled; A when the model did not choose one
+  const optionId = operation.placementOption ?? 'A'
+  const option = !region && !context.focus && operation.placement !== 'pointer'
+    ? context.placementOptions?.find(o => o.id === optionId && isFiniteBox(o.bounds)) : undefined
   const point = option ? { x: option.bounds.x + option.bounds.w / 2, y: option.bounds.y + option.bounds.h / 2 }
     : operation.placement === 'pointer' && context.pointer ? context.pointer
       : operation.placement !== 'auto' && context.focus ? { x: context.focus.bounds.x + context.focus.bounds.w / 2, y: context.focus.bounds.y + context.focus.bounds.h / 2 }
@@ -109,6 +110,8 @@ function hashKey(text: string) {
 }
 /** Deterministic asset id for a rendered library image, so inserting it again reuses the bytes. */
 export const libraryAssetId = (key: string) => createAssetId(`lib-${hashKey(key)}`)
+/** Asset key of a detected item; a newer index draws it differently, so its image is never reused from an older one. */
+export const libraryItemKey = (anchorId: string, indexVersion?: number) => (indexVersion ?? 1) > 1 ? `${anchorId}:item:v${indexVersion}` : `${anchorId}:item`
 
 const IMAGE_SRC = /^data:image\/(png|jpeg);base64,[A-Za-z\d+/=]+$/
 function validateImage(image: BoardImage | undefined): BoardImage {
@@ -174,9 +177,14 @@ export function libraryQueryFromOperation(operation: BoardOperation): LibraryQue
     return withBook({ kind: 'page', label: /^\d/.test(label) ? String(Number(label)) : label.toLowerCase(), raw: `page ${label}` })
   }
   const item = typeof operation.item === 'string' ? operation.item.trim() : ''
+  const extra = typeof operation.query === 'string' ? operation.query.trim().slice(0, 300) : ''
   if (item) {
     const parsed = parseLibraryQuery(item)
-    if (parsed && parsed.kind === 'item') return withBook(parsed)
+    if (parsed && parsed.kind === 'item') {
+      // a section or chapter the model put in query instead ("exercise 48" plus "in section 5.1")
+      const both = extra && !parsed.section && !parsed.chapter ? parseLibraryQuery(`${item} ${extra}`) : null
+      return withBook(both?.kind === 'item' && both.label === parsed.label && (both.section || both.chapter) ? both : parsed)
+    }
     const lone = /^(?:#|no\.?|number)?\s*(\d{1,3}(?:\.\d{1,3}){0,2})$/i.exec(item)
     if (lone) return withBook({ kind: 'item', label: lone[1], raw: item })
     return withBook(parsed ?? { kind: 'topic', terms: item, raw: item })
@@ -191,7 +199,7 @@ const KIND_TITLES: Record<string, string> = {
   definition: 'Definition', question: 'Question', figure: 'Figure', table: 'Table',
 }
 /** What an inserted library image is, from meta.library, for the model and the object list. */
-function libraryObject(meta: Record<string, unknown>): { kind: string; title: string } | null {
+function libraryObject(meta: Record<string, unknown>, height: number): { kind: string; title: string; workBelow?: number } | null {
   const value = meta.library
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const info = value as Record<string, unknown>
@@ -199,10 +207,13 @@ function libraryObject(meta: Record<string, unknown>): { kind: string; title: st
   const index = typeof info.pageIndex === 'number' && Number.isInteger(info.pageIndex) ? info.pageIndex : null
   const page = typeof info.pageLabel === 'string' && info.pageLabel ? `page ${info.pageLabel}` : index !== null ? `file page ${index + 1}` : 'a page'
   if (info.kind === 'page') return { kind: 'textbook_page', title: `${book}, ${page}`.slice(0, 200) }
-  if (info.kind === 'crop') return { kind: 'textbook_item', title: `Part of ${page}, ${book}`.slice(0, 200) }
+  // the work space kept free under a problem; older inserts get the size a new insert would get
+  const stored = info.workBelow, workBelow = Math.min(10000, typeof stored === 'number' && Number.isFinite(stored) && stored >= 0 ? stored
+    : Number.isFinite(height) && height > 0 ? Math.max(260, 1.2 * height) : 260)
+  if (info.kind === 'crop') return { kind: 'textbook_item', title: `Part of ${page}, ${book}`.slice(0, 200), workBelow }
   const name = typeof info.itemKind === 'string' ? KIND_TITLES[info.itemKind] ?? 'Item' : 'Item'
   const label = typeof info.itemLabel === 'string' && info.itemLabel ? ` ${info.itemLabel}` : ''
-  return { kind: 'textbook_item', title: `${name}${label} (${page})`.slice(0, 200) }
+  return { kind: 'textbook_item', title: `${name}${label} (${page})`.slice(0, 200), workBelow }
 }
 
 function propsFromOperation(operation: BoardOperation, original: MagicShapeProps): MagicShapeProps {
@@ -275,12 +286,15 @@ export class BoardController {
         else { object.geometry = shape.props.geometry; object.text = shape.props.text }
       } else if (shape.type === 'image') {
         object.crop = shape.props.crop
-        const pdf = pdfPageInfo(shape), book = pdf ? null : libraryObject(shape.meta)
+        const pdf = pdfPageInfo(shape), book = pdf ? null : libraryObject(shape.meta, object.bounds.h)
         if (pdf) {
           object.kind = 'pdf_page'
           object.title = `Worksheet page ${pdf.page} of ${pdf.pages}: ${pdf.name}`.slice(0, 200)
           if (pdf.text) object.text = pdf.text
-        } else if (book) { object.kind = book.kind; object.title = book.title }
+        } else if (book) {
+          object.kind = book.kind; object.title = book.title
+          if (book.workBelow) object.workBelow = book.workBelow
+        }
       } else if (shape.type === 'draw') { object.color = shape.props.color; object.strokeWidth = shape.props.strokeWidth }
       return object
     })
@@ -476,6 +490,8 @@ export class BoardController {
         if (plan.creates.length) this.editor.createShapes(plan.creates)
         if (plan.updates.length) this.editor.updateShapes(plan.updates)
         if (plan.deletes.length) this.editor.deleteShapes(plan.deletes)
+        // a locked book page is paper: under everything the teacher can touch, so it never hides or shields anything
+        if (plan.locked.length) this.editor.run(() => this.editor.sendToBack(plan.locked, { aboveLocked: true }), { ignoreShapeLock: true })
         for (const layer of plan.layers) this.editor[layer.front ? 'bringToFront' : 'sendToBack'](layer.ids)
         if (plan.touched.length) this.editor.select(...plan.touched)
         else if (plan.locked.length) this.editor.selectNone()

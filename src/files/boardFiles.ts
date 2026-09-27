@@ -10,7 +10,9 @@ import { DEFAULT_SETTINGS, type AppSettings, type Bounds } from '../../shared/bo
 
 export const PAGE_BOUNDS: Bounds = { x: 0, y: 0, w: 794, h: 1123 }
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024
-const MAX_PROJECT_BYTES = 40 * 1024 * 1024
+// a notebook holds up to 56 million characters of images; the rest of the file is its objects as JSON
+export const MAX_PROJECT_BYTES = 64 * 1024 * 1024
+const TOO_BIG_PROJECT = 'Choose a project smaller than 64 MB.'
 const MAX_EXPORT_EDGE = 8192
 const MAX_EXPORT_PIXELS = 24_000_000
 
@@ -272,13 +274,20 @@ export async function exportRegionPdf(editor: Editor, bounds: Bounds, settings: 
   downloadBlob(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }), `${baseName(name ?? `${settings.name} area`)}.pdf`)
 }
 
-export function saveProject(editor: Editor, settings: AppSettings): void {
+/** The downloadable notebook file (unused images left out), refused when Open notebook file could not read it back. */
+export function projectFileBlob(editor: Editor, settings: AppSettings): Blob {
   const project: ProjectFile = {
     format: 'marginalia', version: 1, savedAt: new Date().toISOString(),
     settings: { ...settings, focusMode: settings.focusMode === 'literal' ? 'literal' : 'reference' },
     snapshot: editor.getSnapshot(),
   }
-  downloadBlob(new Blob([JSON.stringify(project)], { type: 'application/json' }), `${baseName(settings.name)}.marginalia.json`)
+  const blob = new Blob([JSON.stringify(project)], { type: 'application/json' })
+  if (blob.size > MAX_PROJECT_BYTES) throw new Error('This notebook is too large to save as one file. Remove some images or split it into two notebooks.')
+  return blob
+}
+
+export function saveProject(editor: Editor, settings: AppSettings): void {
+  downloadBlob(projectFileBlob(editor, settings), `${baseName(settings.name)}.marginalia.json`)
 }
 
 /** Download the untouched pre-migration checkpoint for inspection; never restore it automatically. */
@@ -346,7 +355,7 @@ export function parseProjectFile(text: string): ProjectFile {
 
 /** Validate the complete data file before replacing the user's current board. */
 export async function loadProject(editor: Editor, file: File): Promise<AppSettings> {
-  if (file.size > MAX_PROJECT_BYTES) throw new Error('Choose a project smaller than 40 MB.')
+  if (file.size > MAX_PROJECT_BYTES) throw new Error(TOO_BIG_PROJECT)
   const project = parseProjectFile(await file.text())
   const previous = editor.getSnapshot()
   try { editor.loadSnapshot(project.snapshot) }
