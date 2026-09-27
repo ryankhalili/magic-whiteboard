@@ -125,7 +125,7 @@ describe('voice fixes', () => {
       expect(creates(channel)).toHaveLength(before + 2)
       client.disconnect()
     })
-    it('a refused context snapshot falls back to short texts', async () => {
+    it('a refused context snapshot falls back to explicit unavailable source instead of a misleading prefix', async () => {
       let board = base
       const client = createRealtimeClient(handlers({ getContext: () => board }))
       await client.connect()
@@ -136,7 +136,8 @@ describe('voice fixes', () => {
       await vi.advanceTimersByTimeAsync(160)
       const items = contextItems(channel)
       expect(items).toHaveLength(2)
-      expect(snapshot(items[1]).objects[0].text).toHaveLength(300)
+      expect(snapshot(items[1]).objects[0].text).toBeUndefined()
+      expect(snapshot(items[1]).objects[0].sourceOmitted).toEqual(['text'])
       expect(channel.sent.filter(event => event.type === 'conversation.item.delete').map(event => event.item_id)).toEqual([items[0].item.id])
       client.disconnect()
     })
@@ -209,7 +210,7 @@ describe('voice fixes', () => {
       await client.connect(); client.sendText('put page 22 on the board')
       await respond(FakePeer.latest.channel, 'r1', [call('c1', [{ type: 'insert_library', page: 22 } as unknown as BoardOperation])])
       expect(repairRequest).toHaveBeenCalledTimes(1)
-      expect(h.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'insert_library', page: '22' }])
+      expect(h.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'insert_library', page: '22' }], expect.any(Function))
       expect(h.onError).not.toHaveBeenCalled()
       client.disconnect()
     })
@@ -278,7 +279,7 @@ describe('voice fixes', () => {
       expect(creates(channel)).toHaveLength(2)
       const operation: BoardOperation = { type: 'create_math', latex: '\\int \\sin(x)\\,dx' }
       await respond(channel, 'continued', [call('integral', [operation])])
-      expect(h.applyOperations).toHaveBeenCalledExactlyOnceWith([operation])
+      expect(h.applyOperations).toHaveBeenCalledExactlyOnceWith([operation], expect.any(Function))
       expect(h.onContentPreview).toHaveBeenLastCalledWith(null)
       expect(h.onError).not.toHaveBeenCalled()
       client.disconnect()

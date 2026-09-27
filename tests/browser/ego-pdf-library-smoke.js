@@ -63,7 +63,7 @@ export async function runPdfLibrarySmoke(page, outputDirectory) {
   await page.click('.reference-legend-list button')
   await button('Insert match 1: Example 2.1, p. 2'); await count(3)
   await button('Close book')
-  await page.waitForFunction(() => document.querySelector('select[aria-label="Choose board object"] option:checked')?.textContent === 'Book excerpt: Example 2.1 (page 2)')
+  await page.waitForFunction(() => document.querySelector('[aria-label="Object controls"] .inspector-heading > span')?.textContent === 'Book excerpt')
   checks.push('Library indexing, search and exact example crop insertion')
 
   const pdf = await download('Selected area PDF', 'selected-area.pdf')

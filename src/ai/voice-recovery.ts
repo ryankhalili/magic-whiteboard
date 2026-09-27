@@ -2,7 +2,7 @@ import type { BoardCommand, BoardContext, BoardOperation } from '../../shared/bo
 import { SERVER_UNREACHABLE } from './commands'
 
 export type VoiceRecoveryState = {
-  phase: 'repairing' | 'reconnecting' | 'renewing'; message: string; attempt: number
+  phase: 'repairing' | 'reconnecting' | 'renewing' | 'waiting'; message: string; attempt: number
 } | null
 export type VoiceRepairRequest = {
   instruction: string; context: BoardContext; failedOperations?: BoardOperation[];

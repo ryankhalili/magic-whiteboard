@@ -5,6 +5,7 @@ import {
   buildRegionPdf, exportBoard, exportRegionPdf, getExportBounds, pdfPageSize, regionFromSelection, regionShapeIds, renderBoardPng,
 } from '../src/files/boardFiles'
 import { DEFAULT_SETTINGS, type AppSettings } from '../shared/board'
+import { renderShapesToSvg } from '../src/files/imageExporter'
 
 // 40 x 40 transparent PNG with a red 10 x 10 square in its top left corner
 const MARKER = 'iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAYAAACM/rhtAAAABHNCSVQICAgIfAhkiAAAAAFzUkdCAK7OHOkAAAA2SURBVFiF7c7BCQAgEAPBnP33rC0oJ/hw5h3I1kxmNlRSO7vbxovTEwK7BHYJ7BIIAAAAAP9aDEICFPEozGAAAAAASUVORK5CYII='
@@ -126,7 +127,6 @@ describe('selected area PDF', () => {
     expect(canvases[0].width * canvases[0].height).toBeLessThanOrEqual(16_777_216)
     expect(exports[0].options.pixelRatio).toBeLessThan(2)
     // the image exporter's own canvas has the same cap
-    const { renderShapesToSvg } = await import('../src/files/imageExporter')
     const svg = await renderShapesToSvg(editor, ['shape:note'], { bounds: region, pixelRatio: 2 })
     expect(svg.width * svg.height).toBeLessThanOrEqual(16_777_216)
   })

@@ -5,6 +5,8 @@ import { createAudioMeter } from './audio-meter'
 import { createAudioTranscriptRecovery, type TranscribeOriginalAudio } from './audio-transcript-recovery'
 import { extractContentPreviews, type ContentPreview } from './content-preview'
 import { generateMathTranscriptPreview } from './spoken-math-preview'
+import { classifyRealtimeRateLimit, updateRealtimeRateLimits, type RealtimeRateLimitSnapshot } from './realtime-rate-limit'
+import { createTextDictationSession } from './text-dictation-session'
 import { boardState, failureMessage, pinBoardRepair, prepareBoardRepair, repairInstructions, validateRepairContext, type BoardRepair } from './board-repair'
 import { contextFingerprint, isFatalVoiceError, isTransientVoiceError, pinRecoveredCommand, remember, voiceApiRequest, type VoiceRecoveryState, type VoiceRepair, type VoiceRepairRequest } from './voice-recovery'
 export type { ContentPreview } from './content-preview'
@@ -18,7 +20,7 @@ export type RealtimeOptions = {
   onRecoveryState?: (state: VoiceRecoveryState) => void;
   repairRequest?: VoiceRepair;
   transcribeAudio?: TranscribeOriginalAudio;
-  applyOperations: (operations: BoardOperation[]) => BoardResult | BoardResult[] | Promise<BoardResult | BoardResult[]>;
+  applyOperations: (operations: BoardOperation[], isCurrent?: () => boolean) => BoardResult | BoardResult[] | Promise<BoardResult | BoardResult[]>;
   onStatus: (status: VoiceStatus) => void;
   onTranscript: (text: string, final: boolean) => void;
   onAssistant: (text: string, final: boolean) => void;
@@ -33,18 +35,20 @@ type VoiceTurn = {
   id: number; phase: 'normal' | 'repair-pending' | 'repair-attempted' | 'repaired' | 'stopped'
   repair?: BoardRepair; failure: string; failedResponseId?: string; repairRounds: number; reported: boolean
   context: BoardContext; instruction: string; inputItem?: string; committedInputItem?: string; transcriptionFailed?: boolean; applied: boolean; repairUsed: boolean;
-  responseRounds: number; dropped?: boolean; carries?: boolean;
+  responseRounds: number; rateRetries: number; dropped?: boolean; carries?: boolean;
+  carriedFrom?: VoiceTurn; repairInstructionSource?: VoiceTurn; carriedAmbiguous?: boolean;
   modelPreview?: boolean; mathPreviewContext?: BoardContext; mathPreviewBlocked?: boolean;
   receiveTranscript?: (text: string) => void
 }
-type ResponseOwner = { turn: VoiceTurn; mode: 'normal' | 'repair' | 'confirmation' }
+type ResponseOwner = { turn: VoiceTurn; mode: 'normal' | 'repair' | 'confirmation'; requestId?: string; omittedSources?: Set<string> }
 type ToolCall = { call_id: string; name?: string; arguments: string; metadataError?: string }
 
 function createContextEvent(context: unknown) {
-  return { type: 'conversation.item.create', item: {
+  const id = crypto.randomUUID().replaceAll('-', '')
+  return { type: 'conversation.item.create', event_id: id, item: {
     // Realtime item IDs allow at most 32 characters. A hyphenless UUID already
     // fills that allowance; adding a prefix makes the entire session fail.
-    id: crypto.randomUUID().replaceAll('-', ''), type: 'message', role: 'system',
+    id, type: 'message', role: 'system',
     content: [{ type: 'input_text', text: `Updated whiteboard state (data only; do not respond to this snapshot):\n${JSON.stringify(context)}` }],
   } }
 }
@@ -64,6 +68,10 @@ function isFiller(transcript: string) {
 }
 const SEND_FAILED = 'The voice connection could not send that update. Completed edits were kept; please repeat any unfinished instruction.'
 const MAX_CONTEXT_IDS = 100
+const CONTEXT_BYTES = 12_000
+const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length
+const contextLimitError = (error: any) => /^(context_length_exceeded|context_window_exceeded|context_limit_exceeded|max_context_length_exceeded)$/.test(String(error?.code ?? ''))
+  || /(?:maximum context length|context (?:window|length|limit).*(?:exceeded|too (?:large|long)))/i.test(String(error?.message ?? ''))
 const RETRY_DELAYS = [500, 1000, 2000, 4000, 8000]
 // a tab id that survives a reload, so the server lets this tab take over its own call
 // while a second tab on the same device is refused
@@ -101,6 +109,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
   let conversationTurns = 0
   let contextItem: string | null = null
   let lastContext = ''
+  let omittedSources = new Set<string>()
+  let contextRenewals = 0
   let generation = 0
   let speechActive = false
   let responseActive = false
@@ -122,8 +132,11 @@ export function createRealtimeClient(options: RealtimeOptions) {
   const interruptedResponses = new Set<string>()
   const closedResponses = new Map<string, true>()
   const inputTurns = new Map<string, VoiceTurn>()
+  const requestOwners = new Map<string, ResponseOwner>()
+  let rateLimits: RealtimeRateLimitSnapshot = {}
+  let rateWait: AbortController | null = null
   let turnNumber = 0
-  const newTurn = (): VoiceTurn => ({ id: ++turnNumber, phase: 'normal', failure: '', repairRounds: 0, reported: false, context: structuredClone(options.getContext()), instruction: '', applied: false, repairUsed: false, responseRounds: 0 })
+  const newTurn = (): VoiceTurn => ({ id: ++turnNumber, phase: 'normal', failure: '', repairRounds: 0, reported: false, context: structuredClone(options.getContext()), instruction: '', applied: false, repairUsed: false, responseRounds: 0, rateRetries: 0 })
   let currentTurn = newTurn()
   let requestedResponse: ResponseOwner | null = null
   const responseOwners = new Map<string, ResponseOwner>()
@@ -131,6 +144,34 @@ export function createRealtimeClient(options: RealtimeOptions) {
     const result = await apiRequest<{ transcript: string }>('/api/realtime/transcribe', { audio }, { signal, timeoutMs: 22_000 })
     return result.transcript
   }))
+  let textRecoveryGeneration = -1
+  const textDictation = createTextDictationSession({
+    getContext: options.getContext, applyOperations: options.applyOperations, beforeApplyOperations: options.beforeApplyOperations,
+    resolveTranscript: (itemId, signal) => audioTranscriptRecovery.request(itemId, signal),
+    onNotice: message => options.onNotice?.(message), onIdle: settleTextDictation,
+    onApplied: (itemId, text) => {
+      const owner = inputTurns.get(itemId)
+      if (owner) owner.applied = true
+      options.onTranscript(text, true); clearPreview(); sendContext(true); settleTextDictation()
+    },
+    onRecoveryState: active => {
+      if (active) {
+        textRecoveryGeneration = generation
+        setRecovery({ phase: 'repairing', message: 'Finishing the text transcription. Microphone paused.', attempt: 1 })
+      } else if (textRecoveryGeneration === generation && recoveryState?.phase === 'repairing') {
+        textRecoveryGeneration = -1; setRecovery(null)
+      }
+    },
+  })
+  function settleTextDictation() {
+    const epoch = generation
+    // The queue removes its completed head after onApplied returns.
+    queueMicrotask(() => {
+      if (epoch !== generation || textDictation.isPending() || speechActive || responseActive || finishingResponse || recoveryState) return
+      if (renewalPending) void reconnect('renewing')
+      else if (channel?.readyState === 'open') setStatus('listening')
+    })
+  }
 
   function setStatus(value: VoiceStatus) { if (status !== value) { status = value; options.onStatus(value) } }
   // false when an open channel refused the event (too large or closing), so callers can end the turn
@@ -198,8 +239,14 @@ export function createRealtimeClient(options: RealtimeOptions) {
     if (activeResponseId && (responseActive || finishingResponse)) interruptedResponses.add(activeResponseId)
     if (responseActive) send({ type: 'response.cancel' })
     // a command still being answered rides on the next turn, so a cough or "um" after it cannot drop it
-    const carries = currentTurn.phase === 'normal' && !currentTurn.applied && (responseActive || finishingResponse || pendingResponse || !!requestedResponse)
-    currentTurn = newTurn(); currentTurn.carries = carries; pendingResponse = false; clearPreview()
+    const previous = currentTurn
+    const carries = previous.phase === 'normal' && !previous.applied && (responseActive || finishingResponse || pendingResponse || !!requestedResponse)
+    currentTurn = newTurn(); currentTurn.carries = carries
+    if (carries) {
+      currentTurn.carriedFrom = previous.carriedFrom ?? previous
+      currentTurn.carriedAmbiguous = previous.carriedAmbiguous || Boolean(previous.carriedFrom && (!previous.instruction || !isFiller(previous.instruction)))
+    }
+    pendingResponse = false; clearPreview()
     conversationTurns++
     // Long sessions renew their server conversation before old snapshots/tool
     // outputs accumulate indefinitely. The portable board is the source of truth.
@@ -209,43 +256,87 @@ export function createRealtimeClient(options: RealtimeOptions) {
     clearTimeout(idleTimer)
     idleTimer = setTimeout(() => { options.onNotice?.('Microphone paused after 90 seconds without speech. Resume it whenever you are ready.'); disconnect() }, 90_000)
   }
-  function compactContext() {
+  function compactContext(budget = CONTEXT_BYTES) {
+    budget -= 64 // reserve space for final omission counts
     const context = options.getContext()
     const important = new Set([...context.selectedIds, ...context.lastCreatedIds, ...(context.focus?.targetIds ?? []), ...(context.contentSelection ? [context.contentSelection.shapeId] : [])])
-    const objects = [...context.objects.filter(o => important.has(o.id)), ...context.objects.filter(o => !important.has(o.id))].slice(0, 35)
-    // a circled paragraph of ink can hold hundreds of strokes; targets resolve locally from the full lists
+    const objects = [...context.objects.filter(o => important.has(o.id)), ...context.objects.filter(o => !important.has(o.id))]
     const { selectedIds, lastCreatedIds, focus } = context
-    return { ...context,
+    type CompactObject = BoardContext['objects'][number] & { sourceOmitted?: string[] }
+    const snapshot = { ...context,
       selectedIds: selectedIds.slice(0, MAX_CONTEXT_IDS), ...(selectedIds.length > MAX_CONTEXT_IDS ? { selectedCount: selectedIds.length } : {}),
       lastCreatedIds: lastCreatedIds.slice(0, MAX_CONTEXT_IDS), ...(lastCreatedIds.length > MAX_CONTEXT_IDS ? { lastCreatedCount: lastCreatedIds.length } : {}),
       focus: focus && { ...focus, targetIds: focus.targetIds.slice(0, MAX_CONTEXT_IDS), ...(focus.targetIds.length > MAX_CONTEXT_IDS ? { targetCount: focus.targetIds.length } : {}) },
-      objects: objects.map(o => ({ ...o, text: o.text?.slice(0, important.has(o.id) ? 12000 : 1500), latex: o.latex?.slice(0, important.has(o.id) ? 8000 : 1500) })) }
+      objects: [] as CompactObject[], contextBudget: { omittedObjectCount: objects.length, libraryCatalogOmitted: false, sourcePolicy: 'sourceOmitted fields are unavailable, never empty or a complete prefix. Do not rewrite omitted source. Ask for a smaller selection or use a precise local append.' },
+    }
+    // Never send a source prefix as though it were the whole equation/paragraph.
+    // Identity/pose comes first; full source is included only when it fits.
+    if (jsonBytes(snapshot) > budget && snapshot.library) {
+      snapshot.library = { ...snapshot.library, books: [], highlights: undefined }
+      snapshot.contextBudget.libraryCatalogOmitted = true
+    }
+    if (jsonBytes(snapshot) > budget && snapshot.contentSelection?.text) snapshot.contentSelection = { ...snapshot.contentSelection, text: undefined }
+    if (jsonBytes(snapshot) > budget) throw new Error('The current selection is too large for voice context. Select fewer objects and try again.')
+    const shellFor = (object: BoardContext['objects'][number]): CompactObject => {
+      const fields = ['text', 'latex', 'expression'].filter(field => object[field as 'text' | 'latex' | 'expression'] !== undefined)
+      return { id: object.id, kind: object.kind, bounds: object.bounds, rotation: object.rotation,
+        ...(object.locked !== undefined ? { locked: object.locked } : {}), ...(fields.length ? { sourceOmitted: fields } : {}) }
+    }
+    const sourceFitsSchema = (object: BoardContext['objects'][number]) => (object.latex?.length ?? 0) <= 8000 && (object.text?.length ?? 0) <= 12000 && (object.expression?.length ?? 0) <= 1000
+    for (const object of objects.filter(object => important.has(object.id))) {
+      snapshot.objects.push(shellFor(object))
+      if (jsonBytes(snapshot) > budget) snapshot.objects.pop()
+    }
+    for (let index = 0; index < snapshot.objects.length; index++) {
+      const shell = snapshot.objects[index], full = objects.find(object => object.id === shell.id)!
+      snapshot.objects[index] = full
+      if (!sourceFitsSchema(full) || jsonBytes(snapshot) > budget) snapshot.objects[index] = shell
+    }
+    for (const object of objects.filter(object => !important.has(object.id))) {
+      if (snapshot.objects.length >= 35) break
+      snapshot.objects.push(object)
+      if (!sourceFitsSchema(object) || jsonBytes(snapshot) > budget) snapshot.objects[snapshot.objects.length - 1] = shellFor(object)
+      if (jsonBytes(snapshot) > budget) snapshot.objects.pop()
+    }
+    snapshot.contextBudget.omittedObjectCount = objects.length - snapshot.objects.length
+    return snapshot
   }
   function sendContext(force = false) {
-    if (channel?.readyState !== 'open') return
-    const snapshot = compactContext()
+    if (channel?.readyState !== 'open') return false
+    let snapshot: ReturnType<typeof compactContext>
+    try { snapshot = compactContext() } catch (error) { stopTurn(currentTurn, (error as Error).message); return false }
     const context = JSON.stringify(snapshot)
-    if (!force && context === lastContext) return
+    if (!force && context === lastContext) return true
     // Replace the previous snapshot so frequent gestures don't fill the conversation.
-    if (contextItem) send({ type: 'conversation.item.delete', item_id: contextItem })
+    if (contextItem && !send({ type: 'conversation.item.delete', item_id: contextItem })) { stopTurn(currentTurn, SEND_FAILED); return false }
     contextItem = null; lastContext = ''
-    // a snapshot the channel refuses falls back to short texts rather than leaving the model without a board
-    const short = { ...snapshot, objects: snapshot.objects.map(o => ({ ...o, text: o.text?.slice(0, 300), latex: o.latex?.slice(0, 600) })) }
-    for (const candidate of [snapshot, short]) {
+    for (const budget of [CONTEXT_BYTES, 3000]) {
+      let candidate: ReturnType<typeof compactContext>
+      try { candidate = budget === CONTEXT_BYTES ? snapshot : compactContext(budget) } catch { continue }
       const event = createContextEvent(candidate)
-      if (send(event)) { contextItem = event.item.id; lastContext = context; return }
+      if (send(event)) {
+        contextItem = event.item.id; lastContext = context
+        omittedSources = new Set(candidate.objects.flatMap(object => (object.sourceOmitted ?? []).map(field => `${object.id}:${field}`)))
+        for (const object of options.getContext().objects) if (!candidate.objects.some(sent => sent.id === object.id)) {
+          for (const field of ['text', 'latex', 'expression']) omittedSources.add(`${object.id}:${field}`)
+        }
+        return true
+      }
     }
+    stopTurn(currentTurn, SEND_FAILED); return false
   }
   function updateContext() {
+    textDictation.updateContext()
     if (transcriptPreview && !transcriptPreviewIsCurrent(transcriptPreview)) { currentTurn.mathPreviewBlocked = true; clearPreview() }
     clearTimeout(contextTimer)
     // Pointer movement is resolved again locally when tools apply; avoid streaming every pixel.
     contextTimer = setTimeout(() => sendContext(), 160)
   }
   function requestResponse() {
-    if (speechActive || responseActive || finishingResponse) { pendingResponse = true; return }
+    if (speechActive || responseActive || finishingResponse || responsePaused()) { pendingResponse = true; return }
     if (channel?.readyState !== 'open') return
     if (currentTurn.phase === 'stopped') { pendingResponse = false; return }
+    if (!sendContext()) return
     if (++currentTurn.responseRounds > 8) { stopTurn(currentTurn, 'The assistant did not finish this instruction within its tool limit. Please rephrase the remaining change.'); return }
     const mode = currentTurn.phase === 'repair-pending' ? 'repair' : currentTurn.phase === 'repaired' ? 'confirmation' : 'normal'
     if (mode === 'repair') {
@@ -257,9 +348,11 @@ export function createRealtimeClient(options: RealtimeOptions) {
     }
     pendingResponse = false
     responseActive = true
-    requestedResponse = { turn: currentTurn, mode }
+    const requestId = crypto.randomUUID().replaceAll('-', '')
+    requestedResponse = { turn: currentTurn, mode, requestId, omittedSources: new Set(omittedSources) }
+    remember(requestOwners, requestId, requestedResponse, 128)
     const dictating = options.getContext().dictationMode && options.getContext().dictationMode !== 'assistant'
-    if (!send({ type: 'response.create', response: { output_modalities: spokenReplies && !dictating ? ['audio'] : ['text'], ...(mode === 'confirmation' ? { tool_choice: 'none' } : {}) } })) {
+    if (!send({ type: 'response.create', event_id: requestId, response: { output_modalities: spokenReplies && !dictating ? ['audio'] : ['text'], ...(mode === 'confirmation' ? { tool_choice: 'none' } : {}) } })) {
       responseActive = false; requestedResponse = null; stopTurn(currentTurn, SEND_FAILED); return
     }
     clearTimeout(responseTimer)
@@ -274,6 +367,26 @@ export function createRealtimeClient(options: RealtimeOptions) {
     })
   }
   async function instructionFor(turn: VoiceTurn, signal: AbortSignal, needsOriginalAudio: boolean) {
+    const instruction = await originalInstructionFor(turn, signal, needsOriginalAudio)
+    if (!turn.carries) return instruction
+    if (!needsOriginalAudio) {
+      if (!isFiller(instruction)) return instruction
+      const original = turn.carriedFrom
+      if (!turn.carriedAmbiguous && original?.instruction && !isFiller(original.instruction)) {
+        turn.repairInstructionSource = original
+        return original.instruction
+      }
+      // A fully rejected, validated content operation already supplies a safe
+      // repair scope. Never replace that intent with the intervening filler.
+      return ''
+    }
+    if (turn.carriedAmbiguous || !isFiller(instruction) || !turn.carriedFrom) throw new Error('An unfinished instruction was interrupted. Please repeat the complete remaining change so it can be corrected safely.')
+    const original = turn.carriedFrom
+    if (original.applied || original.phase !== 'normal') throw new Error('The earlier instruction is no longer safe to repeat. Please say only the remaining change.')
+    turn.repairInstructionSource = original
+    return originalInstructionFor(original, signal, true)
+  }
+  async function originalInstructionFor(turn: VoiceTurn, signal: AbortSignal, needsOriginalAudio: boolean) {
     if (turn.instruction) return turn.instruction
     // A validated, fully failed content edit already records its original intent.
     // Only an otherwise untrusted payload needs to reread the original audio.
@@ -308,21 +421,26 @@ export function createRealtimeClient(options: RealtimeOptions) {
   }
   async function repairExternally(turn: VoiceTurn, failure: VoiceRepairRequest['failure'], rawArguments = '', failedOperations?: BoardOperation[], scope?: BoardRepair) {
     if (!options.repairRequest || turn.repairUsed || turn.applied && !scope) throw new Error('Automatic recovery cannot repeat this instruction. Please say the remaining change again.')
-    const repairGeneration = generation, abort = new AbortController()
+    const repairGeneration = generation, repairResponseId = activeResponseId, abort = new AbortController()
     recoveryAbort?.abort(); recoveryAbort = abort
     turn.repairUsed = true; turn.phase = 'repair-pending'
     setRecovery({ phase: 'repairing', message: 'Fixing the last instruction. Microphone paused.', attempt: 1 })
     const timer = setTimeout(() => abort.abort(new Error('The correction took too long. Listening can continue; please rephrase the instruction.')), 60_000)
-    const stillCurrent = () => repairGeneration === generation && turn === currentTurn && !abort.signal.aborted
+    const stillCurrent = () => repairGeneration === generation && turn === currentTurn && turn.phase !== 'stopped' && !abort.signal.aborted
+      && !(repairResponseId && interruptedResponses.has(repairResponseId))
     try {
       options.beforeApplyOperations?.()
-      const captured = scope?.originalContext ?? turn.context
+      let captured = scope?.originalContext ?? turn.context
       if (scope) {
         const valid = validateRepairContext(scope, options.getContext())
         if (!valid.ok) throw new Error(valid.reason)
       } else if (contextFingerprint(boardState(captured)) !== contextFingerprint(boardState(options.getContext()))) throw new Error('The board changed before recovery. Please repeat the instruction for the current selection.')
       const instruction = await instructionFor(turn, abort.signal, !scope)
       if (!instruction && !scope) throw new Error('The last utterance could not be transcribed safely. Please repeat the instruction.')
+      if (!scope && turn.repairInstructionSource) {
+        captured = turn.repairInstructionSource.context
+        if (contextFingerprint(boardState(captured)) !== contextFingerprint(boardState(options.getContext()))) throw new Error('The board changed since the interrupted instruction. Please repeat it for the current selection.')
+      }
       if (!stillCurrent()) return null
       setRecovery({ phase: 'repairing', message: 'Finishing the last instruction. Microphone paused.', attempt: 1 })
       const request: VoiceRepairRequest = {
@@ -333,10 +451,17 @@ export function createRealtimeClient(options: RealtimeOptions) {
       const command = parseBoardCommand(await abortable(options.repairRequest(request, abort.signal), abort.signal))
       if (!stillCurrent()) return null
       const normalizedInstruction = (text: string) => text.trim().replace(/\s+/g, ' ').toLowerCase()
-      if (instruction && turn.instruction && normalizedInstruction(instruction) !== normalizedInstruction(turn.instruction)) {
+      const finalInstruction = (turn.repairInstructionSource ?? turn).instruction
+      if (instruction && finalInstruction && normalizedInstruction(instruction) !== normalizedInstruction(finalInstruction)) {
         throw new Error('The finalized transcript changed while I was correcting the edit. I left the correction unapplied; please repeat the instruction.')
       }
       options.beforeApplyOperations?.()
+      if (!command.operations.length) {
+        turn.phase = 'stopped'; pendingResponse = false
+        const clarification = command.message || 'Please clarify what you would like to change.'
+        options.onAssistant(clarification, true); options.onNotice?.(clarification)
+        return { clarification: true }
+      }
       let operations: BoardOperation[]
       if (scope) {
         const pinned = pinBoardRepair(scope, command.operations, options.getContext())
@@ -346,9 +471,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
         if (contextFingerprint(boardState(captured)) !== contextFingerprint(boardState(options.getContext()))) throw new Error('The board changed during recovery. The correction was discarded; please repeat the instruction.')
         operations = pinRecoveredCommand(command, captured)
       }
-      if (!operations.length) throw new Error(command.message || 'The assistant could not safely correct that instruction. Please rephrase it.')
       turn.phase = 'repair-attempted'
-      const results = await options.applyOperations(operations)
+      const results = await options.applyOperations(operations, stillCurrent)
       if (!stillCurrent()) return null
       const all = Array.isArray(results) ? results : [results]
       if (!all.length || all.some(result => !result.ok)) throw new Error(`${failureMessage(results)} The corrected edit also failed; please rephrase the instruction.`)
@@ -374,6 +498,86 @@ export function createRealtimeClient(options: RealtimeOptions) {
       || itemId && stream.itemId && itemId !== stream.itemId)
     return { ...call, name: suppliedName ?? stream?.name, ...(conflict ? { metadataError: 'The voice tool call contained inconsistent function metadata.' } : {}) }
   }
+  function responsePaused() {
+    return !!recoveryState && !(recoveryState.phase === 'repairing' && currentTurn.repair && !options.repairRequest)
+  }
+  function waitForRateLimit(turn: VoiceTurn, error: unknown, retryResponse: boolean) {
+    const decision = classifyRealtimeRateLimit(error, rateLimits)
+    if (!decision) return false
+    if (rateWait || turn !== currentTurn) return true
+    if (!decision.canRetry || turn.rateRetries >= 1) {
+      options.onNotice?.('The voice service is still rate limited. Microphone paused; wait a minute before starting it again. Available credit is separate from this limit.')
+      disconnect(); return true
+    }
+    const abort = new AbortController(), waitingGeneration = generation
+    const captured = contextFingerprint(options.getContext())
+    const replay = retryResponse && !turn.applied && !turn.repairUsed && turn.phase === 'normal' && captured === contextFingerprint(turn.context)
+    turn.rateRetries++; pendingResponse = false; rateWait = abort
+    setRecovery({ phase: 'waiting', message: `Voice rate limit reached. Waiting ${Math.ceil(decision.waitMs / 1000)} seconds; microphone paused.`, attempt: turn.rateRetries })
+    const timer = setTimeout(() => {
+      if (abort.signal.aborted || waitingGeneration !== generation || turn !== currentTurn) return
+      rateWait = null; setRecovery(null)
+      if (replay && !turn.applied && !turn.repairUsed && turn.phase === 'normal' && captured === contextFingerprint(options.getContext())) requestResponse()
+      else {
+        turn.phase = 'stopped'; setStatus('listening')
+        options.onNotice?.(turn.applied ? 'Listening again. Applied edits were kept; say only the remaining change.' : 'Listening again. Please repeat the last instruction for your current selection.')
+      }
+    }, decision.waitMs)
+    abort.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
+    return true
+  }
+  function renewForContextLimit(error: unknown) {
+    if (!contextLimitError(error)) return false
+    if (reconnecting) return true
+    if (contextRenewals++ >= 1) {
+      options.onNotice?.('The voice context is still too large. Microphone paused; select a smaller part of the board before restarting voice. Completed edits were kept.')
+      disconnect(); return true
+    }
+    options.onNotice?.('The voice conversation filled its context limit. Refreshing it; completed edits were kept. Repeat only the unfinished instruction when listening resumes.')
+    // Capacity is not a malformed instruction. Never replay edits or ask a
+    // second model to repair the provider's context window.
+    currentTurn.phase = 'stopped'; pendingResponse = false
+    speechActive = false; responseActive = false; finishingResponse = false
+    void reconnect('renewing')
+    return true
+  }
+  function assertSourceAvailable(operations: BoardOperation[], sources: Set<string>) {
+    if (!sources.size) return
+    const current = options.getContext()
+    const context = { ...current, selectedIds: [...current.selectedIds], lastCreatedIds: [...current.lastCreatedIds] }
+    const available = new Set([...current.objects.map(object => object.id), ...current.selectedIds, ...current.lastCreatedIds, ...(current.focus?.targetIds ?? [])])
+    let selectionUnknown = false
+    for (const [index, operation] of operations.entries()) {
+      // Mirror BoardController.prepare's virtual selection. New IDs only exist
+      // inside this preflight; the original operations are never modified.
+      if (['create_math', 'create_text', 'create_plot', 'create_geometry', 'create_image'].includes(operation.type)) {
+        const id = `voice-preflight-new:${index}`
+        available.add(id); context.selectedIds = operation.type === 'create_image' && operation.locked ? [] : [id]
+        context.lastCreatedIds = [id]; selectionUnknown = false
+        continue
+      }
+      if (['insert_library', 'library_action', 'propose_image', 'undo', 'redo'].includes(operation.type)) {
+        selectionUnknown = true; continue
+      }
+      const explicit = Boolean(operation.ids?.length || operation.target && !['selected', 'selection', 'focus', 'last'].includes(operation.target))
+      // Keep alias precedence identical to resolveTargetIds; a source editor's
+      // character selection must not narrow target:"selected" to one object.
+      const targets = operation.ids?.length ? operation.ids : operation.target && !['selected', 'selection', 'focus', 'last'].includes(operation.target)
+        ? [operation.target] : operation.target === 'focus' ? context.focus?.targetIds ?? [] : operation.target === 'last' ? context.lastCreatedIds
+          : operation.target === 'selected' || operation.target === 'selection' ? context.selectedIds
+            : context.selectedIds.length ? context.selectedIds : context.focus?.targetIds.length ? context.focus.targetIds : context.lastCreatedIds
+      const fields = ['update_object', 'transform_object'].includes(operation.type) ? ['text', 'latex', 'expression'].filter(field => operation[field as 'text' | 'latex' | 'expression'] !== undefined)
+        : operation.type === 'edit_content' && (operation.find !== undefined || operation.start !== undefined || operation.end !== undefined) ? [operation.field ?? ''] : []
+      if (fields.length && selectionUnknown && !explicit || targets.some(id => fields.some(field => sources.has(`${id}:${field}`)))) {
+        throw new Error('This object’s full source did not fit in the voice context. I kept it unchanged. Select a smaller object, use an explicit append, or edit its source directly.')
+      }
+      if (operation.type === 'delete_objects') for (const id of targets) available.delete(id)
+      context.selectedIds = targets.filter(id => available.has(id))
+      context.lastCreatedIds = context.selectedIds.length ? context.selectedIds : context.lastCreatedIds.filter(id => available.has(id))
+      // An explicit surviving target makes following aliases deterministic.
+      if (explicit && context.selectedIds.length) selectionUnknown = false
+    }
+  }
   function executeCall(unresolvedCall: ToolCall, responseId?: string): Promise<boolean> {
     const call = resolveToolCall(unresolvedCall, responseId)
     const existing = executions.get(call.call_id)
@@ -383,6 +587,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
     const thisGeneration = generation
     const owner = responseId ? responseOwners.get(responseId) : undefined
     const turn = owner?.turn ?? currentTurn
+    const isCurrent = () => thisGeneration === generation && turn === currentTurn && turn.phase !== 'stopped' && !(responseId && interruptedResponses.has(responseId))
     if (responseId) {
       if (!responseCalls.has(responseId)) responseCalls.set(responseId, new Set())
       responseCalls.get(responseId)!.add(call.call_id)
@@ -443,7 +648,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
               if (!pinned || !pinned.ok) throw new Error(pinned && !pinned.ok ? pinned.reason : 'The original edit is no longer available to correct.')
               operations = pinned.value; turn.phase = 'repair-attempted'
             }
-            const results = await options.applyOperations(operations)
+            assertSourceAvailable(operations, owner?.omittedSources ?? omittedSources)
+            const results = await options.applyOperations(operations, isCurrent)
             if (thisGeneration !== generation || turn !== currentTurn || responseId && interruptedResponses.has(responseId)) return false
             const after = options.getContext()
             // Even a partial success must never be replayed after a later
@@ -459,7 +665,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
               if (repairing && recoveryState?.phase === 'repairing') setRecovery(null)
               const mode = after.dictationMode
               // A successful dictated fragment is visible already; no paid confirmation turn.
-              if (mode && mode !== 'assistant') needsContinuation = false
+              if (!spokenReplies || mode && mode !== 'assistant') needsContinuation = false
             } else {
               turn.failure = failureMessage(results)
               const recovery = repairing ? null : prepareBoardRepair(operations, before, after, results)
@@ -512,6 +718,9 @@ export function createRealtimeClient(options: RealtimeOptions) {
     if (audioTranscriptRecovery.handle(event)) return
     if (event.response_id && (closedResponses.has(event.response_id) || !responseOwners.has(event.response_id))) return
     switch (event.type) {
+      case 'rate_limits.updated':
+        rateLimits = updateRealtimeRateLimits(rateLimits, event)
+        break
       case 'session.created':
       case 'session.updated':
         if (status === 'connecting') { clearTimeout(connectTimer); setStatus('listening'); resetIdle() }
@@ -537,17 +746,36 @@ export function createRealtimeClient(options: RealtimeOptions) {
         if (event.item_id) { currentTurn.inputItem = event.item_id; currentTurn.committedInputItem = event.item_id; remember(inputTurns, event.item_id, currentTurn, 8) }
         currentTurn.context = structuredClone(options.getContext())
         // Automatic response creation is disabled, letting the newest pen state arrive first.
-        speechActive = false; sendContext(true); requestResponse()
+        speechActive = false; sendContext(true)
+        if (currentTurn.context.dictationMode === 'text') {
+          if (event.item_id) textDictation.enqueue(event.item_id, currentTurn.context)
+        } else requestResponse()
         break
       case 'conversation.item.input_audio_transcription.delta': {
         const owner = inputTurns.get(event.item_id)
         if (event.item_id !== currentTurn.inputItem || owner && owner !== currentTurn) break
         const text = ((transcripts.get(event.item_id) ?? '') + (event.delta ?? '')).slice(0, 6000)
-        remember(transcripts, event.item_id, text, 8); options.onTranscript(text, false); updateTranscriptPreview(event.item_id, text); break
+        remember(transcripts, event.item_id, text, 8); options.onTranscript(text, false)
+        if (owner?.context.dictationMode === 'text') {
+          transcriptPreview = textDictation.preview(event.item_id, text, owner.context)
+          options.onContentPreview?.(transcriptPreview)
+        }
+        else updateTranscriptPreview(event.item_id, text)
+        break
       }
       case 'conversation.item.input_audio_transcription.completed': {
         const owner = inputTurns.get(event.item_id)
         transcripts.delete(event.item_id)
+        if (owner?.context.dictationMode === 'text') {
+          owner.instruction = String(event.transcript ?? '').trim().slice(0, 6001)
+          textDictation.transcript(event.item_id, owner.instruction)
+          break
+        }
+        if (owner && owner === currentTurn.carriedFrom && owner !== currentTurn) {
+          owner.instruction = String(event.transcript ?? '').trim().slice(0, 4000)
+          owner.transcriptionFailed = !owner.instruction; owner.receiveTranscript?.(owner.instruction)
+          break
+        }
         if (event.item_id !== currentTurn.inputItem || owner && owner !== currentTurn) break
         currentTurn.instruction = String(event.transcript ?? '').trim().slice(0, 4000)
         currentTurn.transcriptionFailed = !currentTurn.instruction
@@ -559,6 +787,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
       }
       case 'conversation.item.input_audio_transcription.failed': {
         const owner = inputTurns.get(event.item_id)
+        if (owner?.context.dictationMode === 'text') { textDictation.fail(event.item_id); break }
+        if (owner && owner === currentTurn.carriedFrom && owner !== currentTurn) { owner.transcriptionFailed = true; owner.receiveTranscript?.(''); break }
         if (event.item_id !== currentTurn.inputItem || owner && owner !== currentTurn) break
         currentTurn.transcriptionFailed = true; currentTurn.receiveTranscript?.('')
         if (transcriptPreview) clearPreview()
@@ -667,7 +897,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
           const failed = event.response.status === 'failed', error = event.response.status_details?.error
           const message = error?.code === 'insufficient_quota' ? 'The OpenAI project has reached its credit limit.'
             : `${turn.failure ? `${turn.failure} ` : ''}${error?.message || 'The voice assistant stopped before finishing that response.'}`
-          if (options.repairRequest && turn.phase !== 'stopped' && !turn.applied && !turn.repairUsed && !isFatalVoiceError(`${error?.code ?? ''} ${message}`)) {
+          if (renewForContextLimit(error)) return
+          if (waitForRateLimit(turn, error, true)) {
+            // Capacity failures wait in this session; a repair model cannot fix them.
+          } else if (options.repairRequest && turn.phase !== 'stopped' && !turn.applied && !turn.repairUsed && !isFatalVoiceError(`${error?.code ?? ''} ${message}`)) {
             try { await repairExternally(turn, { kind: failed ? 'response_failed' : 'response_incomplete', message }) }
             catch (repairError) {
               stopTurn(turn, repairError instanceof Error ? repairError.message : message)
@@ -687,8 +920,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
         if (!cancelled && turn === currentTurn && owner?.mode === 'repair' && turn.phase === 'repair-pending' && (!continuation || turn.repairRounds >= 2)) {
           stopTurn(turn, `${turn.failure} Please rephrase the instruction or edit the source.`)
         }
-        if ((((continuation && !cancelled && turn === currentTurn && turn.phase !== 'stopped')) || pendingResponse) && !speechActive) requestResponse()
-        else if (!speechActive && renewalPending && !recoveryState) void reconnect('renewing')
+        if ((((continuation && !cancelled && turn === currentTurn && turn.phase !== 'stopped')) || pendingResponse) && !speechActive && !responsePaused()) requestResponse()
+        else if (!speechActive && renewalPending && !recoveryState && !textDictation.isPending()) void reconnect('renewing')
         else if (!speechActive && status !== 'speaking' && !recoveryState) setStatus('listening')
         break
       }
@@ -697,6 +930,22 @@ export function createRealtimeClient(options: RealtimeOptions) {
         // A response can be interrupted while a queued update is in flight.
         if (code === 'response_cancel_not_active' || code === 'conversation_already_has_active_response') break
         const message = event.error?.message ?? 'The voice service reported an error.'
+        if (contextLimitError(event.error)) {
+          const eventId = event.error?.event_id, owner = eventId ? requestOwners.get(eventId) : requestedResponse
+          if (eventId && eventId !== contextItem && (!owner || owner.turn !== currentTurn || owner.requestId !== requestedResponse?.requestId)) break
+          renewForContextLimit(event.error); break
+        }
+        if (classifyRealtimeRateLimit(event.error, rateLimits)) {
+          const eventId = event.error?.event_id
+          const owner = eventId ? requestOwners.get(eventId) : requestedResponse
+          if (eventId && (!owner || owner.turn !== currentTurn || owner.requestId !== requestedResponse?.requestId)) break
+          if (owner && !activeResponseId) {
+            responseActive = false; requestedResponse = null; clearTimeout(responseTimer)
+            waitForRateLimit(owner.turn, event.error, true)
+          } else if (!responseActive && !finishingResponse) waitForRateLimit(currentTurn, event.error, false)
+          // An active response owns its terminal status and must not be replayed early.
+          break
+        }
         if (isTransientVoiceError(`${code} ${message}`)) void reconnect('reconnecting', 'Voice was interrupted. Listening will resume after reconnecting; repeat any unfinished instruction.')
         else { options.onError(message); disconnect() }
         break
@@ -705,6 +954,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
   }
   function closeTransport(confirm = false) {
     generation++
+    rateWait?.abort(); rateWait = null; rateLimits = {}; requestOwners.clear()
+    textDictation.reset()
     audioTranscriptRecovery.reset()
     clearTimeout(maxTimer); clearTimeout(renewalTimer); clearTimeout(responseTimer); clearTimeout(idleTimer); clearTimeout(connectTimer); clearTimeout(contextTimer)
     transportAbort?.abort(); transportAbort = null
@@ -782,13 +1033,13 @@ export function createRealtimeClient(options: RealtimeOptions) {
     }
     renewalTimer = setTimeout(() => {
       renewalPending = true
-      if (!speechActive && !responseActive && !finishingResponse && !recoveryState) void reconnect('renewing')
+      if (!speechActive && !responseActive && !finishingResponse && !recoveryState && !textDictation.isPending()) void reconnect('renewing')
     }, duration - 15_000)
     maxTimer = setTimeout(() => { void reconnect('renewing') }, duration - 1000)
   }
   async function reconnect(phase: 'reconnecting' | 'renewing', message?: string) {
     if (reconnecting || !microphone || status === 'idle') return
-    const unfinished = speechActive || responseActive || finishingResponse
+    const unfinished = speechActive || responseActive || finishingResponse || textDictation.isPending()
     if (phase === 'reconnecting') {
       reconnectTimes = reconnectTimes.filter(time => Date.now() - time < 60_000)
       if (reconnectTimes.length >= 3) { options.onError('Voice has disconnected repeatedly. Check the network, then start voice again.'); disconnect(); return }
@@ -832,7 +1083,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
       options.onError('Voice needs HTTPS on the iPad, or localhost on this computer. Typed commands work on any connection.'); return
     }
     const thisGeneration = ++generation
-    reconnectTimes = []; setStatus('connecting')
+    reconnectTimes = []; contextRenewals = 0; setStatus('connecting')
     window.addEventListener?.('pagehide', stopOnPageHide)
     try {
       meter = createAudioMeter(options.onAudioLevel)
@@ -870,8 +1121,15 @@ export function createRealtimeClient(options: RealtimeOptions) {
     if (channel?.readyState !== 'open') throw new Error('Start voice before sending text through the live session.')
     startUserTurn()
     currentTurn.instruction = text.slice(0, 4000)
-    resetIdle(); sendContext(true)
-    send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } })
+    resetIdle()
+    if (currentTurn.context.dictationMode === 'text') {
+      const itemId = crypto.randomUUID().replaceAll('-', '')
+      remember(inputTurns, itemId, currentTurn, 8)
+      textDictation.enqueue(itemId, currentTurn.context); textDictation.transcript(itemId, text)
+      return
+    }
+    if (!sendContext(true)) return
+    if (!send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } })) { stopTurn(currentTurn, SEND_FAILED); return }
     requestResponse()
   }
   function setSpokenReplies(enabled: boolean) {
