@@ -28,9 +28,10 @@ export type BoardContext = {
   contentSelection?: ContentSelection | null; dictationMode?: DictationMode; focusMode?: FocusMode
 }
 export type BoardOperation = {
-  type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo';
+  type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'propose_image' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo';
   target?: string; ids?: string[]; placement?: 'focus' | 'pointer' | 'auto';
   expression?: string; latex?: string; text?: string; title?: string;
+  prompt?: string;
   geometry?: GeometryKind; vertices?: Point[]; angles?: number[]; sides?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
   showGrid?: boolean; showAxes?: boolean; crop?: ImageCrop;

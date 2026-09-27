@@ -57,7 +57,7 @@ export function prepareBoardRepair(operations: BoardOperation[], before: BoardCo
     } else return { ok: false, reason: 'This action needs a new instruction rather than an automatic repeat.' }
   }
   const creates = scopes.some(scope => !scope.targets.length)
-  if (creates && (scopes.some(scope => scope.targets.length) || before.objects.length || after.objects.length || canonical(before) !== canonical(after))) return { ok: false, reason: 'New content can only be retried on an unchanged empty board.' }
+  if (creates && (scopes.some(scope => scope.targets.length) || canonical(before) !== canonical(after))) return { ok: false, reason: 'New content can only be retried as an entirely failed creation batch on an unchanged board.' }
   const ids = new Set(scopes.flatMap(scope => scope.targets))
   const objects = before.objects.filter(object => ids.has(object.id))
   const repair: BoardRepair = structuredClone({ failedOperations: operations, scopes, objects, originalContext: before, creates })
