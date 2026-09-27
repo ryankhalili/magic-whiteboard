@@ -38,13 +38,10 @@
 .voice-first { width: min(440px, calc(100% - 32px)); bottom: 16px; }
 .voice-panel { background: #fff; padding: 14px; border: 1px solid var(--line); pointer-events: auto; }
 .ink-palette { flex: none; display: flex; align-items: center; gap: 14px; padding: 10px 14px; }
-.current-ink { position: relative; width: 46px; height: 44px; flex: none; background: #e8ebed; border: 1px solid #9da6ac; }
-.current-ink span { position: absolute; height: 23px; width: 23px; border: 1px solid #53606a; }
-.current-ink span:first-child { background: #fff; bottom: 5px; right: 5px; }
-.current-ink span:last-child { top: 5px; left: 5px; }
+.current-ink { width: 30px; height: 30px; flex: none; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #cbd5e1; }
 .palette-swatches { display: grid; grid-template-columns: repeat(12, 22px); gap: 3px; }
-.palette-swatches button { width: 22px; height: 22px; padding: 0; background: var(--ink); border: 1px solid #929da3; }
-.palette-swatches button.chosen { outline: 2px solid #283b74; outline-offset: 1px; }
+.palette-swatches button { width: 22px; height: 22px; padding: 0; background: var(--ink); border: 1px solid #0000001f; border-radius: 50%; }
+.palette-swatches button.chosen { outline: 2px solid var(--accent); outline-offset: 1px; }
 .palette-caption { display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
 .palette-caption span, .palette-hint { color: var(--muted); font-size: 11px; }
 .palette-hint { margin-left: auto; }
@@ -97,7 +94,7 @@
   .palette-swatches { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 3px; flex: 1; max-width: 360px; }
   .palette-swatches button { width: 100%; height: 23px; }
   .palette-caption { display: none; }
-  .current-ink { width: 40px; }
+  .current-ink { width: 30px; }
   .canvas-footer { padding-inline: 8px; gap: 5px; font-size: 10px; }
   .canvas-status { gap: 4px; }
   .zoom-controls { gap: 1px; padding-left: 5px; }

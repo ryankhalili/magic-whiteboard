@@ -10,7 +10,7 @@ const INKS = [
 export function InkPalette({ color, onChange }: { color: string; onChange: (color: string) => void }) {
   const label = INKS.find(([, value]) => value === color)?.[0] ?? 'Custom'
   return <section className="ink-palette" aria-label="Ink colors">
-    <div className="current-ink" aria-hidden="true"><span/><span style={{ background: color }}/></div>
+    <div className="current-ink" aria-hidden="true" style={{ background: color }}/>
     <div className="palette-swatches">{INKS.map(([name, value]) =>
       <button key={value} type="button" aria-label={`Ink color ${name.toLowerCase()}`} aria-pressed={color === value} title={name}
         className={color === value ? 'chosen' : ''} style={{ '--ink': value } as React.CSSProperties} onClick={() => onChange(value)}/>
