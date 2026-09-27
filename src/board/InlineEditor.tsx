@@ -19,7 +19,10 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
   const wrapper = useRef<HTMLDivElement>(null), mathHost = useRef<HTMLDivElement>(null)
   const mathField = useRef<MathfieldElement | null>(null), textarea = useRef<HTMLTextAreaElement>(null)
   const latest = useRef(shape); latest.current = shape
-  const visibleValue = preview?.field === fieldName ? preview.value : shape.props[fieldName]
+  // Streaming output is never editor source: a keypress or selection must not
+  // commit speculative text or report offsets into a draft that is not saved.
+  const visibleValue = shape.props[fieldName]
+  const liveDraft = preview?.field === fieldName ? preview.value : null
   const latestValue = useRef(visibleValue); latestValue.current = visibleValue
   const [sourceMode, setSourceMode] = useState(false), [loading, setLoading] = useState(isMath)
   const [error, setError] = useState(''), [draft, setDraft] = useState(shape.props[fieldName])
@@ -148,6 +151,11 @@ export function InlineEditor({ shape, preview }: { shape: MagicShape; preview?: 
         event.stopPropagation()
       }}/>}
     {isMath && sourceMode && <div className="inline-source-preview" aria-label="Compiled equation preview" dangerouslySetInnerHTML={{ __html: katex.renderToString(shape.props.latex, { displayMode: true, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }).replace('class="katex"', 'class="katex" style="text-align:left"') }}/>}
+    {liveDraft !== null && <div className="inline-live-draft" role="status" aria-label="Live draft">
+      <span className="inline-live-draft-label">Live draft</span>
+      {isMath ? <div dangerouslySetInnerHTML={{ __html: katex.renderToString(liveDraft, { displayMode: true, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 300, maxSize: 20 }).replace('class="katex"', 'class="katex" style="text-align:left"') }}/>
+        : <div className="inline-live-draft-text">{liveDraft}</div>}
+    </div>}
     <div className="inline-editor-tools">{isMath && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => setSourceMode(value => !value)}>{sourceMode ? 'Visual math' : 'LaTeX source'}</button>}<button type="button" onPointerDown={event => event.preventDefault()} onClick={finish}>Done</button></div>
     {error && <div className="editor-note" role="status">{error}</div>}
   </div>

@@ -6,3 +6,8 @@
 .inline-editor-tools{display:flex;gap:12px;justify-content:flex-end;font:11px Arial,Helvetica,sans-serif;position:absolute;right:0;bottom:-27px;white-space:nowrap}.inline-editor-tools button{background:#fff;border:1px solid #ddd;border-radius:3px;padding:3px 7px;color:#333;cursor:pointer}.editor-note{display:block;font:11px/1.4 Arial,Helvetica,sans-serif;color:#777;margin-top:6px}
 .marginalia-inline-editor.is-plot-editor{padding:2px;outline-offset:2px;background:#ffffffdd}.marginalia-inline-editor.is-plot-editor textarea{min-height:25px;height:25px}.is-plot-editor .inline-editor-tools{bottom:auto;top:0;right:-52px}.is-plot-editor .editor-note{background:white}
 .inline-source-preview{border-top:1px solid #e5e7eb;margin-top:8px;padding:10px 0 2px;overflow-x:auto;color:inherit;font-size:1em;background:#ffffffd9}.inline-source-preview .katex-display{margin:0;text-align:left}.editor-note{max-width:100%;overflow-wrap:anywhere;background:#fffffff0}
+.inline-live-draft { margin-top: 10px; opacity: .65; pointer-events: none; user-select: none; overflow-wrap: anywhere; }
+.inline-live-draft-label { display: block; margin-bottom: 4px; font: 11px Arial, sans-serif; }
+.inline-live-draft .katex-display { margin: 0; text-align: left; }
+.inline-live-draft .katex-display > .katex { text-align: left; }
+.inline-live-draft-text { white-space: pre-wrap; }

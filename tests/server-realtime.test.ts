@@ -198,6 +198,52 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     expect(handlers.applyOperations).not.toHaveBeenCalled()
     client.disconnect()
   })
+  it('uses exact added-item metadata when completed arguments omit the function name', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    const call = { ...toolCall('integral', [{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }]), id: 'item-integral' }
+    channel.receive({ type: 'response.created', response: { id: 'metadata' } })
+    channel.receive({ type: 'response.output_item.added', response_id: 'metadata', item: { ...call, arguments: '' } })
+    channel.receive({ type: 'response.function_call_arguments.done', response_id: 'metadata', call_id: call.call_id, item_id: call.id, arguments: call.arguments })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }])
+    channel.receive({ type: 'response.output_item.done', response_id: 'metadata', item: call })
+    channel.receive({ type: 'response.done', response: { id: 'metadata', status: 'completed', output: [call] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it('waits for a complete output item when arguments have no known function metadata', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel, call = toolCall('late-name', [{ type: 'create_math', latex: 'x' }])
+    channel.receive({ type: 'response.created', response: { id: 'missing-name' } })
+    channel.receive({ type: 'response.function_call_arguments.done', response_id: 'missing-name', call_id: call.call_id, arguments: call.arguments })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    channel.receive({ type: 'response.output_item.done', response_id: 'missing-name', item: call })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+  it('repairs conflicting event metadata without dispatching either claimed tool', async () => {
+    const correction: BoardOperation = { type: 'create_math', latex: '\\int x\\,dx' }
+    const handlers = { ...callbacks(), getVisualContext: vi.fn(), repairRequest: vi.fn(async () => ({ operations: [correction], message: 'Integral added.' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write the integral of x')
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'response.created', response: { id: 'conflict' } })
+    channel.receive({ type: 'response.output_item.added', response_id: 'conflict', item: { type: 'function_call', call_id: 'conflict', name: 'apply_board_operations', arguments: '' } })
+    channel.receive({ type: 'response.function_call_arguments.done', response_id: 'conflict', call_id: 'conflict', name: 'inspect_board', arguments: '{}' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.getVisualContext).not.toHaveBeenCalled()
+    expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ failure: expect.objectContaining({ message: expect.stringContaining('inconsistent function metadata') }) }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
+    client.disconnect()
+  })
   it('does not add a second response merely to confirm a successful dictated fragment', async () => {
     const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }) }
     const client = createRealtimeClient(handlers)
@@ -423,15 +469,132 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     expect(repairRequest).not.toHaveBeenCalled()
     client.disconnect()
   })
+  it.each(['create_math', 'functions.apply_board_operations', undefined])('repairs an unsupported or missing final tool name once without guessing its meaning: %s', async name => {
+    const correction: BoardOperation = { type: 'create_math', latex: '\\int \\sin(x)\\,dx' }
+    const handlers = { ...callbacks(), repairRequest: vi.fn(async () => ({ operations: [correction], message: 'Integral added.' })) }
+    const client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write the integral of sine x')
+    const channel = FakePeer.latest.channel
+    const call = { type: 'function_call', call_id: 'unknown', name, arguments: '{"latex":"not trusted for dispatch"}' }
+    await finishResponse(channel, 'unknown-tool', [call])
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Write the integral of sine x', failure: expect.objectContaining({ kind: 'malformed_arguments', rawArguments: call.arguments }) }), expect.any(AbortSignal))
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
+    expect(handlers.onError).not.toHaveBeenCalled()
+    channel.receive({ type: 'response.done', response: { id: 'unknown-tool', status: 'completed', output: [call] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    client.disconnect()
+  })
+  it('renders integral transcription deltas as temporary math without committing board edits', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn() }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'integral-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'integral-speech', delta: 'integral' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:integral-speech', value: '\\int', complete: false, operationType: 'create_math' }))
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'integral-speech', delta: ' of sine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ value: '\\int \\sin x', complete: false }))
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'integral-speech', transcript: 'integral of sine x dx' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ value: '\\int \\sin x\\,\\mathrm{d}x', complete: false }))
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+  })
+  it.each(['source', 'selection', 'mode'] as const)('clears a math transcript draft when its original %s changes', async change => {
+    let current: BoardContext = { ...structuredClone(mathContext), dictationMode: 'math' }
+    const handlers = { ...callbacks(), getContext: () => current, onContentPreview: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'edit-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'edit-speech', delta: 'plus three' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ target: 'math:a', operationType: 'edit_content' }))
+    if (change === 'source') current = { ...current, objects: current.objects.map(object => object.id === 'math:a' ? { ...object, latex: 'x^3' } : object) }
+    else if (change === 'selection') current = { ...current, selectedIds: ['math:b'] }
+    else current = { ...current, dictationMode: 'assistant' }
+    client.updateContext()
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'edit-speech', transcript: 'plus three' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it('gives model previews and committed edits precedence over late transcript text', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'model-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'model-speech', delta: 'integral' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'model-speech' })
+    channel.receive({ type: 'response.created', response: { id: 'model-preview' } })
+    channel.receive({ type: 'response.function_call_arguments.delta', response_id: 'model-preview', call_id: 'model-call', delta: '{"operations":[{"type":"create_math","latex":"x^2' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'model-call', value: 'x^2' }))
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'model-speech', delta: ' of sine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'model-call', value: 'x^2' }))
+    channel.receive({ ...toolCall('model-call', [{ type: 'create_math', latex: 'x^2' }]), type: 'response.function_call_arguments.done', response_id: 'model-preview' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'model-speech', transcript: 'integral of sine x dx' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    client.disconnect()
+  })
+  it('clears transcript drafts on a new utterance and on paused recovery', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn(), repairRequest: vi.fn(() => new Promise<never>(() => {})) }
+    const client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'old-draft' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'old-draft', delta: 'integral' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:old-draft' }))
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'new-draft' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'old-draft', transcript: 'integral of sine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'new-draft', transcript: 'integral of cosine x' })
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:new-draft' }))
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'new-draft' })
+    await finishResponse(channel, 'repair-draft', [{ type: 'function_call', call_id: 'unsupported', name: 'create_math', arguments: '{}' }])
+    expect(audioTrack.enabled).toBe(false)
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(null)
+    client.disconnect()
+  })
+  it('does not clear a newer transcript draft when an interrupted old response completes', async () => {
+    const handlers = { ...callbacks(), getContext: () => ({ ...context, dictationMode: 'math' as const }), onContentPreview: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect()
+    const channel = FakePeer.latest.channel
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'old-speech' })
+    channel.receive({ type: 'input_audio_buffer.committed', item_id: 'old-speech' })
+    channel.receive({ type: 'response.created', response: { id: 'old-result' } })
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'new-speech' })
+    channel.receive({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'new-speech', delta: 'integral of sine x' })
+    const oldCall = toolCall('old-call', [{ type: 'create_math', latex: 'x' }])
+    channel.receive({ ...oldCall, type: 'response.function_call_arguments.done', response_id: 'old-result' })
+    channel.receive({ type: 'response.done', response: { id: 'old-result', status: 'cancelled', output: [oldCall] } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(handlers.onContentPreview).toHaveBeenLastCalledWith(expect.objectContaining({ callId: 'transcript:new-speech' }))
+    expect(handlers.applyOperations).not.toHaveBeenCalled()
+    client.disconnect()
+  })
+  it('does not replay earlier successful edits when a later tool name is unsupported', async () => {
+    const handlers = { ...callbacks(), repairRequest: vi.fn() }, client = createRealtimeClient(handlers)
+    await client.connect(); client.sendText('Write an integral')
+    await finishResponse(FakePeer.latest.channel, 'partial', [toolCall('good', [{ type: 'create_math', latex: 'x' }]), { type: 'function_call', call_id: 'unsupported', name: 'create_math', arguments: '{}' }])
+    expect(handlers.applyOperations).toHaveBeenCalledTimes(1)
+    expect(handlers.repairRequest).not.toHaveBeenCalled()
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('remaining change again'))
+    client.disconnect()
+  })
 
-  it('pauses the actual microphone, discards incoming speech, and aborts a pending repair on Stop', async () => {
+  it.each(['apply_board_operations', 'create_math'])('pauses the microphone and aborts a pending repair on Stop for tool %s', async name => {
     let finish!: (command: { operations: BoardOperation[]; message: string }) => void
     const repairRequest = vi.fn((_request: unknown, _signal: AbortSignal) => new Promise<{ operations: BoardOperation[]; message: string }>(resolve => { finish = resolve }))
     const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest, onRecoveryState: vi.fn() }
     const client = createRealtimeClient(handlers)
     await client.connect(); client.sendText('Make it equal to zero')
     const channel = FakePeer.latest.channel
-    await finishResponse(channel, 'malformed', [{ type: 'function_call', call_id: 'bad', name: 'apply_board_operations', arguments: '{}' }])
+    await finishResponse(channel, 'malformed', [{ type: 'function_call', call_id: 'bad', name, arguments: '{}' }])
     expect(audioTrack.enabled).toBe(false)
     const responseCount = responseRequests(channel).length
     channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'discarded' })
@@ -452,13 +615,13 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     expect(handlers.onStatus).toHaveBeenLastCalledWith('idle')
   })
 
-  it('does not apply a generic repair after drawing or selection changed during recovery', async () => {
+  it.each(['apply_board_operations', 'create_math'])('does not apply a repair after drawing or selection changed for tool %s', async name => {
     let current = structuredClone(mathContext)
     let finish!: (command: { operations: BoardOperation[]; message: string }) => void
     const handlers = { ...callbacks(), getContext: () => current, repairRequest: vi.fn(() => new Promise<{ operations: BoardOperation[]; message: string }>(resolve => { finish = resolve })) }
     const client = createRealtimeClient(handlers)
     await client.connect(); client.sendText('Append equals zero')
-    await finishResponse(FakePeer.latest.channel, 'bad', [{ type: 'function_call', call_id: 'bad', name: 'apply_board_operations', arguments: '{}' }])
+    await finishResponse(FakePeer.latest.channel, 'bad', [{ type: 'function_call', call_id: 'bad', name, arguments: '{}' }])
     current = { ...current, selectedIds: ['math:b'] }
     finish({ operations: [correctedEdit], message: 'Done.' })
     await vi.advanceTimersByTimeAsync(0)
@@ -576,14 +739,14 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     client.disconnect()
   })
 
-  it('waits briefly for the original finalized transcript, then repairs without using newer audio', async () => {
+  it.each(['apply_board_operations', 'create_math'])('waits for the original finalized transcript before repairing tool %s', async name => {
     const handlers = { ...callbacks(), getContext: () => mathContext, repairRequest: vi.fn(async () => ({ operations: [correctedEdit], message: 'Corrected.' })) }
     const client = createRealtimeClient(handlers)
     await client.connect()
     const channel = FakePeer.latest.channel
     channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'original' })
     channel.receive({ type: 'input_audio_buffer.committed', item_id: 'original' })
-    await finishResponse(channel, 'bad', [{ type: 'function_call', call_id: 'bad', name: 'apply_board_operations', arguments: '{}' }])
+    await finishResponse(channel, 'bad', [{ type: 'function_call', call_id: 'bad', name, arguments: '{}' }])
     expect(handlers.repairRequest).not.toHaveBeenCalled()
     channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'original', transcript: 'Add equals question mark' })
     await vi.advanceTimersByTimeAsync(0)

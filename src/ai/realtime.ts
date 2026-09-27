@@ -3,6 +3,7 @@ import { parseBoardCommand } from '../../shared/tool-command'
 import { apiRequest } from './commands'
 import { createAudioMeter } from './audio-meter'
 import { extractContentPreviews, type ContentPreview } from './content-preview'
+import { generateMathTranscriptPreview } from './spoken-math-preview'
 import { boardState, failureMessage, pinBoardRepair, prepareBoardRepair, repairInstructions, validateRepairContext, type BoardRepair } from './board-repair'
 import { contextFingerprint, isFatalVoiceError, isTransientVoiceError, pinRecoveredCommand, remember, voiceApiRequest, type VoiceRecoveryState, type VoiceRepair, type VoiceRepairRequest } from './voice-recovery'
 export type { ContentPreview } from './content-preview'
@@ -31,9 +32,11 @@ type VoiceTurn = {
   repair?: BoardRepair; failure: string; failedResponseId?: string; repairRounds: number; reported: boolean
   context: BoardContext; instruction: string; inputItem?: string; applied: boolean; repairUsed: boolean;
   responseRounds: number; dropped?: boolean; carries?: boolean;
+  modelPreview?: boolean; mathPreviewContext?: BoardContext; mathPreviewBlocked?: boolean;
   receiveTranscript?: (text: string) => void
 }
 type ResponseOwner = { turn: VoiceTurn; mode: 'normal' | 'repair' | 'confirmation' }
+type ToolCall = { call_id: string; name?: string; arguments: string; metadataError?: string }
 
 function createContextEvent(context: unknown) {
   return { type: 'conversation.item.create', item: {
@@ -107,11 +110,12 @@ export function createRealtimeClient(options: RealtimeOptions) {
   let finishingResponse = false
   let meter: ReturnType<typeof createAudioMeter> | undefined
   let lastPreview = ''
+  let transcriptPreview: ContentPreview | null = null
   let callQueue: Promise<unknown> = Promise.resolve()
   const transcripts = new Map<string, string>()
   const executions = new Map<string, Promise<boolean>>()
   const completedCalls = new Map<string, true>()
-  const argumentStreams = new Map<string, { text: string; name?: string; responseId?: string; overflow?: boolean }>()
+  const argumentStreams = new Map<string, { text: string; name?: string; itemId?: string; responseId?: string; overflow?: boolean }>()
   const responseCalls = new Map<string, Set<string>>()
   const interruptedResponses = new Set<string>()
   const closedResponses = new Map<string, true>()
@@ -132,7 +136,32 @@ export function createRealtimeClient(options: RealtimeOptions) {
     clearPreview()
     options.onError(error instanceof Error ? error.message : 'The voice connection was interrupted.')
   }
-  function clearPreview() { lastPreview = ''; options.onContentPreview?.(null) }
+  function clearPreview() { lastPreview = ''; transcriptPreview = null; options.onContentPreview?.(null) }
+  function transcriptPreviewIsCurrent(preview: ContentPreview) {
+    const original = currentTurn.mathPreviewContext ?? currentTurn.context, current = options.getContext()
+    const placement = (context: BoardContext) => JSON.stringify({ mode: context.dictationMode, focusMode: context.focusMode, focus: context.focus, selectedIds: context.selectedIds,
+      lastCreatedIds: context.lastCreatedIds, selection: context.contentSelection, gesture: context.gesture, ...(!context.focus ? { pointer: context.pointer } : {}) })
+    if (placement(original) !== placement(current)) return false
+    if (preview.target) {
+      const source = original.objects.find(object => object.id === preview.target), latest = current.objects.find(object => object.id === preview.target)
+      if (!source || !latest || JSON.stringify(source) !== JSON.stringify(latest)) return false
+    }
+    return true
+  }
+  function updateTranscriptPreview(itemId: string, text: string) {
+    const turn = currentTurn
+    if (!options.onContentPreview || turn.phase !== 'normal' || recoveryState || turn.applied || turn.modelPreview || turn.mathPreviewBlocked || turn.inputItem !== itemId) return
+    if (turn.context.dictationMode !== 'math') return
+    turn.mathPreviewContext ??= structuredClone(turn.context)
+    const preview = generateMathTranscriptPreview(itemId, text, turn.mathPreviewContext)
+    if (!preview || !transcriptPreviewIsCurrent(preview)) {
+      if (preview) turn.mathPreviewBlocked = true
+      if (transcriptPreview) clearPreview()
+      return
+    }
+    const serialized = JSON.stringify(preview)
+    if (serialized !== lastPreview) { lastPreview = serialized; transcriptPreview = preview; options.onContentPreview(preview) }
+  }
   function setRecovery(state: VoiceRecoveryState) {
     recoveryState = state
     for (const track of microphone?.getAudioTracks() ?? []) track.enabled = !state
@@ -202,6 +231,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
     }
   }
   function updateContext() {
+    if (transcriptPreview && !transcriptPreviewIsCurrent(transcriptPreview)) { currentTurn.mathPreviewBlocked = true; clearPreview() }
     clearTimeout(contextTimer)
     // Pointer movement is resolved again locally when tools apply; avoid streaming every pixel.
     contextTimer = setTimeout(() => sendContext(), 160)
@@ -299,11 +329,22 @@ export function createRealtimeClient(options: RealtimeOptions) {
       }
     }
   }
-  function executeCall(call: { call_id: string; name: string; arguments: string }, responseId?: string): Promise<boolean> {
+  function resolveToolCall(call: ToolCall, responseId?: string, itemId?: string): ToolCall {
+    const stream = argumentStreams.get(call.call_id)
+    const suppliedName = typeof call.name === 'string' && call.name ? call.name : undefined
+    // Only exact metadata for this call may supply a missing name. Qualified or
+    // invented names are never normalized into an executable whiteboard tool.
+    const conflict = stream && (suppliedName && stream.name && suppliedName !== stream.name
+      || responseId && stream.responseId && responseId !== stream.responseId
+      || itemId && stream.itemId && itemId !== stream.itemId)
+    return { ...call, name: suppliedName ?? stream?.name, ...(conflict ? { metadataError: 'The voice tool call contained inconsistent function metadata.' } : {}) }
+  }
+  function executeCall(unresolvedCall: ToolCall, responseId?: string): Promise<boolean> {
+    const call = resolveToolCall(unresolvedCall, responseId)
     const existing = executions.get(call.call_id)
     if (existing) return existing
     if (completedCalls.has(call.call_id)) return Promise.resolve(false)
-    if (!call.call_id || !call.name || typeof call.arguments !== 'string') return Promise.resolve(false)
+    if (!call.call_id || typeof call.arguments !== 'string') return Promise.resolve(false)
     const thisGeneration = generation
     const owner = responseId ? responseOwners.get(responseId) : undefined
     const turn = owner?.turn ?? currentTurn
@@ -318,6 +359,14 @@ export function createRealtimeClient(options: RealtimeOptions) {
       let refreshContext = false
       try {
         if (turn.phase === 'stopped') { output = { ok: false, message: 'Automatic editing has stopped for this instruction.' }; needsContinuation = false }
+        else if (call.metadataError || !['get_board_context', 'inspect_board', 'apply_board_operations'].includes(call.name ?? '')) {
+          const message = call.metadataError || (call.name
+            ? `The voice assistant requested an unsupported whiteboard tool: ${call.name.slice(0, 100)}.`
+            : 'The completed voice tool call did not identify a function.')
+          if (!options.repairRequest) throw new Error(`${message} Please repeat the instruction.`)
+          output = await repairExternally(turn, { kind: 'malformed_arguments', message }, call.arguments)
+          needsContinuation = false
+        }
         else if (call.name === 'get_board_context') output = compactContext()
         else if (call.name === 'inspect_board') {
           const image = await options.getVisualContext?.()
@@ -329,6 +378,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
           } else output = { ok: false, message: 'A board screenshot is not available. Ask the user to describe the content.' }
         }
         else if (call.name === 'apply_board_operations') {
+          turn.modelPreview = true
           let operations: BoardOperation[]
           try { operations = parseBoardCommand(call.arguments).operations }
           catch (error) {
@@ -392,7 +442,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
               }
             }
           }
-        } else throw new Error('Unknown whiteboard tool.')
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'The board could not apply that edit.'
         stopTurn(turn, message); needsContinuation = false
@@ -415,6 +465,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
     const previews = extractContentPreviews(callId, source, options.getContext())
     const preview = previews.at(-1)
     if (!preview) return
+    currentTurn.modelPreview = true; transcriptPreview = null
     const serialized = JSON.stringify(preview)
     if (serialized !== lastPreview) { lastPreview = serialized; options.onContentPreview(preview) }
   }
@@ -449,7 +500,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
         const owner = inputTurns.get(event.item_id)
         if (event.item_id !== currentTurn.inputItem || owner && owner !== currentTurn) break
         const text = ((transcripts.get(event.item_id) ?? '') + (event.delta ?? '')).slice(0, 6000)
-        remember(transcripts, event.item_id, text, 8); options.onTranscript(text, false); break
+        remember(transcripts, event.item_id, text, 8); options.onTranscript(text, false); updateTranscriptPreview(event.item_id, text); break
       }
       case 'conversation.item.input_audio_transcription.completed': {
         const owner = inputTurns.get(event.item_id)
@@ -459,6 +510,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
         currentTurn.receiveTranscript?.(currentTurn.instruction)
         options.onTranscript(currentTurn.instruction, true)
         if (isFiller(currentTurn.instruction) && !(assistantAsked && /^\W*o+k+(?:a+y+)?\W*$/i.test(currentTurn.instruction))) dropTurn(currentTurn)
+        updateTranscriptPreview(event.item_id, currentTurn.instruction)
         break
       }
       case 'conversation.item.input_audio_transcription.failed':
@@ -478,7 +530,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
       case 'response.output_item.added':
         if (event.item?.type === 'function_call') {
           const text = String(event.item.arguments ?? '')
-          remember(argumentStreams, event.item.call_id, { text: text.length <= 64_000 ? text : '', overflow: text.length > 64_000, name: event.item.name, responseId: event.response_id }, 24)
+          remember(argumentStreams, event.item.call_id, { text: text.length <= 64_000 ? text : '', overflow: text.length > 64_000, name: event.item.name, itemId: event.item.id, responseId: event.response_id }, 24)
         }
         break
       case 'response.function_call_arguments.delta': {
@@ -498,11 +550,23 @@ export function createRealtimeClient(options: RealtimeOptions) {
         break
       }
       case 'response.function_call_arguments.done': {
-        clearPreview()
-        argumentStreams.delete(event.call_id)
         if (event.response_id && interruptedResponses.has(event.response_id)) break
+        clearPreview()
+        const call = resolveToolCall({ call_id: event.call_id, name: event.name, arguments: event.arguments }, event.response_id, event.item_id)
+        // Some event streams omit the name here. If no matching added item was
+        // received, wait for the complete output item/response instead of guessing.
+        if (!call.name && !call.metadataError) break
         // Arguments are complete now; applying them need not wait for response.done.
-        void executeCall({ call_id: event.call_id, name: event.name, arguments: event.arguments }, event.response_id).catch(reportError)
+        void executeCall(call, event.response_id).catch(reportError)
+        argumentStreams.delete(event.call_id)
+        break
+      }
+      case 'response.output_item.done': {
+        if (event.item?.type !== 'function_call' || event.response_id && interruptedResponses.has(event.response_id)) break
+        clearPreview()
+        const call = resolveToolCall(event.item, event.response_id, event.item.id)
+        void executeCall(call, event.response_id).catch(reportError)
+        argumentStreams.delete(event.item.call_id)
         break
       }
       case 'response.output_audio_transcript.delta':
@@ -527,9 +591,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
         clearTimeout(responseTimer)
         responseActive = false
         finishingResponse = true
-        clearPreview()
         const owner = responseId ? responseOwners.get(responseId) : undefined
         const turn = owner?.turn ?? currentTurn
+        if (turn === currentTurn) clearPreview()
+        turn.mathPreviewBlocked = true
         const cancelled = turn !== currentTurn || event.response?.status === 'cancelled' || Boolean(responseId && interruptedResponses.has(responseId))
         if (turn === currentTurn && owner?.mode === 'repair' && event.response?.status === 'cancelled' && !(responseId && interruptedResponses.has(responseId))) {
           stopTurn(turn, `${turn.failure} The correction was interrupted. Please give the instruction again.`)

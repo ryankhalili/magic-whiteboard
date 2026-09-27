@@ -36,3 +36,4 @@
 .inspector-zone{height:100vh;visibility:hidden;pointer-events:none}
 .allowance-warning{color:#b45309;font-weight:600}
 .allowance-line.low{color:#b45309}
+.dictation-hint{margin:8px 0 0;color:#6b7280;font-size:12px;line-height:1.4;text-align:center}
