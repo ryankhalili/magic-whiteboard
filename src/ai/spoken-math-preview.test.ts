@@ -38,6 +38,12 @@ describe('spoken mathematical draft rendering', () => {
     ['sine of open parenthesis pi over two close parenthesis', String.raw`\sin \left(\frac{\pi}{2}\right)`],
     ['plus three', '+3'],
     ['equals zero', '= 0'],
+    ['this now equals negative cosine of x bar from pi to 2pi', String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}`],
+    ['it is equal to negative cosine of x bar from pi to two pi', String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}`],
+    ['now equals negative cosine of x bar from pi to two pi', String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}`],
+    ['y equals negative cosine of x bar from zero to pi', String.raw`y = \left.-\cos x\right|_{0}^{\pi}`],
+    ['x squared plus one bar from negative pi to two pi', String.raw`\left.{x}^{2} + 1\right|_{-\pi}^{2 \pi}`],
+    ['negative cosine of x bar from pi over two to pi', String.raw`\left.-\cos x\right|_{\frac{\pi}{2}}^{\pi}`],
     ['one half plus one quarter', String.raw`\left(\frac{1}{2}\right) + \left(\frac{1}{4}\right)`],
     ['y = x^2 + 3.', String.raw`y = {x}^{2} + 3`],
   ])('renders %s as a valid uncommitted draft', (transcript, latex) => {
@@ -61,6 +67,12 @@ describe('spoken mathematical draft rendering', () => {
     ['fraction one over', String.raw`\frac{1}{\square}`],
     ['square root', String.raw`\sqrt{\square}`],
     ['open parenthesis x plus', String.raw`\left(x + \square\right)`],
+    ['this now equals', String.raw`= \square`],
+    ['this now equals negative cosine of x bar', String.raw`= \left.-\cos x\right|`],
+    ['this now equals negative cosine of x bar from', String.raw`= \left.-\cos x\right|_{\square}^{\square}`],
+    ['this now equals negative cosine of x bar from pi', String.raw`= \left.-\cos x\right|_{\pi}^{\square}`],
+    ['this now equals negative cosine of x bar from pi to', String.raw`= \left.-\cos x\right|_{\pi}^{\square}`],
+    ['this now equals negative cosine of x bar from pi to two', String.raw`= \left.-\cos x\right|_{\pi}^{2}`],
   ])('keeps the incremental phrase %s renderable', (transcript, latex) => {
     expect(preview(transcript)?.value).toBe(latex)
     expect(() => katex.renderToString(latex, { throwOnError: true })).not.toThrow()
@@ -68,7 +80,9 @@ describe('spoken mathematical draft rendering', () => {
 
   it.each(['delete x', 'move the integral', 'solve x equals two', 'plot y equals x', 'undo', 'rotate x', 'actually replace two with three',
     'make it plus three instead', 'integrate x', 'what is sine x', 'x plus some number', 'x over there', 'one two',
-    'integral from two five of x', 'x plus times two', 'x )', 'sine of pi over two', 'square root of x over y', String.raw`\href{https://example.com}{x}`, 'x; alert(1)', '', 'the'])('rejects unsupported or command speech: %s', transcript => {
+    'integral from two five of x', 'x plus times two', 'x )', 'sine of pi over two', 'square root of x over y',
+    'this now equals what', 'move this now equals two', 'bar from pi to two pi', 'x bar pi to two pi',
+    'x bar from pi to two pi plus one', 'x bar from pi delete x', String.raw`\href{https://example.com}{x}`, 'x; alert(1)', '', 'the'])('rejects unsupported or command speech: %s', transcript => {
     expect(preview(transcript)).toBeNull()
   })
 
@@ -89,6 +103,18 @@ describe('spoken mathematical draft rendering', () => {
 })
 
 describe('safe ephemeral dictation targets', () => {
+  it('appends the spoken evaluation step to the original integral without solving or changing source', () => {
+    const source = String.raw`\int_{\pi}^{2\pi}\sin(x)\,dx`
+    const integral: BoardContext = { ...editing, objects: [{ ...object, latex: source }] }
+    const before = JSON.stringify(integral)
+    const result = preview('this now equals negative cosine of x bar from pi to 2pi', integral)
+    expect(result).toMatchObject({ target: object.id, kind: 'edit', operationType: 'edit_content', complete: false,
+      value: source + String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}` })
+    expect(() => katex.renderToString(result!.value, { throwOnError: true })).not.toThrow()
+    expect(JSON.stringify(integral)).toBe(before)
+    expect(preview('this now equals negative cosine of x bar from pi to', integral)?.value).toBe(source + String.raw`= \left.-\cos x\right|_{\pi}^{\square}`)
+  })
+
   it('appends to a single equation without changing source or context', () => {
     const original = JSON.stringify(editing)
     expect(preview('plus three', editing)).toMatchObject({ operationType: 'edit_content', kind: 'edit', target: object.id, value: 'x^{2}+2+3', bounds: object.bounds, complete: false })
