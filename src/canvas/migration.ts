@@ -130,6 +130,9 @@ export function normalizeSnapshot(input: unknown): TLEditorSnapshot {
         parentId: text(raw.parentId, 'page:main', 300), index: typeof raw.index === 'string' || typeof raw.index === 'number' ? raw.index : order,
         isLocked: raw.isLocked === true, opacity: Math.max(0, Math.min(1, finite(raw.opacity, 1, 1))), meta: metadata(raw.meta),
       }
+      // pages of a multi page worksheet were once saved as backgrounds, so a pasted image replaced them
+      const pdf = base.meta.pdf
+      if (raw.type === 'image' && base.meta.marginaliaBackground === true && object(pdf) && typeof pdf.pages === 'number' && pdf.pages > 1) base.meta.marginaliaBackground = false
       let normalized: unknown
       if (raw.type === 'magic') normalized = magicProps(props)
       else if (raw.type === 'image') {

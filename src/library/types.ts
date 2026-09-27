@@ -101,6 +101,8 @@ export type LibraryMatch = {
   /** true when ranked[0] can be inserted without asking */
   confident: boolean
   source: 'exact' | 'jev' | 'local'
+  /** what the teacher should know about the pick, e.g. "No printed page 5, added file page 5." */
+  note?: string
 }
 
 export type ImportProgress = { phase: 'reading' | 'indexing' | 'saving'; done: number; total: number }

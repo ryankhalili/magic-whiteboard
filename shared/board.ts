@@ -29,11 +29,13 @@ export type PlacementOption = { id: 'A' | 'B' | 'C'; bounds: Bounds; note?: stri
 export type PlacementCandidate = { id: string; bounds: Bounds; description: string; features?: Record<string, number> }
 /** Book titles only; the model never sees book text. */
 export type LibraryContext = {
-  openBook: { id: string; title: string } | null
-  books: { id: string; title: string; pages: number }[]
+  openBook: { id?: string; title: string } | null
+  books: { id?: string; title: string; pages: number }[]
   pendingImport?: { name: string; pages: number } | null
   /** titles of the matches waiting for a tap, badge 1 first ("Example 3.2, p. 192") */
   highlights?: string[]
+  /** the open book's page shown in the reference panel; pageIndex is the file page from 0 */
+  panelPage?: { label: string | null; pageIndex: number } | null
 }
 export type BoardContext = {
   focus: Focus | null; pointer: Point | null; selectedIds: string[];

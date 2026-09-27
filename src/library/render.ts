@@ -194,6 +194,12 @@ function paintOut(canvas: Canvas, box: PageBox, mask: PageBox[] | undefined) {
   }
 }
 
+/** The light gray or pastel fill of a shaded box. */
+function isTint(data: Uint8ClampedArray, i: number) {
+  const r = data[i], g = data[i + 1], b = data[i + 2]
+  return data[i + 3] > 200 && Math.min(r, g, b) >= 200 && Math.max(r, g, b) <= 250 && Math.max(r, g, b) - Math.min(r, g, b) <= 24
+}
+
 /**
  * What each row starts with at the crop's left edge: the tint of a shaded box, ink, or nothing.
  * A few pixels of page margin before the box are looked past.
@@ -202,7 +208,7 @@ function leftEdge(data: Uint8ClampedArray, width: number, height: number): Array
   const span = Math.min(width, Math.max(6, Math.round(width * 0.06)))
   const at = (x: number, y: number) => (y * width + x) * 4
   const white = (i: number) => data[i + 3] <= 16 || (data[i] >= 252 && data[i + 1] >= 252 && data[i + 2] >= 252)
-  const tinted = (i: number) => { const r = data[i], g = data[i + 1], b = data[i + 2]; return data[i + 3] > 200 && Math.min(r, g, b) >= 200 && Math.max(r, g, b) <= 250 && Math.max(r, g, b) - Math.min(r, g, b) <= 24 }
+  const tinted = (i: number) => isTint(data, i)
   const kinds: Array<'tint' | 'ink' | 'white'> = []
   for (let y = 0; y < height; y++) {
     let first = 0
@@ -244,6 +250,28 @@ export function shadedEnd(data: Uint8ClampedArray, width: number, height: number
     inText = dark
   }
   return rows >= lines ? end : null
+}
+
+/**
+ * The fill of a shaded box near the foot of a kept part: its most common color and the columns it spans,
+ * so the space between two parts of a split box can be filled the same. null when those rows hold no box.
+ */
+export function shadeBand(data: Uint8ClampedArray, width: number, height: number, rows = 12): { color: string; x0: number; x1: number } | null {
+  for (let y = height - 1; y >= 0 && y >= height - rows; y--) {
+    let x0 = -1, x1 = -1
+    const counts = new Map<string, number>()
+    for (let x = 0, i = y * width * 4; x < width; x++, i += 4) {
+      if (!isTint(data, i)) continue
+      if (x0 < 0) x0 = x
+      x1 = x
+      const key = `${data[i]},${data[i + 1]},${data[i + 2]}`
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    if (x0 < 0 || x1 - x0 < width * 0.5) continue
+    const color = [...counts.entries()].reduce((best, next) => next[1] > best[1] ? next : best)[0]
+    return { color: `rgb(${color})`, x0, x1 }
+  }
+  return null
 }
 
 /** Trims a drawn part the way item crops are trimmed; null when nothing is left. */
@@ -294,6 +322,10 @@ export async function renderAnchor(bookId: string, anchor: Anchor, opts: { targe
       const gap = rest ? Math.round(0.6 * 12 * scale) : 0
       // both parts keep the same width so a shaded box looks whole
       const width = Math.max(head.w, rest?.w ?? 0)
+      // a split shaded box stays one box: the space between its parts gets its fill, not white
+      const foot = Math.min(12, head.h)
+      const headData = rest?.shaded ? head.canvas.getContext('2d')?.getImageData(0, head.top + head.h - foot, head.canvas.width, foot) : null
+      const band = headData ? shadeBand(headData.data, head.canvas.width, foot) : null
       const out = makeCanvas(width, head.h + gap + (rest?.h ?? 0))
       parts.push(out)
       const context = out.getContext('2d')
@@ -302,6 +334,7 @@ export async function renderAnchor(bookId: string, anchor: Anchor, opts: { targe
       const w1 = Math.min(width, head.canvas.width)
       context.drawImage(head.canvas, 0, head.top, w1, head.h, 0, 0, w1, head.h)
       if (rest) {
+        if (band && band.x0 < width) { context.fillStyle = band.color; context.fillRect(band.x0, head.h, Math.min(width, band.x1 + 1) - band.x0, gap) }
         const w2 = Math.min(width, rest.canvas.width)
         context.drawImage(rest.canvas, 0, rest.top, w2, rest.h, 0, head.h + gap, w2, rest.h)
       }

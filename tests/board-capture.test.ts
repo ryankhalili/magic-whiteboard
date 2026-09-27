@@ -52,9 +52,26 @@ describe('board screenshots for the model', () => {
     editor.deleteShapes(['shape:ink'])
     expect(boardNeedsImage(editor)).toBe(false)
     editor.createAssets([{ id: 'asset:photo', typeName: 'asset', type: 'image', meta: {}, props: { src: PNG, w: 1, h: 1 } }])
-    editor.createShape({ id: 'shape:photo', type: 'image', x: 0, y: 1000, props: { assetId: 'asset:photo', w: 100, h: 100 } })
+    editor.createShape({ id: 'shape:photo', type: 'image', x: 0, y: 600, props: { assetId: 'asset:photo', w: 100, h: 100 } })
     expect(boardNeedsImage(editor)).toBe(true)
     expect(boardNeedsImage(new Editor())).toBe(false)
+  })
+
+  it('are not needed for ink or photos outside the captured area', () => {
+    const { editor, item } = board()
+    // old ink far off screen does not make every command send a picture
+    editor.createShape({ id: 'shape:old', type: 'draw', props: { points: [{ x: 5000, y: 5000 }, { x: 5100, y: 5050 }], color: 'blue', size: 'm' } })
+    expect(boardNeedsImage(editor)).toBe(false)
+    editor.setCamera({ x: -4800, y: -4800, z: 1 })
+    expect(boardNeedsImage(editor)).toBe(true)
+    // a focus on the problem looks only there, even with ink elsewhere in view
+    editor.setCamera({ x: 0, y: 0, z: 1 })
+    addInk(editor)
+    const focus: Focus = { kind: 'point', bounds: { x: 800, y: 50, w: 0, h: 0 }, targetIds: [item] }
+    expect(boardNeedsImage(editor)).toBe(true)
+    expect(boardNeedsImage(editor, focus)).toBe(false)
+    editor.createShape({ id: 'shape:work', type: 'draw', props: { points: [{ x: 800, y: 60 }, { x: 900, y: 90 }], color: 'black', size: 'm' } })
+    expect(boardNeedsImage(editor, focus)).toBe(true)
   })
 
   it('leave out book pages and problems but keep the ink written on them and everything else', async () => {

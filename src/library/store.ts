@@ -51,8 +51,12 @@ async function transact<T>(names: StoreName[], mode: IDBTransactionMode, work: (
     let result: T
     let failed: unknown = null
     tx.oncomplete = () => failed ? reject(friendly(failed)) : resolve(result)
-    tx.onerror = () => reject(friendly(tx.error))
-    tx.onabort = () => reject(friendly(tx.error ?? failed))
+    // a request's own error (out of space on a put) arrives before the transaction has one; requests aborted after it say nothing new
+    tx.onerror = event => {
+      const error = (event?.target as IDBRequest | null)?.error ?? tx.error
+      if (error?.name !== 'AbortError') reject(friendly(error))
+    }
+    tx.onabort = () => reject(friendly(failed ?? tx.error))
     Promise.resolve().then(() => work(tx)).then(value => { result = value }, error => {
       failed = error
       try { tx.abort() } catch { /* already finished */ }
@@ -79,6 +83,16 @@ export async function getBook(id: string): Promise<BookRecord | null> {
 
 export async function saveBook(book: BookRecord): Promise<void> {
   await transact(['books'], 'readwrite', tx => { tx.objectStore('books').put(book) })
+}
+
+/** Saves the book only while it is still in the library, so a book removed during a long read stays removed. */
+export async function replaceBook(book: BookRecord): Promise<boolean> {
+  return transact(['books'], 'readwrite', async tx => {
+    const store = tx.objectStore('books')
+    if ((await request(store.getKey(book.id))) === undefined) return false
+    store.put(book)
+    return true
+  })
 }
 
 export async function touchBook(id: string): Promise<BookRecord | null> {

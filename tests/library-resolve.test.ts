@@ -205,6 +205,92 @@ describe('matchLibrary', () => {
     }
   })
 
+  it('uses the file page when no printed page has the number, and says so', async () => {
+    const result = await match('page 5') as LibraryMatch
+    expect(result).toMatchObject({ confident: true, source: 'exact', note: 'No printed page 5, added file page 5.' })
+    expect(result.ranked[0].pageIndex).toBe(4)
+    expect((await match('page 12') as LibraryMatch).note).toBeUndefined()
+    expect(await match('page 8')).toEqual({ error: 'Page 8 is not in Calculus Volume 1.' })
+  })
+
+  it('picks the repeated page number nearest the teacher, else offers each one', async () => {
+    const packet: BookRecord = { ...calc, id: 'sha256:packet', title: 'Unit Packet', fileName: 'packet.pdf', labels: [null, '1', '2', '3', '1', '2', '3'], openedAt: Date.now() }
+    await saveBook(packet)
+    try {
+      const near = await match('page 2', packet.id, { bookId: packet.id, pageIndex: 5 }) as LibraryMatch
+      expect(near).toMatchObject({ confident: true, book: { id: packet.id } })
+      expect(near.ranked.map(candidate => candidate.pageIndex)).toEqual([5])
+      expect((await match('page 2', packet.id, { bookId: packet.id, pageIndex: 1 }) as LibraryMatch).ranked[0].pageIndex).toBe(2)
+      const unsure = await match('page 2', packet.id) as LibraryMatch
+      expect(unsure.confident).toBe(false)
+      expect(unsure.ranked.map(candidate => candidate.pageIndex)).toEqual([2, 5])
+    } finally {
+      await removeBook(packet.id); forgetBookData(packet.id); await touchBook(calc.id)
+    }
+  })
+
+  it('reads "the math book" as the book of that subject, the open one or the only one', async () => {
+    expect(await match('page 12 in my math textbook')).toMatchObject({ confident: true, book: { id: calc.id } })
+    expect(await match('page 12 in the science book')).toMatchObject({ error: 'No book called "science" in your library.' })
+    const physics: BookRecord = { ...calc, id: 'sha256:physics', title: 'University Physics', fileName: 'physics.pdf', openedAt: Date.now() }
+    const notes: BookRecord = { ...calc, id: 'sha256:notes', title: 'Unit 4 Notes', fileName: 'notes.pdf', openedAt: Date.now() }
+    await saveBook(physics)
+    try {
+      expect(await match('page 12 in the math book', physics.id)).toMatchObject({ book: { id: calc.id } })
+      expect(await match('page 12 in the science book')).toMatchObject({ book: { id: physics.id } })
+      // two books with no subject in their titles: the open one, else ask
+      await removeBook(physics.id)
+      await saveBook({ ...calc, title: 'Unit 3 Notes' }); await saveBook(notes)
+      expect(await match('page 12 in the math book', notes.id)).toMatchObject({ book: { id: notes.id } })
+      expect(await match('page 12 in the math book')).toMatchObject({ error: 'Which book? Say its title or open it from the Library.' })
+    } finally {
+      await removeBook(physics.id); await removeBook(notes.id); forgetBookData(physics.id); forgetBookData(notes.id)
+      await saveBook(calc); await touchBook(calc.id)
+    }
+  })
+
+  it('says when a section the book has holds no such item instead of offering other sections', async () => {
+    expect(await match('exercise 48 in section 3.3')).toEqual({ error: 'No exercise 48 in section 3.3.' })
+    expect(await match('problem 49 in section 3.2')).toEqual({ error: 'No problem 49 in section 3.2.' })
+    expect(await match('exercise 48 in chapter 3')).toMatchObject({ book: { id: calc.id } })
+    // a section or chapter the book does not show still offers what it has
+    expect(await match('exercise 48 in section 3.9')).toMatchObject({ confident: false })
+    expect(await match('exercise 48 in chapter 4')).toMatchObject({ confident: false })
+  })
+
+  it('finds the last exercises of a section on the page where the next section starts', async () => {
+    const pdf = await PDFDocument.create()
+    pdf.setTitle('Boundary Calculus')
+    const font = await pdf.embedFont(StandardFonts.Helvetica)
+    const pages: Text[][] = [
+      [['Boundary Calculus', 72, 200, 28]],
+      [['1.1 Review of Functions', 72, 70, 18], ['Functions take inputs to outputs.', 72, 110]],
+      [['SECTION 1.1 EXERCISES', 100, 70, 14], ['56. f(x) = x + 1', 72, 130], ['57. f(x) = 2x', 72, 400]],
+      [['58. f(x) = x squared', 72, 70], ['59. f(x) = 3', 72, 110], ['1.2 Basic Classes of Functions', 72, 300, 18], ['Lines have a constant slope.', 72, 340]],
+    ]
+    for (const lines of pages) {
+      const page = pdf.addPage([612, 792])
+      for (const [text, x, top, size = 10] of lines) page.drawText(text, { x, y: 792 - top - size * 0.8, size, font })
+    }
+    const book = await importBook(file(await pdf.save(), 'boundary.pdf'))
+    try {
+      const found = await matchLibrary(parseLibraryQuery('exercise 58 in section 1.1')!, { openBookId: book.id, near: null })
+      expect(found).toMatchObject({ book: { id: book.id } })
+      expect((found as LibraryMatch).ranked[0]).toMatchObject({ pageIndex: 3, anchor: { label: '58' } })
+      expect(await matchLibrary(parseLibraryQuery('exercise 58 in chapter 1')!, { openBookId: book.id, near: null })).toMatchObject({ book: { id: book.id } })
+      expect(await matchLibrary(parseLibraryQuery('exercise 60 in section 1.1')!, { openBookId: book.id, near: null })).toEqual({ error: 'No exercise 60 in section 1.1.' })
+    } finally {
+      await removeBook(book.id); forgetBookData(book.id); await touchBook(calc.id)
+    }
+  })
+
+  it('reads "the page I am looking at" as the page the teacher is on', async () => {
+    const query = { kind: 'topic' as const, terms: 'the page I am looking at', raw: 'the page I am looking at' }
+    const result = await matchLibrary(query, { openBookId: calc.id, near: { bookId: calc.id, pageIndex: 4 } }) as LibraryMatch
+    expect(result).toMatchObject({ confident: true, source: 'exact' })
+    expect(result.ranked[0]).toMatchObject({ kind: 'page', pageIndex: 4, label: '13' })
+  })
+
   it('reports an empty library', async () => {
     await removeBook(calc.id)
     try { expect(await match('page 12')).toEqual({ error: 'The library is empty. Import a textbook first.' }) }

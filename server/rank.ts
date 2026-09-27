@@ -16,10 +16,28 @@ export const rankRequestSchema = z.object({
 })
 
 export type RankUsage = { calls: number; inputTokens: number }
-export type RankDeps = { key?: string; fetcher?: typeof fetch; timeoutMs?: number; model?: string; baseUrl?: string; onUsage?: (usage: RankUsage) => void }
+export type RankDeps = { key?: string; fetcher?: typeof fetch; timeoutMs?: number; model?: string; baseUrl?: string; onUsage?: (usage: RankUsage) => void; breaker?: JevBreaker }
+type JevFailure = { error: string; status?: number }
+
+/** skips Jev for a minute after it hangs, is unreachable or fails on its side, and until the key changes after a 401 */
+export class JevBreaker {
+  private until = 0
+  private rejectedKey?: string
+  constructor(private readonly pauseMs = 60_000, private readonly now = () => Date.now()) {}
+  skip(key: string): string | null {
+    if (key === this.rejectedKey) return 'The Jev key is missing or invalid.'
+    return this.now() < this.until ? 'Jev is paused for a minute after a failure.' : null
+  }
+  failed(key: string, failure: JevFailure) {
+    if (failure.status === 401) this.rejectedKey = key
+    else if (failure.status === undefined ? /timed out|could not be reached/.test(failure.error) : failure.status === 408 || failure.status === 429 || failure.status >= 500) this.until = this.now() + this.pauseMs
+  }
+}
+export const sharedJevBreaker = new JevBreaker()
 
 const JEV_WEIGHT = .7
 const DEFAULT_TIMEOUT_MS = 5000
+const ROUTE_TIMEOUT_MS = 2000
 // 'none' takes the last of the 255 choice options
 const CHUNK_ITEMS = 254
 // options appear in state and criteria, keep each call far below the 32k token state budget
@@ -37,7 +55,7 @@ const PICK: Record<RankTask, string> = {
 const EXISTS = 'One of the `options` is what the teacher asked for in `request`.'
 
 type Entry = { item: RankItem; index: number; local: number }
-type Asked = { ok: true; jev: number[]; data: JevResponse } | { ok: false; error: string }
+type Asked = { ok: true; jev: number[]; data: JevResponse } | ({ ok: false } & JevFailure)
 
 const clip = (text: string, max: number) => text.length > max ? text.slice(0, max) : text
 const optionText = (item: RankItem) => clip((item.text ?? '').replace(/\s+/g, ' ').trim(), 400) || clip(item.id, 120)
@@ -76,12 +94,12 @@ async function ask(req: RankRequest, entries: Entry[], withExists: boolean, deps
   const state = { request: req.query, ...(req.context ? { context: req.context } : {}), options }
   usage.calls++
   const result = await callJev(deps.key, { state, questions, model: deps.model }, { fetcher: deps.fetcher, timeoutMs: remaining, baseUrl: deps.baseUrl })
-  if (!result.ok) return { ok: false, error: result.error }
+  if (!result.ok) return { ok: false, error: result.error, ...(result.status === undefined ? {} : { status: result.status }) }
   usage.inputTokens += result.data.usage?.input_tokens ?? 0
   return { ok: true, jev: normalize(aliases.map(a => probabilityOf(result.data.answers.pick, a))), data: result.data }
 }
 
-async function rankWithJev(req: RankRequest, deps: RankDeps & { key: string }, started: number, usage: RankUsage): Promise<RankResult | { error: string }> {
+async function rankWithJev(req: RankRequest, deps: RankDeps & { key: string }, started: number, usage: RankUsage): Promise<RankResult | JevFailure> {
   const deadline = started + (deps.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   const localP = new Map(localRank(req).ranked.map(r => [r.id, r.p]))
   const entries: Entry[] = req.items.map((item, index) => ({ item, index, local: localP.get(item.id) ?? 0 }))
@@ -90,12 +108,12 @@ async function rankWithJev(req: RankRequest, deps: RankDeps & { key: string }, s
   for (let groups = chunk(pool); groups.length > 1; groups = chunk(pool)) {
     const results = await Promise.all(groups.map(group => ask(req, group, false, deps, deadline, usage)))
     const failed = results.find(r => !r.ok)
-    if (failed && !failed.ok) return { error: failed.error }
+    if (failed && !failed.ok) return { error: failed.error, status: failed.status }
     pool = groups.flatMap((group, i) => { const r = results[i]; return r.ok ? blend(group, r.jev).slice(0, WINNERS_PER_CHUNK).map(b => b.entry) : [] })
       .sort((a, b) => a.index - b.index)
   }
   const final = await ask(req, pool, req.task === 'library', deps, deadline, usage)
-  if (!final.ok) return { error: final.error }
+  if (!final.ok) return { error: final.error, status: final.status }
   const jevP = new Map(pool.map((e, i) => [e.item.id, final.jev[i]]))
   const p = normalize(entries.map(e => JEV_WEIGHT * (jevP.get(e.item.id) ?? 0) + (1 - JEV_WEIGHT) * e.local))
   const ranked = entries.map((e, i) => ({ id: e.item.id, p: p[i], index: e.index }))
@@ -115,10 +133,14 @@ export async function rankItems(req: RankRequest, deps: RankDeps = {}): Promise<
   const local = (note: string) => ({ ...localRank(clean), ms: Date.now() - started, note })
   if (!items.length) return local('no items')
   if (!deps.key) return local('jev not configured')
+  const paused = deps.breaker?.skip(deps.key)
+  if (paused) return local(paused)
   const usage: RankUsage = { calls: 0, inputTokens: 0 }
   try {
     const result = await rankWithJev(clean, { ...deps, key: deps.key }, started, usage)
-    return 'error' in result ? local(result.error) : result
+    if (!('error' in result)) return result
+    deps.breaker?.failed(deps.key, result)
+    return local(result.error)
   } catch {
     return local('Jev could not be used.')
   } finally {
@@ -140,7 +162,7 @@ export function registerRankRoute(app: Pick<Express, 'post'>, deps: RankRouteDep
     if (!limiter.take(accessToken(req))) { res.status(429).json({ error: 'Please wait a moment before ranking more items.' }); return }
     let key: string | undefined
     try { key = await deps.readKey() } catch { key = undefined }
-    try { res.json(await rankItems(parsed.data, { ...deps, key })) }
+    try { res.json(await rankItems(parsed.data, { ...deps, key, timeoutMs: deps.timeoutMs ?? ROUTE_TIMEOUT_MS, breaker: deps.breaker ?? sharedJevBreaker })) }
     catch { res.json({ ...localRank(parsed.data), note: 'Jev could not be used.' }) }
   })
 }

@@ -51,6 +51,24 @@ export function validateLatex(source: string, normalize = false): string {
   return value
 }
 
+/**
+ * The LaTeX to commit from the visual math editor. MathLive writes a few commands KaTeX lacks
+ * (\placeholder, \doubleprime, \differentialD); when its value does not validate, the expanded
+ * form with blanks and primes spelled out is used, so an edit is never lost on Done.
+ */
+export function mathFieldLatex(value: string, expanded: () => string): string {
+  try { validateLatex(value); return value } catch { /* spell out the MathLive only commands */ }
+  let out = expanded().replace(/\\placeholder(?:\[[^\]]*\])?\{\}/g, '{}').replace(/\\doubleprime(?![a-zA-Z])/g, '\\prime\\prime')
+    .replace(/\\differentialD(?![a-zA-Z])/g, '\\mathrm{d}').replace(/\\exponentialE(?![a-zA-Z])/g, '\\mathrm{e}').replace(/\\imaginaryI(?![a-zA-Z])/g, '\\mathrm{i}')
+  // typing f'' gives f^{\prime}^{\prime}, a double superscript KaTeX refuses
+  for (let i = 0; i < 8; i++) {
+    const next = out.replace(/\^\{((?:\\prime)+)\}\^\{((?:\\prime)+)\}/g, '^{$1$2}')
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+
 /** A space terminates a TeX control word without adding visible mathematical spacing. */
 export function needsLatexCommandSeparator(left: string, right: string): boolean {
   if (!/^[a-zA-Z]/.test(right)) return false

@@ -3,7 +3,7 @@ import {
   type Editor, type TLEditorSnapshot, type TLImageShape, type TLShapeId,
 } from '../canvas/editor'
 import { normalizeSnapshot } from '../canvas/migration'
-import { exportTimeout } from './exportTimeout'
+import { MAX_EXPORT_PIXELS, exportTimeout } from './exportTimeout'
 import { loadOriginalNotebookSnapshot } from '../notebooks/canvasBackup'
 import { PDFDocument } from 'pdf-lib'
 import { DEFAULT_SETTINGS, type AppSettings, type Bounds } from '../../shared/board'
@@ -14,7 +14,6 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024
 export const MAX_PROJECT_BYTES = 64 * 1024 * 1024
 const TOO_BIG_PROJECT = 'Choose a project smaller than 64 MB.'
 const MAX_EXPORT_EDGE = 8192
-const MAX_EXPORT_PIXELS = 24_000_000
 
 /** Keep the renderer lazy so plain project validation never initializes browser UI code. */
 export function installBoardImageExporter(editor: Editor): void {
@@ -128,7 +127,8 @@ export async function importImageFile(
       props: { assetId, w: width, h: height, altText: file.name || 'Imported screenshot' },
       meta: { marginaliaBackground: options.asBackground },
     })
-    if (options.asBackground) editor.sendToBack([id]).selectNone()
+    // under all content, but above worksheet and textbook pages it lands on, so the new image shows
+    if (options.asBackground) editor.sendToBack([id], { aboveLocked: true }).selectNone()
     else editor.select(id)
   }, { ignoreShapeLock: true })
   if (options.asBackground) editor.zoomToBounds(target, { inset: 80, animation: { duration: 250 } })

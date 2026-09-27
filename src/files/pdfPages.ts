@@ -14,7 +14,7 @@ export const ASSET_CHAR_LIMIT = 54_000_000
 export const RASTER_BUDGET = 20_000_000
 
 /**
- * `source` is the content key of the original PDF in the device store (see pdfSources.ts),
+ * `source` is the content key (sha256) of the original PDF (see pdfSources.ts),
  * so boards that imported the same file share it. `width` and `height` are the page's
  * displayed size in points.
  */

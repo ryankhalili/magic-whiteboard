@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { bodyFontSize, detectAnchors, type OpenItem } from '../src/library/anchors'
 import { pageLines, setPdfJsLoader } from '../src/library/pdfjs'
-import { inkBounds, renderAnchor, shadedEnd } from '../src/library/render'
+import { inkBounds, renderAnchor, shadeBand, shadedEnd } from '../src/library/render'
 import { putBookBytes } from '../src/library/store'
 import type { Anchor, PageBox, RenderedImage, TextLine } from '../src/library/types'
 
@@ -30,6 +30,13 @@ describe('trimming helpers', () => {
     expect(shadedEnd(bar, 20, 34, 1)).toBe(13)
     expect(shadedEnd(rows(20, [...repeat(TINT, 40), ...repeat(INK, 3), ...repeat(TINT, 20)]), 20, 63)).toBeNull()
     expect(shadedEnd(rows(20, [...repeat(INK, 5), ...repeat(WHITE, 10), ...repeat(INK, 5)]), 20, 20)).toBeNull()
+  })
+
+  it('finds the fill of a shaded box at the foot of a part', () => {
+    expect(shadeBand(rows(20, [...repeat(TINT, 4), ...repeat(INK, 2), ...repeat(TINT, 3)]), 20, 9)).toEqual({ color: 'rgb(244,247,244)', x0: 0, x1: 19 })
+    // ink at the very foot is looked past; a white foot has no box
+    expect(shadeBand(rows(20, [...repeat(TINT, 4), ...repeat(INK, 2)]), 20, 6)).toMatchObject({ color: 'rgb(244,247,244)' })
+    expect(shadeBand(rows(20, repeat(WHITE, 8)), 20, 8)).toBeNull()
   })
 
   it('drops blank rows above the second part of a split item', () => {
@@ -100,6 +107,15 @@ describe.skipIf(!canvas)('renderAnchor', () => {
     expect(stitched.w).toBe(alone.w)
     // the black figure under the shaded box on page 2 is not part of the theorem
     expect(solidRows(await decode(stitched), stitched.w, stitched.h)).toBe(0)
+  })
+
+  it('keeps a split shaded box one box: the space between its parts is shaded too', async () => {
+    const alone = await renderAnchor('fixture', anchor(0, head))
+    const stitched = await renderAnchor('fixture', anchor(0, head, { continues: { pageIndex: 1, box: box(0.09, 0.04, 0.82, 262 / 792 - 0.04) } }))
+    const data = await decode(stitched)
+    const px = (x: number, y: number) => Array.from(data.slice((y * stitched.w + x) * 4, (y * stitched.w + x) * 4 + 3))
+    // the rows right under the first part, across the box
+    for (const y of [alone.h, alone.h + 3]) for (const x of [20, Math.round(stitched.w / 2), stitched.w - 20]) expect(px(x, y)).toEqual(TINT)
   })
 
   it('does not stitch a plain region under a shaded item, or a blank one', async () => {

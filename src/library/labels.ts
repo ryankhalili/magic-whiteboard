@@ -30,11 +30,13 @@ export function printedNumberCandidates(edgeLines: string[]): string[] {
   for (const raw of edgeLines) {
     const line = String(raw ?? '').replace(/\s+/g, ' ').trim()
     if (!line || line.length > 160) continue
-    // "22 1 • Functions and Graphs" or "1.1 • Review of Functions 23", but not "23." or "4.10"
-    const start = /^(\d{1,4}|[ivxl]{1,7})(?=$| (?![.):,;]))/.exec(line)
-    const end = /(?:^|\s)(\d{1,4}|[ivxl]{1,7})$/.exec(line)
+    // "22 1 • Functions and Graphs" or "1.1 • Review of Functions 23", but not "23." or "4.10"; roman numerals in either case
+    const start = /^(\d{1,4}|[ivxl]{1,7}|[IVXL]{1,7})(?=$| (?![.):,;]))/.exec(line)
+    // "Page 1 of 2" gives 1, never the page count after "of"
+    const of = /(?:^|\s)page (\d{1,4}) of \d{1,4}$/i.exec(line)
+    const end = of ?? /(?:^|\s)(\d{1,4}|[ivxl]{1,7}|[IVXL]{1,7})$/.exec(line)
     for (const match of [start, end]) {
-      const token = match?.[1]
+      const token = match?.[1]?.toLowerCase()
       if (token && (arabicValue(token) !== null || romanValue(token) !== null) && !out.includes(token)) out.push(token)
     }
   }
@@ -47,7 +49,8 @@ type Run = { offset: number; pages: number[] }
 function runsFor(votes: Map<number, number[]>, total: number): Run[] {
   const count = new Map<number, number>()
   for (const offsets of votes.values()) for (const offset of offsets) count.set(offset, (count.get(offset) ?? 0) + 1)
-  const minSupport = total <= 2 ? 1 : total <= 12 ? 2 : 3
+  // one number on one page proves nothing: a title like "Quiz 3" is not a page number
+  const minSupport = total <= 12 ? 2 : 3
   const chosen: { index: number; offset: number }[] = []
   for (const [index, offsets] of [...votes.entries()].sort((a, b) => a[0] - b[0])) {
     let best: number | null = null
@@ -65,8 +68,7 @@ function runsFor(votes: Map<number, number[]>, total: number): Run[] {
     if (last && last.offset === entry.offset) last.pages.push(entry.index)
     else runs.push({ offset: entry.offset, pages: [entry.index] })
   }
-  const minRun = total <= 2 ? 1 : 2
-  return runs.filter(run => run.pages.length >= minRun)
+  return runs.filter(run => run.pages.length >= 2)
 }
 
 function fillRuns(labels: (string | null)[], runs: Run[], format: (value: number) => string | null) {
@@ -125,16 +127,18 @@ export function assignPrintedLabels(pages: { index: number; edges: string[] }[],
   return compared && agree / compared >= 0.8 ? own.map((label, i) => label ?? labels[i]) : labels
 }
 
+/** Every file page index with a printed label: exact matches first, else roman numerals in any case. */
+export function findPageIndexes(labels: (string | null)[], label: string): number[] {
+  const wanted = String(label ?? '').trim()
+  if (!wanted) return []
+  const exact = labels.flatMap((item, index) => item === wanted ? [index] : [])
+  if (exact.length) return exact
+  const lower = wanted.toLowerCase()
+  if (romanValue(lower) === null) return []
+  return labels.flatMap((item, index) => item !== null && item.toLowerCase() === lower ? [index] : [])
+}
+
 /** File page index for a printed label: exact first, then case insensitive for roman numerals. */
 export function findPageIndex(labels: (string | null)[], label: string): number | null {
-  const wanted = String(label ?? '').trim()
-  if (!wanted) return null
-  const exact = labels.indexOf(wanted)
-  if (exact >= 0) return exact
-  const lower = wanted.toLowerCase()
-  if (romanValue(lower) !== null) {
-    const index = labels.findIndex(item => item !== null && item.toLowerCase() === lower)
-    if (index >= 0) return index
-  }
-  return null
+  return findPageIndexes(labels, label)[0] ?? null
 }

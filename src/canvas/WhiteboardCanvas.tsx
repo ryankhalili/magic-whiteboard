@@ -6,7 +6,7 @@ import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
 import { Editor, colorValue, getStrokeWidth, type TLShape } from './editor'
 import { EditorProvider, useValue } from './context'
 import { legacyText } from './content'
-import { editorToExcalidrawScene, sceneToEditorChanges } from './excalidrawScene'
+import { editorToExcalidrawScene, eraserProtectedIds, sceneToEditorChanges } from './excalidrawScene'
 import { shapeOpacity } from './content'
 import { isLiveContentShape, liveContentKey, renderLiveContentImage } from './liveContentImage'
 import { flushSourceEdits } from '../board/liveSource'
@@ -134,8 +134,14 @@ function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & 
     }
     if (pendingPush.current) return
     receiving.current = true
+    let restore = false
     try {
       const changes = sceneToEditorChanges(editor, elements, files)
+      if (state.activeTool.type === 'eraser' || editor.getCurrentToolId().startsWith('eraser')) {
+        // erasing ink written on a textbook crop must not take the crop with it; the next push puts it back
+        const kept = new Set(eraserProtectedIds(editor, changes.deletes))
+        if (kept.size) { changes.deletes = changes.deletes.filter(id => !kept.has(id)); restore = true }
+      }
       editor.run(() => {
         if (changes.assets.length) editor.createAssets(changes.assets)
         if (changes.creates.length) editor.createShapes(changes.creates)
@@ -155,6 +161,10 @@ function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & 
         if (!disposed.current) { syncRef.current(); setImageRevision(value => value + 1) }
       })
     } finally { receiving.current = false }
+    if (restore) {
+      pendingPush.current = true
+      queueMicrotask(() => { if (!disposed.current) { syncRef.current(); setImageRevision(value => value + 1) } })
+    }
   }, [editor])
   ingestRef.current = ingest
 

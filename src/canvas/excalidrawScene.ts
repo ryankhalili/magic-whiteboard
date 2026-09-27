@@ -233,6 +233,16 @@ export function getShapeForExcalidrawElement(editor: Editor, element: Excalidraw
   return shapeFromElement(editor, element)
 }
 
+/** Locked page images (textbook pages, worksheet pages, backgrounds) that everything else is drawn on. */
+function isLockedPaper(editor: Editor, shape: TLShape): boolean {
+  return shape.type === 'image' && editor.isShapeOrAncestorLocked(shape) && (shape.meta.marginaliaBackground === true || !!shape.meta.pdf || !!shape.meta.library)
+}
+
+/** The eraser is for ink: textbook pages and problems it passes over stay on the board. */
+export function eraserProtectedIds(editor: Editor, ids: readonly string[]): string[] {
+  return ids.filter(id => { const library = editor.getShape(id)?.meta.library; return !!library && typeof library === 'object' })
+}
+
 /** A pure diff. The caller owns gesture/history boundaries and applies it in one editor.run(). */
 export function sceneToEditorChanges(editor: Editor, elements: readonly ExcalidrawElement[], files: BinaryFiles = {}): EditorSceneChanges {
   validateNativeSceneImport(editor, elements, files)
@@ -247,13 +257,15 @@ export function sceneToEditorChanges(editor: Editor, elements: readonly Excalidr
   // need a second document update solely to move the duplicate back into its native position.
   const appendedNewIds = live.filter(element => !editor.getShape(element.id)).map(element => element.id)
   const reordered = !same([...survivingCurrentIds, ...appendedNewIds], live.map(element => element.id))
+  // native send to back keeps content above locked pages and backgrounds, which stay the paper
+  const paper = reordered ? Math.max(0, ...current.filter(shape => isLockedPaper(editor, shape)).map(shape => typeof shape.index === 'number' ? shape.index : 0)) : 0
   let nextIndex = Math.max(0, ...current.map(shape => typeof shape.index === 'number' ? shape.index : 0))
   for (const [index, element] of live.entries()) {
     const existing = editor.getShape(element.id)
     if (existing && editor.isShapeOrAncestorLocked(existing)) continue
     const shape = shapeFromElement(editor, element)
     if (!shape) continue
-    if (reordered) shape.index = index + 1
+    if (reordered) shape.index = paper + index + 1
     else if (!existing) shape.index = ++nextIndex
     if (existing) { if (!same(shape, existing)) changes.updates.push(shape as TLShapePartial) }
     else changes.creates.push(shape as TLCreateShapePartial)
@@ -273,7 +285,7 @@ export function sceneToEditorChanges(editor: Editor, elements: readonly Excalidr
       const source = editor.getShape(element.id)
       if (!source) continue
       for (const groupId of ancestorIds(editor, source)) {
-        if (element.groupIds.includes(groupId) && !groupRanks.has(groupId)) groupRanks.set(groupId, index + 1)
+        if (element.groupIds.includes(groupId) && !groupRanks.has(groupId)) groupRanks.set(groupId, paper + index + 1)
       }
     }
     for (const [id, index] of groupRanks) {

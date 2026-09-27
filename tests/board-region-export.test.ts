@@ -111,12 +111,24 @@ describe('selected area PDF', () => {
     const editor = board(), region = { x: -10_000, y: -5_000, w: 20_000, h: 10_000 }
     const bytes = await buildRegionPdf(editor, region, settings)
     const ratio = exports[0].options.pixelRatio!
-    expect(ratio).toBeCloseTo(Math.sqrt(24_000_000 / 200_000_000))
-    expect(canvases[0].width * canvases[0].height).toBeLessThanOrEqual(24_000_000 + 30_000)
+    // iPad Safari's canvas limit is 16,777,216 pixels
+    expect(ratio).toBeCloseTo(Math.sqrt(16_000_000 / 200_000_000))
+    expect(canvases[0].width * canvases[0].height).toBeLessThanOrEqual(16_777_216)
     expect(exports[0].ids).toHaveLength(4)
     const size = (await PDFDocument.load(bytes)).getPage(0).getSize()
     expect(size.width).toBeCloseTo(14_400)
     expect(size.height).toBeCloseTo(7_200)
+  })
+
+  it('keeps six inserted textbook pages under the iPad canvas limit', async () => {
+    const editor = board(), region = { x: -24, y: -24, w: 2248, h: 1914 }
+    await buildRegionPdf(editor, region, settings)
+    expect(canvases[0].width * canvases[0].height).toBeLessThanOrEqual(16_777_216)
+    expect(exports[0].options.pixelRatio).toBeLessThan(2)
+    // the image exporter's own canvas has the same cap
+    const { renderShapesToSvg } = await import('../src/files/imageExporter')
+    const svg = await renderShapesToSvg(editor, ['shape:note'], { bounds: region, pixelRatio: 2 })
+    expect(svg.width * svg.height).toBeLessThanOrEqual(16_777_216)
   })
 
   it('explains empty, tiny and broken areas', async () => {

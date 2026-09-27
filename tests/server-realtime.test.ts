@@ -632,11 +632,18 @@ describe('voice lifecycle without microphone or paid API calls', () => {
   it('bounds transient connection retries and never retries an authentication failure', async () => {
     fetchMock.mockImplementation(async (url: string) => url.endsWith('/session') ? { ok: false, status: 503, json: async () => ({ error: 'Voice service temporarily unavailable', retryable: true }) } : { ok: true, json: async () => ({ ok: true }) })
     const handlers = callbacks(), client = createRealtimeClient(handlers)
+    const sessionCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/session')).length
     const connecting = client.connect()
-    await vi.advanceTimersByTimeAsync(1000); await connecting
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/session'))).toHaveLength(3)
+    // retries back off (0.5, 1, 2, 4, 8 s) and stop at the one minute reconnect deadline
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sessionCalls()).toBe(3)
+    await vi.advanceTimersByTimeAsync(59_000); await connecting
+    expect(sessionCalls()).toBe(12)
     expect(handlers.onError).toHaveBeenCalledTimes(1)
+    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('within one minute'))
     expect(stopTrack).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(sessionCalls()).toBe(12)
     fetchMock.mockClear().mockImplementation(async () => ({ ok: false, status: 401, json: async () => ({ error: 'Invalid API key', retryable: false }) }))
     await client.connect()
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -645,13 +652,16 @@ describe('voice lifecycle without microphone or paid API calls', () => {
 
   it('renews sessions between turns and retains hard credit and intentional idle-stop behavior', async () => {
     let sessions = 0
+    // sessions of a minute or less no longer renew early, so this one is 75 s (renewal 15 s before the end)
     fetchMock.mockImplementation(async (url: string) => url.endsWith('/session') ? ++sessions === 1
-      ? { ok: true, json: async () => ({ sdp: 'answer', sessionId: 'first', maxDurationSeconds: 30 }) }
+      ? { ok: true, json: async () => ({ sdp: 'answer', sessionId: 'first', maxDurationSeconds: 75 }) }
       : { ok: false, status: 429, json: async () => ({ error: 'The voice credit allowance has been reached.', retryable: false }) }
       : { ok: true, json: async () => ({ ok: true }) })
     const handlers = { ...callbacks(), onRecoveryState: vi.fn() }, client = createRealtimeClient(handlers)
     await client.connect()
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(sessions).toBe(1)
+    await vi.advanceTimersByTimeAsync(1000)
     expect(sessions).toBe(2)
     expect(handlers.onRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ phase: 'renewing' }))
     expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('credit allowance'))

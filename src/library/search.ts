@@ -15,8 +15,10 @@ const ITEM = new RegExp(`(?:\\b(${KIND_PATTERN})\\s*#?\\s*|#\\s*)(\\d{1,3}(?:\\.
 const ITEMS = new RegExp(ITEM.source, 'gi')
 const CHAPTER = /\b(?:chapter|chap|ch)\s*\.?\s*(\d{1,2})\b(?![\d.]*\d)/
 const IN_SECTION = /\b(?:in|from|of)\s+(\d{1,2}\.\d{1,2})(?![\d.]*\d)/
-// roman labels only after "page", so "pi" never reads as page i
-const PAGE = /\b(?:pages?|pgs?|p)\s*(\d{1,4})\b|\b(?:pages?|pgs?)\s+([ivxlcdm]{1,7})\b/i
+// roman labels only after "page", so "pi" never reads as page i, and "the page I'm on" or "the page i am looking at" is not page i
+const PAGE = /\b(?:pages?|pgs?|p)\s*(\d{1,4})\b|\b(?:pages?|pgs?)\s+([ivxlcdm]{1,7})\b(?!\s*['’]|\s+(?:am|have|was|had|did|need|want|just|can|will)\b)/
+// a capital I alone after "page" is the teacher talking: "the page I have open"
+const PAGE_PRONOUN = /\b(?:pages?|pgs?)\s+I\b/
 const LONE = /^(\d{1,3}(?:\.\d{1,3}){1,2})$/
 const LONE_SKIP = new Set(['the', 'a', 'an', 'in', 'from', 'of', 'on', 'to', 'at', 'for', 'me', 'us', 'up', 'onto', 'into'])
 
@@ -84,7 +86,7 @@ export function analyzeLibraryText(text: string): { query: LibraryQuery | null; 
 
   const item = ITEM.exec(clean)
   const page = PAGE.exec(clean)
-  if (page && (!item || page.index < item.index)) {
+  if (page && (!item || page.index < item.index) && !(page[2] === 'i' && PAGE_PRONOUN.test(raw))) {
     const label = page[1] ? String(Number(page[1])) : page[2].toLowerCase()
     if (/^\d/.test(label) ? Number(label) >= 1 : romanValue(label) !== null) {
       return { query: { kind: 'page', label, ...book, raw }, leftovers: rest(page[0]) }
@@ -104,6 +106,16 @@ export function analyzeLibraryText(text: string): { query: LibraryQuery | null; 
     if (terms.length) return { query: { kind: 'topic', terms: terms.join(' '), ...book, ...scope, raw }, leftovers: [] }
   }
   return { query: null, leftovers: [] }
+}
+
+// "this page", "the page I'm looking at", "the page we are on": the page the teacher is on, not a search
+const HERE_WORDS = new Set(['the', 'this', 'that', 'current', 'same', 'page', 'i', 'im', 'm', 've', 'am', 'have', 'was', 'looking', 'at', 'on', 'open', 'opened', 'we', 're', 'are',
+  'here', 'right', 'now', 'showing', 'shown', 'reading', 'viewing', 'just', 'got', 'up', 'in', 'front', 'of', 'me', 'us', 'put', 'show', 'insert', 'add', 'board', 'whiteboard', 'onto', 'to', 'please'])
+const HERE_MARKS = new Set(['this', 'current', 'same', 'i', 'im', 'we', 'here'])
+
+export function isHerePage(text: string): boolean {
+  const words: string[] = String(text ?? '').toLowerCase().replace(/['’]/g, ' ').match(/[a-z]+/g) ?? []
+  return words.includes('page') && words.every(word => HERE_WORDS.has(word)) && words.some(word => HERE_MARKS.has(word))
 }
 
 function cut(text: string, match: RegExpMatchArray): string {
@@ -363,6 +375,27 @@ export function certainItem(query: LibraryQuery, candidates: Candidate[]): Candi
   if (named.length === 1) return named[0]
   if (!named.length && (!kind || LOOSE_KINDS.has(kind)) && fits.length === 1) return fits[0]
   return null
+}
+
+// words for the whole subject of the class, "the math book" or "our science textbook", say which kind of book without naming one
+const SUBJECTS: Array<[RegExp, RegExp]> = [
+  [/^math(s|ematics)?$/, /\b(math|maths|mathematics|calculus|precalculus|algebra|geometry|trigonometry|statistics|probability)\b/i],
+  [/^science$/, /\b(science|physics|chemistry|biology|anatomy|physiology|astronomy|geology)\b/i],
+]
+
+/**
+ * The books a subject name like "the math book" can mean: the books of that subject, else the books whose titles name no
+ * subject at all. null when the name is more than a class subject (then it names a book that is not here).
+ */
+export function subjectBooks(hint: string, books: BookRecord[]): BookRecord[] | null {
+  const words = String(hint ?? '').toLowerCase().split(/\s+/).filter(word => word && !/^\d{1,2}$/.test(word))
+  const subject = words.length === 1 ? SUBJECTS.find(([name]) => name.test(words[0])) : undefined
+  if (!subject) return null
+  const title = (book: BookRecord) => `${book.title} ${book.fileName ?? ''}`
+  const same = books.filter(book => subject[1].test(title(book)))
+  const plain = books.filter(book => !SUBJECTS.some(([, titles]) => titles.test(title(book))))
+  const found = same.length ? same : plain
+  return found.length ? found : null
 }
 
 function titleTokens(text: string): string[] {

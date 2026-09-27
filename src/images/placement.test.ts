@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { imagePlacement } from './placement'
+import { imagePlacement, imagePlacementArea } from './placement'
 import { insertGeneratedImage } from './insertGeneratedImage'
 import { Editor } from '../canvas/editor'
 import { normalizeSnapshot } from '../canvas/migration'
-import type { BoardContext } from '../../shared/board'
+import type { BoardContext, BoardObject, Bounds } from '../../shared/board'
 import { generatedPng } from '../../tests/fixtures/generated-image'
 
 const context: BoardContext = { focus: { kind: 'region', bounds: { x: 100, y: 200, w: 20, h: 300 }, targetIds: [] }, focusMode: 'reference', pointer: null, selectedIds: [], lastCreatedIds: [], objects: [], viewport: { x: 0, y: 0, w: 1200, h: 800 } }
@@ -13,6 +13,30 @@ describe('confirmed image placement and persistence', () => {
     expect(b.w / b.h).toBeCloseTo(1.5)
     expect(b.x + b.w / 2).toBe(110)
     expect(b.w).toBe(560)
+  })
+  it('keeps a new image clear of textbook pages, problems and other content when nothing is pointed at', () => {
+    const view = { x: 0, y: 0, w: 1440, h: 900 }
+    const objects: BoardObject[] = [
+      { id: 'shape:page', kind: 'textbook_page', bounds: { x: 100, y: 40, w: 560, h: 725 }, rotation: 0, locked: true },
+      { id: 'shape:problem', kind: 'textbook_item', bounds: { x: 700, y: 600, w: 400, h: 100 }, rotation: 0, workBelow: 260 },
+    ]
+    const free = { ...context, focus: null, viewport: view, objects }
+    const area = imagePlacementArea(free, { type: 'propose_image' })
+    const overlaps = (a: Bounds, b: Bounds) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    for (const object of objects) expect(overlaps(area, { ...object.bounds, h: object.bounds.h + (object.workBelow ?? 0) })).toBe(false)
+    expect(area.x >= view.x && area.y >= view.y && area.x + area.w <= view.x + view.w && area.y + area.h <= view.y + view.h).toBe(true)
+    // the old view center sits on the textbook page
+    expect(overlaps({ x: 440, y: 230, w: 560, h: 440 }, objects[0].bounds)).toBe(true)
+    // a pointed spot still wins
+    expect(imagePlacement({ ...free, focus: context.focus }, { type: 'propose_image' }, '1536x1024').x + 280).toBe(110)
+    // a crowded view gets a smaller free area before falling back to the center
+    const crowded = { ...free, objects: [...objects, { id: 'shape:graph', kind: 'plot', bounds: { x: 700, y: 60, w: 400, h: 300 } }] as BoardObject[] }
+    const small = imagePlacementArea(crowded, { type: 'propose_image' })
+    expect(small.w).toBeLessThan(560)
+    for (const object of crowded.objects) expect(overlaps(small, { ...object.bounds, h: object.bounds.h + (object.workBelow ?? 0) })).toBe(false)
+    // a full view falls back to its center
+    const full = { ...free, objects: [{ id: 'shape:sheet', kind: 'pdf_page', bounds: { x: -10, y: -10, w: 1460, h: 920 } }] as BoardObject[] }
+    expect(imagePlacementArea(full, { type: 'propose_image' })).toEqual({ x: 440, y: 230, w: 560, h: 440 })
   })
   it('fits a literal region and rejects missing or escaping bounds', () => {
     const literal = { ...context, focusMode: 'literal' as const, focus: { ...context.focus!, bounds: { x: 100, y: 200, w: 300, h: 300 } } }

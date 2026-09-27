@@ -52,7 +52,8 @@ export function closePdf(doc: PDFDocumentProxy): Promise<void> {
 }
 
 type Fragment = { text: string; x0: number; x1: number; y: number; size: number; space: boolean }
-type Run = { parts: Fragment[]; y: number; size: number; x0: number; x1: number }
+/** numbered: the run starts with an exercise number like "413 ." */
+type Run = { parts: Fragment[]; y: number; size: number; x0: number; x1: number; numbered?: boolean }
 
 function addPart(run: Run, part: Fragment) {
   run.parts.push(part)
@@ -63,13 +64,19 @@ function addPart(run: Run, part: Fragment) {
 /**
  * Visual lines from pdf.js text items. toView maps PDF user space to the page as displayed (top left origin).
  * Items are read in content order so side by side columns stay apart, then pieces of one line drawn out of order are joined.
+ * An exercise number set as its own item with its dot after it ("413" then " .") always starts a line, so a grid cell
+ * never joins the words or math of the cell before it.
  */
 export function textLinesFrom(items: ReadonlyArray<unknown>, toView: (x: number, y: number) => number[], width: number, height: number): TextLine[] {
   if (!(width > 0) || !(height > 0)) return []
+  const list = items as ReadonlyArray<{ str?: unknown; transform?: unknown; width?: unknown; hasEOL?: unknown } | null>
+  const numberAt = (k: number) => typeof list[k]?.str === 'string' && /^\d{1,3}$/.test(list[k]!.str as string)
+    && typeof list[k + 1]?.str === 'string' && /^ ?\.$/.test(list[k + 1]!.str as string)
   const runs: Run[] = []
   let current: Run | null = null, space = false
   const finish = () => { if (current) runs.push(current); current = null; space = false }
-  for (const raw of items as Array<{ str?: unknown; transform?: unknown; width?: unknown; hasEOL?: unknown } | null>) {
+  for (let k = 0; k < list.length; k++) {
+    const raw = list[k]
     if (typeof raw?.str !== 'string' || !Array.isArray(raw.transform)) { if (raw?.hasEOL === true) finish(); continue }
     if (!raw.str.trim()) { if (current) space = true; if (raw.hasEOL === true) finish(); continue }
     const [a, b, c, d, e, f] = (raw.transform as unknown[]).map(Number)
@@ -80,14 +87,16 @@ export function textLinesFrom(items: ReadonlyArray<unknown>, toView: (x: number,
     const [ux, uy] = toView(e + c, f + d)
     if (![sx, sy, ex, ey, ux, uy].every(Number.isFinite)) continue
     const part: Fragment = { text: raw.str, x0: Math.min(sx, ex), x1: Math.max(sx, ex), y: (sy + ey) / 2, size: Math.max(Math.hypot(ux - sx, uy - sy), 1), space: false }
+    const numbered = numberAt(k)
     if (current) {
       const em = Math.max(current.size, part.size)
-      // superscripts sit a little off the baseline; a jump back or a wide gap starts another line or column
-      if (Math.abs(part.y - current.y) > Math.max(1.5, 0.45 * em) || part.x0 < current.x1 - em || part.x0 - current.x1 > 3 * em) finish()
+      // superscripts sit a little off the baseline; a jump back or a wide gap starts another line or column, and so does
+      // the next exercise number after a gap where math was drawn
+      if (Math.abs(part.y - current.y) > Math.max(1.5, 0.45 * em) || part.x0 < current.x1 - em || part.x0 - current.x1 > (numbered ? 1 : 3) * em) finish()
     }
     part.space = space; space = false
     if (current) addPart(current, part)
-    else current = { parts: [part], y: part.y, size: part.size, x0: part.x0, x1: part.x1 }
+    else current = { parts: [part], y: part.y, size: part.size, x0: part.x0, x1: part.x1, numbered }
     if (raw.hasEOL === true) finish()
   }
   finish()
@@ -96,7 +105,7 @@ export function textLinesFrom(items: ReadonlyArray<unknown>, toView: (x: number,
   const merged: Run[] = []
   for (const run of runs) {
     const em = run.size
-    const host = merged.find(other => Math.abs(other.y - run.y) <= 0.3 * Math.max(em, other.size)
+    const host = !run.numbered && merged.find(other => Math.abs(other.y - run.y) <= 0.3 * Math.max(em, other.size)
       && run.x0 - other.x1 >= -0.5 * em && run.x0 - other.x1 <= 1 * Math.max(em, other.size))
     if (host) { run.parts[0].space ||= run.x0 - host.x1 > 0.15 * em; for (const part of run.parts) addPart(host, part) }
     else merged.push({ ...run, parts: [...run.parts] })

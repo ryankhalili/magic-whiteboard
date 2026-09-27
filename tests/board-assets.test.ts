@@ -291,18 +291,31 @@ describe('library pages through the Excalidraw adapter', () => {
     expect(scene.elements.filter(element => element.locked).map(element => element.id)).toEqual(['shape:sheet', first, second])
   })
 
-  it('goes on top when everything on the board is locked', () => {
+  it('goes on top when everything on the board is locked paper', () => {
     const editor = new Editor()
+    editor.createAssets([{ id: 'asset:p', typeName: 'asset', type: 'image', meta: {}, props: { src: PNG, w: 1, h: 1 } }])
     editor.run(() => editor.createShapes([
-      { id: 'shape:a', type: 'geo', isLocked: true, props: { w: 10, h: 10 } },
-      { id: 'shape:b', type: 'geo', props: { w: 10, h: 10 } },
+      { id: 'shape:a', type: 'image', isLocked: true, props: { assetId: 'asset:p', w: 10, h: 10 }, meta: { library: { bookId: 'b', pageIndex: 0 } } },
+      { id: 'shape:b', type: 'image', props: { assetId: 'asset:p', w: 10, h: 10 }, meta: { pdf: { page: 1 } } },
     ]), { ignoreShapeLock: true })
-    editor.run(() => editor.updateShapes([{ id: 'shape:b', type: 'geo', isLocked: true }]), { ignoreShapeLock: true })
+    editor.run(() => editor.updateShapes([{ id: 'shape:b', type: 'image', isLocked: true }]), { ignoreShapeLock: true })
     editor.run(() => editor.sendToBack(['shape:a'], { aboveLocked: true }), { ignoreShapeLock: true })
     expect(order(editor)).toEqual(['shape:b', 'shape:a'])
     // without the lock override a locked shape does not move
     editor.sendToBack(['shape:b'], { aboveLocked: true })
     expect(order(editor)).toEqual(['shape:b', 'shape:a'])
+  })
+
+  it('a pasted background still goes under a diagram the teacher locked', () => {
+    const editor = new Editor()
+    editor.createAssets([{ id: 'asset:p', typeName: 'asset', type: 'image', meta: {}, props: { src: PNG, w: 1, h: 1 } }])
+    editor.run(() => editor.createShapes([
+      { id: 'shape:diagram', type: 'geo', isLocked: true, props: { w: 10, h: 10 } },
+      { id: 'shape:later', type: 'geo', props: { w: 10, h: 10 } },
+      { id: 'shape:bg', type: 'image', props: { assetId: 'asset:p', w: 10, h: 10 }, meta: { marginaliaBackground: true } },
+    ]), { ignoreShapeLock: true })
+    editor.sendToBack(['shape:bg'], { aboveLocked: true })
+    expect(order(editor)).toEqual(['shape:bg', 'shape:diagram', 'shape:later'])
   })
 })
 

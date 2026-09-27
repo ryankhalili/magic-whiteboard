@@ -5,18 +5,19 @@ import { WhiteboardCanvas } from './canvas/WhiteboardCanvas'
 import { ArrowUp, Check, ChevronDown, CircleHelp, Download, Eraser, FileImage, FileUp, Hand, ImagePlus, Keyboard, Library, LoaderCircle, Maximize, Mic, MicOff, Minus, MousePointer2, Pencil, Plus, Redo2, RotateCcw, RotateCw, Save, Scan, Settings2, Sparkles, Trash2, Type, Sigma, Undo2, Volume2, VolumeX, X } from 'lucide-react'
 import { createBoardController, getPlacementBounds, MagicShapeView } from './board'
 import { focusImageBounds, libraryAssetId, libraryImageSize, libraryItemKey, libraryQueryFromOperation, spotForOption, type LibraryImageKind } from './board/controller'
-import { findSpots, guessContentSize, NATURAL_SIZES, obstaclesFromObjects } from './board/placementSpots'
+import { guessContentSize, NATURAL_SIZES } from './board/placementSpots'
 import { finishPointerFollow, focusFromGesture, movePointerFollow, startPointerFollow, type PointerFollow } from './board/interactions'
 import { createRealtimeClient, checkVoiceConnection, type ContentPreview } from './ai/realtime'
 import { NotebookSwitcher, useNotebookLibrary, saveNotebookSnapshot, loadNotebookSnapshot, type NotebookLibrary } from './notebooks'
-import { sendBoardCommand, pairDevice, repairBoardCommand } from './ai/commands'
+import { getApiStatus, sendBoardCommand, pairDevice, repairBoardCommand } from './ai/commands'
 import { contextFingerprint, type VoiceRecoveryState } from './ai/voice-recovery'
 import { prepareBoardRepair, pinBoardRepair } from './ai/board-repair'
 import { useImageGeneration } from './images/useImageGeneration'
 import { ImageGenerationPanel } from './images/ImageGenerationPanel'
-import { downloadOriginalNotebook, exportBoard, exportRegionPdf, importImageFile, installBoardImageExporter, loadProject, regionFromSelection, saveProject } from './files/boardFiles'
+import { downloadOriginalNotebook, exportBoard, exportRegionPdf, importImageFile, installBoardImageExporter, loadProject, PAGE_BOUNDS, regionFromSelection, saveProject } from './files/boardFiles'
 import { boardNeedsImage, captureBoardContext } from './files/capture'
-import { boardImportLimit, isPdfFile, overlaps } from './files/pdfPages'
+import { boardImportLimit, isPdfFile } from './files/pdfPages'
+import { addedBounds, asksForPanelPage, boardOnly, commandAllowance, createSpeechStart, freeSpots, insertMessage, instructionTooLong, isPairingError, localHistoryCommand, modelLibrary, modelObjects, wantsPlacement } from './appLogic'
 import { defaultImportTarget, ImportDialog, importProgressText, type ImportInfo, type ImportTarget } from './library/ImportDialog'
 import { LibraryPanel } from './library/LibraryPanel'
 import { candidateTitle, panelHits, ReferencePanel } from './library/ReferencePanel'
@@ -31,11 +32,11 @@ import { listBooks, removeBook, touchBook } from './library/store'
 import type { BookRecord, Candidate, ImportProgress, LibraryQuery, PageBox, RankedCandidate, RenderedImage, Spot } from './library/types'
 import { ObjectInspector, objectLabel } from './board/ObjectInspector'
 import { flushSourceEdits, snapshotWithPendingSource } from './board/liveSource'
-import { DEFAULT_SETTINGS, type AppSettings, type BoardCommand, type BoardContext, type BoardObject, type BoardOperation, type BoardResult, type Bounds, type Focus, type LibraryAction, type LibraryContext, type PlacementCandidate, type PlacementOption, type Point } from '../shared/board'
+import { DEFAULT_SETTINGS, type AppSettings, type BoardCommand, type BoardContext, type BoardOperation, type BoardResult, type Bounds, type Focus, type LibraryAction, type PlacementCandidate, type PlacementOption, type Point } from '../shared/board'
 
 type Tool = 'magic' | 'select' | 'draw' | 'eraser' | 'hand' | 'text' | 'math'
 type Message = { id: number; role: 'user' | 'assistant' | 'event'; text: string }
-type ApiStatus = { configured: boolean; authorized: boolean; pairingRequired: boolean; pairingCode?: string; models?: { text: string; realtime: string; image?: string }; limits?: { sessionMinutes: number; voiceMinutesLimit: number; imageLimit?: number } }
+type ApiStatus = { configured: boolean; authorized: boolean; pairingRequired: boolean; pairingCode?: string; models?: { text: string; realtime: string; image?: string }; limits?: { sessionMinutes: number; voiceMinutesLimit: number; imageLimit?: number; commandLimit?: number }; usage?: { commands?: number } }
 const COLORS = ['#202124', '#2563eb', '#dc2626', '#15803d', '#7c3aed']
 const INK_COLORS = ['black', 'blue', 'red', 'green', 'violet'] as const
 const OPTION_IDS = ['A', 'B', 'C'] as const
@@ -43,15 +44,14 @@ let messageId = 0
 let importId = 0
 type PendingImport = { id: number; file: File; info: ImportInfo | null; progress: ImportProgress | null; busy: boolean; choosing: ImportTarget | null }
 type LibrarySource = { book: BookRecord; pageIndex: number; candidate?: Candidate; box?: PageBox }
-type ResolvedInsert = { op: BoardOperation; reserve: Bounds } | { result: BoardResult }
+type ResolvedInsert = { op: BoardOperation; reserve: Bounds; note?: string } | { result: BoardResult }
 type PlaceOptions = { option?: PlacementOption; extra?: Bounds[]; manual?: boolean }
 type BookPage = { bookId: string; pageIndex: number }
-// library catalog and ranked spots refresh on their own, so they never count as a board change
-const boardOnly = (context: BoardContext): BoardContext => ({ ...context, library: undefined, placementOptions: undefined })
 const isLibraryOp = (op: BoardOperation | undefined) => op?.type === 'insert_library' || op?.type === 'library_action' || op?.type === 'create_image'
 const pickText = (count: number) => count > 1 ? `Pick one of the ${count} highlighted matches.` : 'Tap the highlighted match to insert it.'
 const errorText = (error: unknown, fallback: string) => error instanceof Error && error.message ? error.message : fallback
-const union = (a: Bounds, b: Bounds): Bounds => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y); return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y } }
+const spotKey = (spots: Spot[]) => spots.map(spot => `${Math.round(spot.bounds.x)},${Math.round(spot.bounds.y)}`).join('|')
+const spotOptions = (spots: Spot[]): PlacementOption[] | null => spots.length ? spots.slice(0, 3).map((spot, i) => ({ id: OPTION_IDS[i], bounds: spot.bounds, note: spot.description.slice(0, 300) })) : null
 
 export default function App() {
   const library = useNotebookLibrary()
@@ -102,6 +102,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const snapshotLoad = useRef<Promise<void>>(Promise.resolve())
   const snapshotTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const commandAbort = useRef<AbortController | null>(null)
+  // glides new content into view; set once revealInserted exists
+  const revealRef = useRef<(b: Bounds, selects: boolean) => void>(() => {})
+  // voice placement spots in local order; Jev ranks them at most once per utterance
+  const voiceSpots = useRef<{ key: string; spots: Spot[] } | null>(null)
+  const rankedKey = useRef('')
+  const speechStart = useRef(createSpeechStart())
   const settings = notebook.settings
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -179,18 +185,14 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const important = new Set([...selectedIds, ...(currentFocus?.targetIds || []), ...(controller.current?.lastCreatedIds || [])])
     // worksheet page text only matters for pages in view or in the circled area
     const view = currentFocus?.kind === 'region' ? currentFocus.bounds : vp
-    const boardObjects = (controller.current?.getObjects() || []).map((o): BoardObject => o.kind === 'pdf_page' && o.text && !(view && overlaps(o.bounds, view)) ? { ...o, text: undefined } : o)
-    const pagesInView = new Set(boardObjects.filter(o => o.kind === 'pdf_page' && o.text && !important.has(o.id)))
-    const relevantObjects = [...boardObjects.filter(o => important.has(o.id)), ...pagesInView, ...boardObjects.filter(o => !important.has(o.id) && !pagesInView.has(o)).reverse()].slice(0, 120)
-    const shelf = booksRef.current, open = openBookRef.current, pending = importRef.current
+    const relevantObjects = modelObjects(controller.current?.getObjects() || [], important, view)
+    const shelf = booksRef.current, open = openBookRef.current, pending = importRef.current, page = panelPageRef.current
     const matches = open ? panelHits(highlightRef.current, open) : []
-    // titles only: the model never receives book text
-    const library: LibraryContext | undefined = shelf.length || open || pending ? {
-      openBook: open ? { id: open.id.slice(0, 120), title: (open.title || open.fileName || 'Untitled book').slice(0, 200) } : null,
-      books: shelf.slice(0, 20).map(book => ({ id: book.id.slice(0, 120), title: (book.title || book.fileName || 'Untitled book').slice(0, 200), pages: Math.min(100_000, Math.max(0, Math.floor(book.pageCount) || 0)) })),
-      pendingImport: pending && !pending.busy ? { name: pending.file.name.slice(0, 240), pages: Math.min(100_000, pending.info?.pageCount ?? 0) } : null,
-      ...(open && matches.length ? { highlights: matches.map(c => candidateTitle(c, open.labels).slice(0, 160)) } : {}),
-    } : undefined
+    // titles only: the model never receives book text, and book ids tell it nothing
+    const library = modelLibrary({
+      books: shelf, open, pending: pending && !pending.busy ? { name: pending.file.name, pages: pending.info?.pageCount ?? 0 } : null,
+      highlights: open ? matches.map(c => candidateTitle(c, open.labels)) : [], panelPageIndex: open && page?.bookId === open.id ? page.pageIndex : null,
+    })
     return {
       focus: currentFocus,
       focusMode: focusModeRef.current,
@@ -225,7 +227,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     setSaveState('Saved on this device')
     notify('Your image is ready. Select it to move, resize, rotate, or crop it.')
   })
-  const execute = useCallback((ops: BoardOperation[], reportFailure = true): BoardResult => {
+  // reveal: new objects that are off screen or under a panel glide into view
+  const execute = useCallback((ops: BoardOperation[], reportFailure = true, reveal = true): BoardResult => {
     if (!controller.current) return { ok: false, message: 'The board is still loading.', ids: [] }
     if (ops.some(operation => operation.type === 'propose_image')) {
       try {
@@ -245,10 +248,13 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     // Finish an earlier drag before the next edit changes its geometry or history.
     stopFollowing()
     const followMark = ops.some(o => o.followPointer) ? editor.markHistoryStoppingPoint('Follow pointer instruction') : null
+    const existing = reveal && !followMark && ops.some(op => op.type.startsWith('create_')) ? editor.getCurrentPageShapeIds() : null
     const result = controller.current.applyOperations(ops)
     if (result.ok) {
       setError('')
       notify(result.message)
+      const added = existing && addedBounds(editor, existing, result.ids)
+      if (added) revealRef.current(added, editor.getSelectedShapeIds().length > 0)
       if (followMark && result.ids.length) {
         const p = pointerRef.current || { x: 0, y: 0 }
         const context = getContext()
@@ -274,7 +280,22 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }, [getContext, notify, stopFollowing])
 
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(''), 4200); return () => clearTimeout(id) }, [toast])
-  useEffect(() => { fetch('/api/status').then(r => r.json()).then(setApi).catch(() => setError('The local AI server is not reachable. Drawing still works.')) }, [])
+  // on this laptop the status call also grants access again after a server restart
+  const refreshStatus = useCallback(async (): Promise<ApiStatus | null> => {
+    const status = await getApiStatus() as ApiStatus
+    setApi(status)
+    return status
+  }, [])
+  // a lapsed pairing: the laptop is let back in, and an iPad shows the pairing field again
+  const recoverPairing = useCallback((error: unknown) => {
+    if (!isPairingError(error)) return
+    void refreshStatus().then(status => {
+      if (status?.authorized) setError('The laptop server restarted, so this device connected again. Give the instruction again.')
+    }).catch(() => {})
+  }, [refreshStatus])
+  useEffect(() => { refreshStatus().catch(() => setError('The local AI server is not reachable. Drawing still works.')) }, [refreshStatus])
+  const imageMessage = images.draft?.message
+  useEffect(() => { if (imageMessage) recoverPairing(imageMessage) }, [imageMessage, recoverPairing])
   useEffect(() => () => { voiceRef.current?.disconnect(); commandAbort.current?.abort() }, [])
   useEffect(() => {
     if (!aiPaused) return
@@ -458,7 +479,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       event.preventDefault(); event.stopPropagation()
       event.currentTarget.setPointerCapture(event.pointerId)
       const point = editorRef.current.screenToPage({ x: event.clientX, y: event.clientY })
-      const result = execute([{ type: tool === 'math' ? 'create_math' : 'create_text', latex: '', text: '', bounds: { ...point, w: 400, h: tool === 'math' ? 100 : 140 }, fontSize: tool === 'math' ? 28 : 22, color }])
+      const result = execute([{ type: tool === 'math' ? 'create_math' : 'create_text', latex: '', text: '', bounds: { ...point, w: 400, h: tool === 'math' ? 100 : 140 }, fontSize: tool === 'math' ? 28 : 22, color }], true, false)
       if (result.ok && result.ids[0]) pendingNewContent.current = result.ids[0]
       return
     }
@@ -503,38 +524,55 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     voiceRef.current?.updateContext()
   }
 
+  // typed requests the board answers itself, with no model call
+  const runLocal = async (text: string, task: () => Promise<BoardResult>, fallback: string) => {
+    setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
+    try {
+      const result = await task()
+      if (!result.ok) setError(result.message); else notify(result.message)
+      addMessage('assistant', result.message)
+    } catch (e) { setError(errorText(e, fallback)) }
+    finally { setBusy(false) }
+  }
+  // everything on the board, wherever the view, pointer or gesture is; a reply is applied only when this still matches
+  const boardKey = () => contextFingerprint(boardOnly({ ...getContext(), objects: controller.current?.getObjects() ?? [] }))
   const runPrompt = async (text = prompt) => {
     if (!text.trim() || busy || recovery || voiceStatus === 'connecting') return
-    const intent = detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0, bookTitles: booksRef.current.map(book => book.title), highlightCount: shownMatches().length })
-    if (intent) {
-      setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
-      try {
-        const result = await runIntent(intent)
-        if (!result.ok) setError(result.message); else notify(result.message)
-        addMessage('assistant', result.message)
-      } catch (e) { setError(errorText(e, 'The library could not be read.')) }
-      finally { setBusy(false) }
-      return
+    const tooLong = instructionTooLong(text)
+    if (tooLong) { setError(tooLong); return }
+    const step = localHistoryCommand(text)
+    if (step) return runLocal(text, async () => execute([{ type: step }], false), 'That could not be done.')
+    const panel = panelSource()
+    if (panel && asksForPanelPage(text)) {
+      return runLocal(text, () => insertLock.run(async () => {
+        focusUsed.current = false
+        const { op } = await libraryImageOp(panel, `page ${panel.book.labels?.[panel.pageIndex] ?? panel.pageIndex + 1}`)
+        return applyResolved([op], [], true)
+      }), 'That page could not be drawn.')
     }
+    const intent = detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0, bookTitles: booksRef.current.map(book => book.title), highlightCount: shownMatches().length })
+    if (intent) return runLocal(text, () => runIntent(intent), 'The library could not be read.')
     if (api?.pairingRequired && !api.authorized) { setError('Enter the pairing code shown in Help on your laptop to connect this device.'); return }
     setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
     const abort = new AbortController(); commandAbort.current = abort
     let progressTimer: ReturnType<typeof setTimeout> | undefined
+    let sent = false
     try {
       flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
       if (voiceRef.current?.isConnected()) { voiceRef.current.sendText(text); return }
       setCommandProgress('Working on your request…')
       progressTimer = setTimeout(() => setCommandProgress('This request is taking a little longer than usual. I’m checking it before changing the board…'), 3500)
-      const before = structuredClone(getContext())
-      // ink or a non library image; book pages never go to the model
-      const needsImage = !!editorRef.current && boardNeedsImage(editorRef.current)
+      const before = structuredClone(getContext()), boardBefore = boardKey()
+      // ink or a non library image in the area the model looks at; book pages never go to the model
+      const needsImage = !!editorRef.current && boardNeedsImage(editorRef.current, before.focus)
       const visual = needsImage ? await getVisualContext() : null
-      // without a focus, the server ranks these free spots into placement options A, B, C
-      const placementCandidates = before.focus ? undefined : typedCandidates(text)
+      // the server ranks these free spots into placement options A, B, C; an edit of the selection places nothing
+      const placementCandidates = wantsPlacement(text, before) ? typedCandidates(text) : undefined
+      sent = true
       const result = await sendBoardCommand(text, { ...before, placementOptions: undefined }, messages.filter(m => m.role !== 'event').slice(-8).map(m => ({ role: m.role as 'user' | 'assistant', text: m.text })), visual || undefined, abort.signal, placementCandidates)
       if (abort.signal.aborted) return
       flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
-      if (contextFingerprint(boardOnly(before)) !== contextFingerprint(boardOnly(getContext()))) { notify('The board changed while I was working, so I left this response unapplied. Give the instruction again when ready.'); return }
+      if (boardBefore !== boardKey()) { notify('The board changed while I was working, so I left this response unapplied. Give the instruction again when ready.'); return }
       let applied: BoardResult | null = null
       if (result.operations.length) {
         const previous = placementRef.current
@@ -557,8 +595,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       }
       // the board, not the model, knows whether a book lookup inserted something or is waiting for a tap
       addMessage('assistant', applied && (!applied.ok || result.operations.some(op => op.type === 'propose_image' || isLibraryOp(op))) ? applied.message : result.message || applied?.message || 'Done.')
-    } catch (e) { if (!abort.signal.aborted) setError(e instanceof Error ? e.message : String(e)) }
-    finally { clearTimeout(progressTimer); if (commandAbort.current === abort) commandAbort.current = null; setBusy(false); setCommandProgress('') }
+    } catch (e) { if (!abort.signal.aborted) { setError(e instanceof Error ? e.message : String(e)); recoverPairing(e) } }
+    finally {
+      clearTimeout(progressTimer); if (commandAbort.current === abort) commandAbort.current = null; setBusy(false); setCommandProgress('')
+      // keeps the allowance shown in Help and the low allowance warning current
+      if (sent) void refreshStatus().catch(() => {})
+    }
   }
   const toggleVoice = async () => {
     if (voiceStatus !== 'idle') { voiceRef.current?.disconnect(); setVoiceStatus('idle'); setLiveTranscript(''); return }
@@ -576,7 +618,10 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           return executeResolvedRef.current(ops, false).finally(() => setBusy(false))
         },
         beforeApplyOperations: () => { flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing() },
-        onAudioLevel: level => voiceOrbRef.current?.style.setProperty('--mic-level', String(level)),
+        onAudioLevel: level => {
+          voiceOrbRef.current?.style.setProperty('--mic-level', String(level))
+          if (speechStart.current(level, performance.now())) rankForTurn()
+        },
         onContentPreview: handleContentPreview,
         onStatus: setVoiceStatus,
         onRecoveryState: state => { setRecovery(state); if (state) setError('') },
@@ -584,19 +629,19 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         repairRequest: repairBoardCommand,
         onTranscript: (text: string, final: boolean) => { setLiveTranscript(text); if (final) addMessage('user', text) },
         onAssistant: (text: string, final: boolean) => { if (final) { addMessage('assistant', text); setLiveTranscript('') } },
-        onError: (text: string) => setError(text), spokenReplies,
+        onError: (text: string) => { setError(text); recoverPairing(text) }, spokenReplies,
       })
       voiceRef.current = client
       await client.connect()
       if (voiceRef.current === client && client.isConnected()) chooseTool('magic')
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setVoiceStatus('idle') }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setVoiceStatus('idle'); recoverPairing(e) }
   }
 
   const pair = async () => {
     setPairing(true); setError('')
     try {
       await pairDevice(pairCode)
-      setApi(await (await fetch('/api/status')).json())
+      await refreshStatus()
     } catch (e) { setError((e as Error).message) }
     finally { setPairing(false) }
   }
@@ -636,7 +681,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const testVoice = async () => {
     setCheckingVoice(true); setError('')
     try { await checkVoiceConnection(getContext()); notify('Voice connection verified. The microphone was not activated.') }
-    catch (e) { setError((e as Error).message) }
+    catch (e) { setError((e as Error).message); recoverPairing(e) }
     finally { setCheckingVoice(false) }
   }
   const doExport = async (format: 'png' | 'pdf') => {
@@ -659,7 +704,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
   useEffect(() => {
     const paste = (event: ClipboardEvent) => {
-      if ((event.target as HTMLElement).closest('input,textarea,[contenteditable=true],math-field,.marginalia-inline-editor')) return
+      if (event.target instanceof Element && event.target.closest('input,textarea,[contenteditable=true],math-field,.marginalia-inline-editor')) return
       const image = [...(event.clipboardData?.files || [])].find(f => f.type.startsWith('image/'))
       if (image) { event.preventDefault(); event.stopImmediatePropagation(); importAsBackground.current = true; void importImage(image) }
     }
@@ -692,30 +737,34 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       const r = element.getBoundingClientRect()
       if (r.width > 0 && r.height > 0) rects.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom, ...(element.matches(INSPECTOR_UI) ? { soft: true } : {}) })
     }
-    const stage = stageRef.current?.getBoundingClientRect()
-    if (selects && stage && !showHistoryRef.current) rects.push(inspectorZone(stage, window.innerWidth))
+    if (selects && !showHistoryRef.current) {
+      // the hidden .inspector-zone has the inspector's own css, so it sits exactly where the inspector opens
+      const zone = stageRef.current?.querySelector('.inspector-zone')?.getBoundingClientRect(), stage = stageRef.current?.getBoundingClientRect()
+      if (zone && zone.width > 0 && zone.height > 0) rects.push({ left: zone.left, top: zone.top, right: zone.right, bottom: zone.bottom, soft: true })
+      else if (stage) rects.push(inspectorZone(stage, window.innerWidth))
+    }
     return rects
   }, [])
   // free spots for new content of this size, avoiding floating panels and everything on the page
-  const boardSpots = useCallback(function boardSpots(size: { w: number; h: number }, workBelow: number, extra: Bounds[] = [], selects = true): Spot[] {
+  const boardSpots = useCallback(function boardSpots(size: { w: number; h: number }, workBelow: number, extra: Bounds[] = [], selects = true, sheet = true): Spot[] {
     const ed = editorRef.current
     if (!ed) return []
-    const vp = ed.getViewportPageBounds(), zoom = ed.getZoomLevel() || 1
-    const objects = controller.current?.getObjects() ?? []
+    const vp = ed.getViewportPageBounds(), objects = controller.current?.getObjects() ?? []
     const avoid = floatingRects(selects).map((r): Bounds => {
       const a = ed.screenToPage({ x: r.left, y: r.top }), b = ed.screenToPage({ x: r.right, y: r.bottom })
       return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y }
     })
     const selectedIds = ed.getSelectedShapeIds() as string[], last = controller.current?.lastCreatedIds ?? []
     const near = objects.find(o => o.id === selectedIds[0]) ?? objects.find(o => o.id === last[0])
-    const spots = findSpots({
-      viewport: { x: vp.x, y: vp.y, w: vp.w, h: vp.h }, obstacles: [...obstaclesFromObjects(objects), ...extra], size, workBelow,
-      near: near?.bounds ?? null, max: 12, avoid, insets: { left: 84 / zoom, top: 56 / zoom, right: 16 / zoom, bottom: 40 / zoom },
+    // in A4 page mode new content stays on the sheet, unless the caller asks for room beside it
+    const spots = freeSpots({
+      viewport: { x: vp.x, y: vp.y, w: vp.w, h: vp.h }, zoom: ed.getZoomLevel(), objects, size, workBelow, extra, near: near?.bounds ?? null, avoid,
+      sheet: sheet && settingsRef.current.mode === 'page' ? PAGE_BOUNDS : null, isBackground: id => ed.getShape(id as TLShapeId)?.meta.marginaliaBackground === true,
     })
     // on a small screen new content may go where the inspector opens when nothing else is in view; it folds away
     const inView = (list: Spot[]) => list.some(spot => (spot.features.inView ?? 0) >= .7)
     if (!selects || inView(spots)) return spots
-    const loose = boardSpots(size, workBelow, extra, false)
+    const loose = boardSpots(size, workBelow, extra, false, sheet)
     return inView(loose) ? loose : spots
   }, [floatingRects])
   // best first; the ranker (Jev or local) gets 1.5 s, then the local order stands
@@ -738,27 +787,33 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       .filter(spot => Math.abs(spot.bounds.x) <= 1e6 && Math.abs(spot.bounds.y) <= 1e6)
     return spots.length ? spots.map(spot => ({ id: spot.id, bounds: spot.bounds, description: spot.description.slice(0, 300), features: spot.features })) : undefined
   }
-  // voice gets the current top 3 spots as placement options, refreshed when the board settles
+  // voice gets the current top 3 spots as placement options in local order, refreshed when the board settles
   useEffect(() => {
     if (voiceStatus === 'idle' || focus) {
-      spotsKey.current = ''
+      spotsKey.current = ''; voiceSpots.current = null; rankedKey.current = ''
       if (placementRef.current) { placementRef.current = null; voiceRef.current?.updateContext() }
       return
     }
-    let stale = false
     const timer = setTimeout(() => {
-      const spots = boardSpots(NATURAL_SIZES.plot, 0)
-      const key = spots.map(spot => `${Math.round(spot.bounds.x)},${Math.round(spot.bounds.y)}`).join('|')
+      const spots = boardSpots(NATURAL_SIZES.plot, 0), key = spotKey(spots)
       if (key === spotsKey.current) return
-      void rankSpots(spots, 'new content the teacher asks for').then(ranked => {
-        if (stale) return
-        spotsKey.current = key
-        placementRef.current = ranked.length ? ranked.slice(0, 3).map((spot, i) => ({ id: OPTION_IDS[i], bounds: spot.bounds, note: spot.description.slice(0, 300) })) : null
-        voiceRef.current?.updateContext()
-      })
+      spotsKey.current = key; voiceSpots.current = { key, spots }
+      placementRef.current = spotOptions(spots)
+      voiceRef.current?.updateContext()
     }, 600)
-    return () => { stale = true; clearTimeout(timer) }
-  }, [voiceStatus, focus, tick, boardSpots, rankSpots])
+    return () => clearTimeout(timer)
+  }, [voiceStatus, focus, tick, boardSpots])
+  // when the teacher starts speaking, the ranker orders those spots once, while the sentence is still being said
+  const rankForTurn = useCallback(() => {
+    const current = voiceSpots.current
+    if (!current || current.spots.length < 2 || rankedKey.current === current.key) return
+    rankedKey.current = current.key
+    void rankSpots(current.spots, 'new content the teacher asks for').then(ranked => {
+      if (voiceSpots.current !== current || !placementRef.current) return
+      placementRef.current = spotOptions(ranked)
+      voiceRef.current?.updateContext()
+    })
+  }, [rankSpots])
 
   const stopGlide = () => { cancelAnimationFrame(glideFrame.current); glideFrame.current = 0 }
   useEffect(() => () => cancelAnimationFrame(glideFrame.current), [])
@@ -790,6 +845,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const camera = ed.getCamera(), z = camera.z || 1
     glideTo({ x: camera.x + shift.dx / z, y: camera.y + shift.dy / z })
   }
+  revealRef.current = revealInserted
   // at the magic pen focus when there is one, else the best free spot (or the model's placementOption) with work space below
   const placeImage = async (image: { w: number; h: number }, kind: LibraryImageKind, query: string, { option, extra = [], manual = false }: PlaceOptions = {}): Promise<{ bounds: Bounds; reserve: Bounds; workBelow: number }> => {
     const size = libraryImageSize(image, kind)
@@ -802,8 +858,10 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       const below = context.focusMode !== 'literal' && extra.length ? Math.max(...extra.map(b => b.y + b.h)) + 24 : null
       return withRoom(below === null ? focused : { ...focused, y: Math.max(focused.y, below) })
     }
-    // pages are not selected after the insert, so they may go where the inspector would open
-    const spots = boardSpots(size, size.workBelow, extra, kind !== 'page')
+    // pages are not selected after the insert, so they may go where the inspector would open;
+    // a whole textbook page never covers the A4 homework, and anything that does not fit on the sheet goes beside it
+    let spots = boardSpots(size, size.workBelow, extra, kind !== 'page', kind !== 'page')
+    if (!spots.length) spots = boardSpots(size, size.workBelow, extra, kind !== 'page', false)
     if (option) return withRoom(spotForOption(option, spots, size))
     const top = (await rankSpots(spots, query))[0]?.bounds
     if (top) return withRoom({ x: top.x, y: top.y, w: size.w, h: size.h })
@@ -833,10 +891,15 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
   const closeBook = () => { setOpenBook(null); setHighlight(null); setRefMessage(null); panelPageRef.current = null }
   const showMatches = (book: BookRecord, ranked: RankedCandidate[]) => { setOpenBook(book); setHighlight(ranked); setRefMessage(null); setLookup(n => n + 1) }
+  // the page showing in the reference panel, when a book is open
+  const panelSource = (): LibrarySource | null => {
+    const open = openBookRef.current, page = panelPageRef.current
+    return open && page?.bookId === open.id ? { book: open, pageIndex: page.pageIndex } : null
+  }
   // the reference panel page, else the last inserted page
   const nearPage = (): BookPage | null => {
-    const open = openBookRef.current, page = panelPageRef.current
-    return open && page?.bookId === open.id ? page : lastInsertRef.current
+    const panel = panelSource()
+    return panel ? { bookId: panel.book.id, pageIndex: panel.pageIndex } : lastInsertRef.current
   }
   // an older index is rebuilt from the stored PDF, with progress in the reference panel; one run per book
   const reindexBook = (bookId: string): Promise<BookRecord> => {
@@ -877,7 +940,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       return { result: { ok: true, message: match.ranked.length ? pickText(match.ranked.length) : `Nothing in ${match.book.title} matches that.`, ids: [] } }
     }
     const best = match.ranked[0]
-    return libraryImageOp({ book: match.book, pageIndex: best.pageIndex, candidate: best }, query.raw, place)
+    const made = await libraryImageOp({ book: match.book, pageIndex: best.pageIndex, candidate: best }, query.raw, place)
+    // "No printed page 5, added file page 5." tells the teacher which page came in
+    return match.note ? { ...made, note: match.note } : made
   }
   const insertedText = (ops: BoardOperation[]) => {
     const names = ops.flatMap(op => {
@@ -889,7 +954,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     })
     return names.length ? `Added ${names.join(' and ')}.` : ''
   }
-  // runs resolved operations as one undo step, then brings a new book image into view
+  // runs resolved operations as one undo step; execute brings new objects into view
   const applyResolved = (ready: BoardOperation[], notes: string[], reportFailure: boolean, manual = false): BoardResult => {
     if (!ready.length) {
       const message = notes.join(' ') || 'Done.'
@@ -906,12 +971,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     // the circled spot now holds the book content, so the next insert finds its own space
     if (usedFocus) { setFocus(null); voiceRef.current?.updateContext() }
     const images = ready.filter(op => op.type === 'create_image' && op.bounds)
-    if (images.length) {
-      const info = images[images.length - 1].meta?.library as { bookId?: unknown; pageIndex?: unknown } | undefined
-      if (typeof info?.bookId === 'string' && typeof info.pageIndex === 'number') lastInsertRef.current = { bookId: info.bookId, pageIndex: info.pageIndex }
-      revealInserted(images.map(op => op.bounds!).reduce(union), images.some(op => !op.locked))
-    }
-    const message = [insertedText(ready), ...notes].filter(Boolean).join(' ') || result.message
+    const info = images[images.length - 1]?.meta?.library as { bookId?: unknown; pageIndex?: unknown } | undefined
+    if (typeof info?.bookId === 'string' && typeof info.pageIndex === 'number') lastInsertRef.current = { bookId: info.bookId, pageIndex: info.pageIndex }
+    const message = insertMessage(insertedText(ready), notes) || result.message
     notify(message)
     return { ...result, message }
   }
@@ -1088,6 +1150,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           placed.push(resolved.reserve)
           if (resolved.op.bounds) created.push(resolved.op.bounds)
           ready.push(resolved.op)
+          if (resolved.note) notes.push(resolved.note)
         }
       } catch (error) { return fail(errorText(error, 'The book could not be read.')) }
       const result = applyResolved(ready, notes, reportFailure)
@@ -1108,7 +1171,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       focusUsed.current = false
       const resolved = await resolveQuery(query)
       if ('result' in resolved) return resolved.result
-      return applyResolved([resolved.op], [], true)
+      return applyResolved([resolved.op], resolved.note ? [resolved.note] : [], true)
     })
   }
   // reference panel buttons; placed like reference mode when nothing is circled, even in Literal
@@ -1138,6 +1201,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       if ('error' in match) { setHighlight(null); setRefMessage(match.error); return }
       setHighlight(match.ranked); setLookup(n => n + 1)
       if (!match.ranked.length) setRefMessage(`Nothing in ${book.title} matches that.`)
+      else if (match.note) setRefMessage(match.note.replace('added', 'showing'))
     } catch (error) { setRefMessage(errorText(error, 'This book could not be searched.')) }
     finally { setRefBusy(false) }
   }
@@ -1162,7 +1226,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       { type: 'create_plot', expression: 'sin(x)', title: '', xMin: 0, xMax: 4 * Math.PI, yMin: -1.5, yMax: 1.5, bounds: { x: 110, y: 190, w: 650, h: 380 }, color: '#202124' },
       { type: 'create_math', latex: '\\int_0^{2\\pi} \\sin(x)\\,dx = 0', bounds: { x: 800, y: 220, w: 390, h: 140 } },
       { type: 'create_geometry', geometry: 'right_triangle', bounds: { x: 850, y: 410, w: 210, h: 170 }, color: '#202124' },
-    ])
+    ], true, false)
     if (!result.ok) return
     ed.selectNone(); ed.zoomToBounds({ x: -70, y: -100, w: 1530, h: 900 }, { animation: { duration: 350 } }); setFocus(null)
     setSettings(s => ({ ...s, name: 'A study in waves' })); notify('Example objects added. Select one and make it your own.')
@@ -1218,6 +1282,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
 
   const origin = pageToLocal({ x: 0, y: 0 })
+  const allowance = commandAllowance(api)
   const paperStyle = { '--paper-color': settings.backgroundColor, '--grid-step': `${(settings.paper === 'ruled' ? 32 : 24) * zoom}px`, '--paper-x': `${origin.x}px`, '--paper-y': `${origin.y}px` } as React.CSSProperties
   const isEditing = !!editingShapeId
   const selectionHasInk = editor?.getSelectedShapes().some(s => s.type === 'draw') || false
@@ -1246,6 +1311,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
     <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode} ${pendingImport ? 'import-open' : ''}`} style={paperStyle} onPointerMoveCapture={pointerMove} onPointerDownCapture={stopGlide} onWheelCapture={stopGlide} onDragOver={e => e.preventDefault()} onDropCapture={e => { const f = e.dataTransfer.files[0]; if (f && isPdfFile(f)) { e.preventDefault(); e.stopPropagation(); importFile(f, true) } else if (f?.type.startsWith('image/')) { e.preventDefault(); e.stopPropagation(); importAsBackground.current = true; void importImage(f) } }}>
       <div className="paper-pattern"/>
+      <div className="inspector-zone" aria-hidden="true"/>
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
       <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
       {!ready && <div className="notebook-loading">Opening notebook…</div>}
@@ -1257,7 +1323,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {images.draft && <div className="image-placement-preview" style={localBounds(images.draft.bounds)} aria-label="Image placement preview"><span><ImagePlus size={16}/>{images.draft.phase === 'review' ? 'Image preview · awaiting confirmation' : ['submitting', 'generating'].includes(images.draft.phase) ? 'Generating image…' : 'Image request paused'}</span></div>}
       <ImageGenerationPanel images={images} model={api?.models?.image}/>
 
-      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label>{objects.length > 0 && <select className="object-picker" aria-label="Choose board object" value={selected?.id || ''} onChange={event => { if (!event.target.value || !editor) return; editor.completeInteraction(); chooseTool('select'); editor.select(event.target.value); setInspectorOpen(true); setShowHistory(false) }}><option value="">Objects ({objects.length})</option>{objects.map(object => <option key={object.id} value={object.id}>{object.locked ? '🔒 ' : ''}{objectLabel(object)}</option>)}</select>}<button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void fetch('/api/status').then(r=>r.json()).then(setApi) }}><CircleHelp size={16}/></button></div>
+      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label>{objects.length > 0 && <select className="object-picker" aria-label="Choose board object" value={selected?.id || ''} onChange={event => { if (!event.target.value || !editor) return; editor.completeInteraction(); chooseTool('select'); editor.select(event.target.value); setInspectorOpen(true); setShowHistory(false) }}><option value="">Objects ({objects.length})</option>{objects.map(object => <option key={object.id} value={object.id}>{object.locked ? '🔒 ' : ''}{objectLabel(object)}</option>)}</select>}<button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void refreshStatus().catch(() => {}) }}><CircleHelp size={16}/></button></div>
       <nav className="tool-rail" aria-label="Drawing tools">
         {([{ id: 'magic', label: 'Magic pen', key: 'M', icon: Sparkles }, { id: 'draw', label: 'Pencil', key: 'P', icon: Pencil }, { id: 'select', label: 'Select & move', key: 'V', icon: MousePointer2 }, { id: 'text', label: 'Text', key: 'T', icon: Type }, { id: 'math', label: 'Math', key: 'Q', icon: Sigma }, { id: 'eraser', label: 'Eraser', key: 'E', icon: Eraser }, { id: 'hand', label: 'Pan', key: 'H', icon: Hand }] as const).map(({ id, label, key, icon: Icon }) => <button key={id} aria-label={label} aria-pressed={tool === id} title={`${label} (${key})`} className={tool === id ? 'active' : ''} onClick={() => chooseTool(id)}>{id === 'magic' && aiPaused ? <LoaderCircle className="spin" size={21}/> : <Icon size={21}/>}<span className="tool-tip">{label}<kbd>{key}</kbd></span></button>)}
         <div className="rail-divider"/>
@@ -1278,11 +1344,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {menu === 'export' && <div className="popover export-popover"><div className="popover-heading">Export<button aria-label="Close export" onClick={()=>setMenu(null)}><X size={16}/></button></div><button className="menu-row" onClick={() => void doExport('png')}><FileImage size={18}/><span>PNG image<small>Include the whole board</small></span></button><button className="menu-row" onClick={() => void doExport('pdf')}><Download size={18}/><span>PDF<small>{settings.mode === 'page' ? 'A4 portrait page' : 'Fitted to your canvas'}</small></span></button><button className="menu-row" onClick={() => void exportArea()}><Scan size={18}/><span>Selected area PDF<small>{focus?.kind === 'region' ? 'The area you circled' : 'Circle an area or select objects first'}</small></span></button><button className="menu-row" onClick={() => {save();setMenu(null)}}><Save size={18}/><span>Editable notebook<small>Keep the objects and images</small></span></button></div>}
       {menu === 'library' && <LibraryPanel books={books} openBookId={openBook?.id ?? null} onOpen={book => void openFromLibrary(book)} onImport={() => importInput.current?.click()} onRemove={book => void removeFromLibrary(book)} onClose={() => setMenu(null)}/>}
       {openBook && <ReferencePanel book={openBook} highlight={highlight} busy={refBusy || inserting} message={refMessage} lookup={lookup} onClose={closeBook} onSearch={text => void searchBook(text)}
-        onDismiss={() => setHighlight(null)} onPageChange={index => { panelPageRef.current = { bookId: openBook.id, pageIndex: index } }}
+        onDismiss={() => setHighlight(null)} onPageChange={index => { panelPageRef.current = { bookId: openBook.id, pageIndex: index }; voiceRef.current?.updateContext() }}
         onInsertPage={index => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index }, `page ${book.labels?.[index] ?? index + 1}`, { manual: true })) }}
         onInsertCrop={(index, box) => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index, box }, 'part of a textbook page', { manual: true })) }}
         onInsertCandidate={c => { const book = bookFor(c.bookId) ?? openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: c.pageIndex, candidate: c }, c.description, { manual: true })) }}/>}
-      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}<br/>Images: {api.models.image || 'gpt-image-2.5-flare'} · Low quality</p>}<small>Voice uses API credit while connected. Pause microphone closes the voice connection; turning spoken replies off only silences the assistant. Sessions renew automatically while active, with a {api?.limits?.voiceMinutesLimit ?? 180}-minute local allowance. Voice pauses after 90 seconds of inactivity.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
+      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts or after 20 wrong codes.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}<br/>Images: {api.models.image || 'gpt-image-2.5-flare'} · Low quality</p>}{allowance && <p className={`allowance-line ${allowance.low ? 'low' : ''}`}><b>Typed commands:</b> {allowance.left} of {allowance.limit} left in the local allowance.{allowance.low ? ' Check usage before raising OPENAI_COMMAND_LIMIT.' : ''}</p>}<small>Voice uses API credit while connected. Pause microphone closes the voice connection; turning spoken replies off only silences the assistant. Sessions renew automatically while active, with a {api?.limits?.voiceMinutesLimit ?? 180}-minute local allowance. Voice pauses after 90 seconds of inactivity.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
 
       {api?.pairingRequired && !api.authorized && <form className="pair-banner" onSubmit={e=>{e.preventDefault();void pair()}}><div><b>Connect your iPad to AI</b><span>On your laptop, open Help & iPad connection to find the code.</span></div><input aria-label="Pairing code" placeholder="6-digit code" value={pairCode} onChange={e => setPairCode(e.target.value)} inputMode="numeric" maxLength={6}/><button disabled={pairing}>{pairing?'Connecting…':'Connect'}</button></form>}
       <div className="canvas-footer"><span className="canvas-status">{settings.mode === 'page' ? 'A4 portrait' : 'Infinite canvas'}<span className="footer-separator">·</span>{shapeCount} {shapeCount === 1 ? 'object' : 'objects'}</span><div className="history-buttons"><button aria-label="Undo" title="Undo" onClick={() => execute([{type:'undo'}])}><Undo2 size={17}/></button><button aria-label="Redo" title="Redo" onClick={() => execute([{type:'redo'}])}><Redo2 size={17}/></button></div><div className="zoom-controls"><button aria-label="Zoom out" onClick={() => editor?.zoomOut()}><Minus size={15}/></button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => editor?.zoomIn()}><Plus size={15}/></button><button aria-label="Fit canvas" title="Fit canvas" onClick={() => settings.mode === 'page' ? editor?.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 }) : editor?.zoomToFit()}><Maximize size={15}/></button></div></div>
@@ -1300,7 +1366,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           <div className="voice-output-label">Spoken replies {spokenReplies ? 'on' : 'off'} · microphone {recovery ? 'paused for recovery' : voiceStatus === 'idle' ? 'paused' : 'on'}</div>
           <div className="voice-mode-options"><select disabled={!!recovery} aria-label="Voice action" value={dictationMode} onChange={e=>changeDictation(e.target.value as typeof dictationMode)}><option value="assistant">Assistant</option><option value="math">Dictate math</option><option value="text">Dictate text</option></select><button onClick={()=>setShowHistory(!showHistory)}>Conversation</button></div>
         </div> : <><form className={`command-bar ${voiceStatus !== 'idle' ? 'voice-active' : ''}`} onSubmit={e => { e.preventDefault(); void runPrompt() }}><input ref={inputRef} aria-label="Ask Magic Whiteboard" value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Give an idea a little space…" disabled={busy || !!recovery || voiceStatus === 'connecting'}/><button type="submit" className="send-command" aria-label="Send instruction" disabled={busy || !!recovery || voiceStatus === 'connecting' || !prompt.trim()}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowUp size={18}/>}</button><span className="command-divider"/><button type="button" className={`voice-button ${voiceStatus !== 'idle' ? 'recording' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} onClick={()=>void toggleVoice()}>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={19}/> : <Mic size={19}/>}</button></form>
-        <div className="command-caption"><span>{selectedContent ? `Selected: ${selectedContent.slice(0,35)}` : focus ? <><Scan size={12}/>{focus.kind === 'region' ? 'Region selected' : 'Point selected'}<button onClick={()=>setFocus(null)}>clear</button></> : 'Circle an area, then speak or type.'}</span><button onClick={()=>setShowHistory(!showHistory)}>Conversation{messages.length?` (${messages.length})`:''}</button></div></>}
+        <div className="command-caption"><span>{selectedContent ? `Selected: ${selectedContent.slice(0,35)}` : focus ? <><Scan size={12}/>{focus.kind === 'region' ? 'Region selected' : 'Point selected'}<button onClick={()=>setFocus(null)}>clear</button></> : 'Circle an area, then speak or type.'}</span>{allowance?.low && <span className="allowance-warning" role="status">{allowance.left ? `${allowance.left} of ${allowance.limit} typed commands left` : 'Typed command allowance used up'}</span>}<button onClick={()=>setShowHistory(!showHistory)}>Conversation{messages.length?` (${messages.length})`:''}</button></div></>}
       </div>
     </main>
     <input className="hidden-input" ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={e => { const f = e.target.files?.[0]; if (f) void importImage(f); e.target.value = '' }}/>

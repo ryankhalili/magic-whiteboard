@@ -1,9 +1,9 @@
-import type { BoardContext } from '../shared/board'
-import { boardTools, contextInstructions } from './board-tools'
+import { BOARD_INSTRUCTIONS, boardTools, type SnapshotContext } from './board-tools'
 
-export function realtimeConfig(context: BoardContext, spokenReplies = true, model = 'gpt-realtime-mini') {
+// rules only: the client's first context item carries the board and replaces itself as the board changes
+export function realtimeConfig(_context?: SnapshotContext, spokenReplies = true, model = 'gpt-realtime-mini') {
   return {
-    type: 'realtime', model, instructions: contextInstructions(context),
+    type: 'realtime', model, instructions: BOARD_INSTRUCTIONS,
     output_modalities: spokenReplies ? ['audio'] : ['text'],
     max_output_tokens: 1400, tools: boardTools, tool_choice: 'auto',
     audio: {

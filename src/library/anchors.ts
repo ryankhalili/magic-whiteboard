@@ -83,8 +83,8 @@ function matchLine(text: string, ratio: number, exerciseMode: boolean, previous:
     if (ratio <= 1.1 && !continues(previous) && !CONTINUATION.test(numbered[2])) return { kind: 'checkpoint', label: numbered[1] }
     return null
   }
-  // "12. Find" is an exercise only inside an exercise set, otherwise it is a step of a worked solution
-  const exercise = exerciseMode ? /^(\d{1,3})\s?\.(?:\s|$)/.exec(text) : null
+  // "12. Find" or "12) Find" is an exercise only inside an exercise set, otherwise it is a step of a worked solution
+  const exercise = exerciseMode ? /^(\d{1,3})\s?[.)](?:\s|$)/.exec(text) : null
   if (exercise && ratio < 1.25 && Number(exercise[1]) >= 1) return { kind: 'exercise', label: String(Number(exercise[1])) }
   return null
 }
@@ -123,7 +123,7 @@ function isHeading(line: TextLine, body: number) {
 function edgeLines(lines: TextLine[], body: number, lineH: number): Set<TextLine> {
   const edges = new Set<TextLine>()
   const marginal = (text: string) => /access for free at|^page \d+\b/i.test(text)
-  const running = (line: TextLine, text: string) => !KEYWORDS.some(([pattern]) => pattern.test(text)) && !/^\d{1,3}\s?\.(\s|$)/.test(text)
+  const running = (line: TextLine, text: string) => !KEYWORDS.some(([pattern]) => pattern.test(text)) && !/^\d{1,3}\s?[.)](\s|$)/.test(text)
     && (line.size < body * 0.93 || printedNumberCandidates([text]).length > 0)
   for (const fromTop of [true, false]) {
     const order = fromTop ? lines : [...lines].sort((p, q) => (q.box.y + q.box.h) - (p.box.y + p.box.h))
@@ -158,10 +158,11 @@ const exerciseLike = (kind: AnchorKind) => kind === 'exercise' || kind === 'prob
  * answers carries the same way: the size of an "Answer Key" heading while inside it, else 0.
  * carry holds the items of the page before that ran off its bottom; continued says where each one goes on,
  * and open lists this page's items that run off its bottom, for the next page.
+ * allExercises reads the whole page as one exercise set (a worksheet with no exercises heading).
  */
 export function detectAnchors(
   bookId: string,
-  page: { index: number; lines: TextLine[]; exerciseMode: boolean; answers?: number; exerciseSize?: number; carry?: OpenItem[] },
+  page: { index: number; lines: TextLine[]; exerciseMode: boolean; answers?: number; exerciseSize?: number; carry?: OpenItem[]; allExercises?: boolean },
   bodySize: number,
 ): { anchors: Anchor[]; exerciseMode: boolean; answers: number; exerciseSize: number; open: OpenItem[]; continued: Continued[] } {
   const all = [...(page.lines ?? [])].filter(line => line && typeof line.text === 'string' && line.box && Number.isFinite(line.size))
@@ -169,7 +170,8 @@ export function detectAnchors(
   const body = bodySize > 0 ? bodySize : bodyFontSize(all)
   const edges = edgeLines(all, body, median(all.map(line => line.box.h), body * 1.2))
   const lines = all.filter(line => !edges.has(line))
-  let exerciseMode = !!page.exerciseMode, answers = page.answers && page.answers > 0 ? page.answers : 0
+  const always = !!page.allExercises
+  let exerciseMode = !!page.exerciseMode || always, answers = page.answers && page.answers > 0 ? page.answers : 0
   let exerciseSize = exerciseMode && page.exerciseSize && page.exerciseSize > 0 ? page.exerciseSize : 0
   const lineH = median(lines.map(line => line.box.h), body * 1.2)
 
@@ -210,7 +212,7 @@ export function detectAnchors(
     if (ratio >= 1.25 && ANSWERS.test(text)) { answers = line.size; exerciseMode = false; exerciseSize = 0; return }
     if (answers) {
       // answer keys have their own chapter headings; only a heading as big as "Answer Key" ends them
-      if (line.size >= answers * 0.95 && isHeading(line, body)) answers = 0
+      if (line.size >= answers * 0.95 && isHeading(line, body)) { answers = 0; exerciseMode = always }
       else return
     }
     if (EXERCISES_ON.some(pattern => pattern.test(text)) && (ratio >= 1.1 || text === text.toUpperCase())) {
@@ -218,7 +220,7 @@ export function detectAnchors(
       return
     }
     // a new section ends an exercise set: a big or numbered heading, "Section 2.3", or any heading as big as the one that started it
-    if (exerciseMode && (ratio >= 1.6 || (ratio >= 1.25 && /^\d{1,3}\.\d{1,3}\s+\S/.test(text)) || (ratio >= 1.15 && EXERCISES_OFF.test(text))
+    if (exerciseMode && !always && (ratio >= 1.6 || (ratio >= 1.25 && /^\d{1,3}\.\d{1,3}\s+\S/.test(text)) || (ratio >= 1.15 && EXERCISES_OFF.test(text))
       || (isHeading(line, body) && (SECTION_HEADING.test(text) || (exerciseSize > 0 && line.size >= exerciseSize * 0.97))))) { exerciseMode = false; exerciseSize = 0 }
     const match = matchLine(text, ratio, exerciseMode, sentenceBefore(lines, order, body, column))
     if (match && !((match.kind === 'checkpoint' || match.kind === 'section') && listed.has(line))) found.push({ ...match, line, order })

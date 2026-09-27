@@ -9,6 +9,7 @@ import {
   MAX_PDF_PAGES, PAGE_GAP, PX_PER_PT, boardImportLimit, joinTextItems, layoutPdfPages, pdfPageInfo, worksheetPages,
 } from '../src/files/pdfPages'
 import { getPdfSource, pdfKey, putPdfSource } from '../src/files/pdfSources'
+import { importImageFile } from '../src/files/boardFiles'
 
 // the board importer opens PDFs through the library loader; node uses the legacy build
 vi.mock('../src/library/pdfjs', async importOriginal => {
@@ -134,18 +135,19 @@ describe('board import limits', () => {
 })
 
 describe('board PDF import', () => {
-  it.skipIf(!canvas)('puts every page on the board as a locked background with its text', async () => {
+  it.skipIf(!canvas)('puts every page on the board as a locked worksheet page with its text', async () => {
     useCanvas()
     const editor = new Editor(), bytes = await worksheet(2), progress: number[][] = []
     const result = await importPdfFile(editor, pdfFile(bytes), { mode: 'infinite', onProgress: (page, pages) => progress.push([page, pages]) })
     const sha = createHash('sha256').update(bytes).digest('hex')
     expect(progress).toEqual([[1, 2], [2, 2]])
-    expect(result).toMatchObject({ pages: 2, source: `sha256:${sha}`, keptSource: true, hasText: true, switchToInfinite: false })
+    expect(result).toMatchObject({ pages: 2, source: `sha256:${sha}`, keptSource: false, hasText: true, switchToInfinite: false })
     expect(result.layout[0]).toEqual({ x: 0, y: 0, w: 816, h: 1056 })
     expect(result.layout[1].y).toBe(1056 + PAGE_GAP)
     const shapes = result.ids.map(id => editor.getShape<TLImageShape>(id)!)
     shapes.forEach((shape, index) => {
-      expect(shape).toMatchObject({ type: 'image', isLocked: true, meta: { marginaliaBackground: true } })
+      // worksheet pages are not the page background, so a pasted image never replaces them
+      expect(shape).toMatchObject({ type: 'image', isLocked: true, meta: { marginaliaBackground: false } })
       expect(shape.props.assetId).toBe(`asset:pdf-${sha.slice(0, 24)}-p${index + 1}`)
       expect(shape.props.altText).toBe(`Unit 3 review, page ${index + 1} of 2`)
       const info = pdfPageInfo(shape)!
@@ -168,7 +170,8 @@ describe('board PDF import', () => {
     expect(editor.getSelectedShapeIds()).toEqual([])
     // the snapshot reloads, so every page asset passed the same checks as normalizeSnapshot
     expect(() => new Editor().loadSnapshot(editor.getSnapshot())).not.toThrow()
-    expect(Array.from(await getPdfSource(`sha256:${sha}`) ?? [])).toEqual(Array.from(bytes))
+    // nothing reads the original, so its bytes are not kept on the device
+    expect(await getPdfSource(`sha256:${sha}`)).toBeNull()
 
     // the same file again reuses its page images and goes to the right of the first copy
     const again = await importPdfFile(editor, pdfFile(bytes), { mode: 'infinite', zoom: false })
@@ -194,6 +197,27 @@ describe('board PDF import', () => {
     expect(pdfPageInfo(editor.getShape(result.ids[0]))?.name).toBe('quiz')
     // backgrounds go under the ink
     expect(editor.getCurrentPageShapesSorted().map(shape => shape.id)).toEqual([result.ids[0], 'shape:ink'])
+  })
+
+  it.skipIf(!canvas)('keeps worksheet pages when a screenshot is pasted or set as the background', async () => {
+    useCanvas()
+    const editor = new Editor()
+    const result = await importPdfFile(editor, pdfFile(await worksheet(3)), { mode: 'infinite', zoom: false })
+    editor.createShape({ id: 'shape:ink', type: 'draw', props: { points: [{ x: 60, y: 2300 }, { x: 160, y: 2320 }], color: 'black', size: 'm' } })
+    editor.setCamera({ x: 0, y: -2200, z: 1 })
+    // the paste handler imports as a background
+    vi.stubGlobal('FileReader', class { result = png; onload?: () => void; readAsDataURL() { queueMicrotask(() => this.onload?.()) } })
+    vi.stubGlobal('Image', class { naturalWidth = 800; naturalHeight = 600; onload?: () => void; set src(_value: string) { queueMicrotask(() => this.onload?.()) } })
+    const pasted = await importImageFile(editor, new File([new Uint8Array(8)], 'Screenshot.png', { type: 'image/png' }), { asBackground: true, mode: 'infinite' })
+    expect(result.ids.every(id => editor.getShape(id))).toBe(true)
+    // the new background shows over the worksheet page it lands on and stays under the ink
+    expect(editor.getCurrentPageShapesSorted().map(shape => shape.id)).toEqual([...result.ids, pasted, 'shape:ink'])
+    // Remove background takes only real backgrounds
+    expect(editor.getCurrentPageShapes().filter(shape => shape.meta.marginaliaBackground === true).map(shape => shape.id)).toEqual([pasted])
+    // setting another background replaces the pasted one and still keeps the pages
+    const next = await importImageFile(editor, new File([new Uint8Array(8)], 'Homework.png', { type: 'image/png' }), { asBackground: true, mode: 'infinite' })
+    expect(editor.getShape(pasted)).toBeUndefined()
+    expect(editor.getCurrentPageShapesSorted().map(shape => shape.id)).toEqual([...result.ids, next, 'shape:ink'])
   })
 
   it.skipIf(!canvas)('still imports when the original cannot be kept on the device', async () => {

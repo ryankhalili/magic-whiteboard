@@ -139,6 +139,17 @@ describe('detectAnchors', () => {
     expect(definitions[0].heading).toBe('Definition A function is a rule.')
   })
 
+  it('reads "12)" numbering like "12." in an exercise set, and a worksheet stays one set under a big title', () => {
+    const set = page(3, [line('SECTION 2.1 EXERCISES', 0.1, 0.1, 14), line('12) Solve 3x + 3 = 5 for x.', 0.1, 0.2), line('13) Solve x + 2 = 7 for x.', 0.1, 0.25)])
+    expect(set.anchors.filter(a => a.kind === 'exercise').map(a => a.label)).toEqual(['12', '13'])
+    const lines = [line('Unit 4 Quiz', 0.1, 0.1, 18), line('1) Solve 2x = 4 for x.', 0.1, 0.2), line('2) Solve x + 1 = 3 for x.', 0.1, 0.25)]
+    const sheet = detectAnchors('book', { index: 0, lines, exerciseMode: false, allExercises: true }, BODY)
+    expect(sheet.anchors.map(a => `${a.kind} ${a.label}`)).toEqual(['exercise 1', 'exercise 2'])
+    expect(sheet.exerciseMode).toBe(true)
+    // without it, a title that big ends an exercise set
+    expect(page(0, lines, true).anchors).toEqual([])
+  })
+
   it('handles empty or odd input', () => {
     expect(page(0, []).anchors).toEqual([])
     expect(detectAnchors('b', { index: 0, lines: [line('EXAMPLE 1.1', 0.1, 0.1)], exerciseMode: false }, 0).anchors).toHaveLength(1)

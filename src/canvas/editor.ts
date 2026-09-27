@@ -334,7 +334,9 @@ export class Editor {
       const moving = list.filter(shape => selected.has(shape.id))
       if (!moving.length) continue
       const rest = list.filter(shape => !selected.has(shape.id))
-      const unlocked = aboveLocked ? rest.findIndex(shape => !this.isShapeOrAncestorLocked(shape)) : 0
+      // above the locked paper (textbook pages, worksheet pages, backgrounds); a diagram the teacher locked is not paper
+      const paper = (shape: TLShape) => shape.type === 'image' && this.isShapeOrAncestorLocked(shape) && (shape.meta.marginaliaBackground === true || !!shape.meta.pdf || !!shape.meta.library)
+      const unlocked = aboveLocked ? rest.findIndex(shape => !paper(shape)) : 0
       const at = front ? rest.length : unlocked < 0 ? rest.length : unlocked
       const ordered = [...rest.slice(0, at), ...moving, ...rest.slice(at)]
       if (ordered.every((shape, index) => shape.id === list[index].id)) continue

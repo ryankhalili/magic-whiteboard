@@ -1,8 +1,8 @@
 import { needsReindex } from './indexer'
-import { findPageIndex } from './labels'
+import { findPageIndexes } from './labels'
 import { rankItems } from './rank'
 import { renderAnchor, renderPage } from './render'
-import { buildCandidates, certainItem, kindName, pageCandidate, pageSections, pickBook, titleMatch } from './search'
+import { buildCandidates, certainItem, isHerePage, kindName, pageCandidate, pageSections, pickBook, subjectBooks, titleMatch } from './search'
 import { getAnchors, getPage, getPages, listBooks } from './store'
 import type { Anchor, BookRecord, Candidate, LibraryMatch, LibraryQuery, PageRecord, RankedCandidate, RenderedImage } from './types'
 
@@ -34,8 +34,14 @@ export type LibraryError = { error: string; books?: BookRecord[]; code?: 'reinde
 
 async function chooseBook(query: LibraryQuery, books: BookRecord[], openBookId: string | null): Promise<BookRecord | LibraryError> {
   const hint = query.book?.trim()
-  // a named book that is not here is never swapped for another one
   if (hint && !books.some(book => Math.max(titleMatch(hint, book.title), titleMatch(hint, book.fileName ?? '')) >= .5)) {
+    // "the math book" names a subject, not a title: the open book or the only one, else ask
+    const subject = subjectBooks(hint, books)
+    const open = subject?.find(book => book.id === openBookId)
+    if (open) return open
+    if (subject?.length === 1) return subject[0]
+    if (subject) return { error: 'Which book? Say its title or open it from the Library.', books: subject }
+    // a named book that is not here is never swapped for another one
     return { error: `No book called "${hint.slice(0, 60)}" in your library.`, books }
   }
   const picked = pickBook(books, hint, openBookId)
@@ -57,6 +63,22 @@ async function chooseBook(query: LibraryQuery, books: BookRecord[], openBookId: 
 
 function itemName(query: Extract<LibraryQuery, { kind: 'item' }>) {
   return `${query.itemKind ? kindName(query.itemKind) : 'Problem'} ${query.label}`
+}
+
+/**
+ * "exercise 48 in section 3.9" when that section (or chapter) is in the book but has no such item: says so
+ * instead of offering the ones in other chapters. null when something in scope fits or the book shows no sections.
+ */
+function scopeMiss(query: LibraryQuery, book: BookRecord, anchors: Anchor[], candidates: Candidate[]): string | null {
+  if (query.kind !== 'item' || !(query.section || query.chapter)) return null
+  if (candidates.some(candidate => candidate.features.inSection === 1)) return null
+  const sections = pageSections(anchors, book.pageCount)
+  // the last exercises of a section can sit on the page where the next section starts
+  const inScope = (section: string | null | undefined) => !!section && (query.section ? section === query.section : Number(section.split('.')[0]) === Number(query.chapter))
+  if (candidates.some(candidate => candidate.features.exactLabel === 1 && inScope(sections[candidate.pageIndex - 1]))) return null
+  const known = query.section ? sections.includes(query.section) : sections.some(section => section !== null && Number(section.split('.')[0]) === Number(query.chapter))
+  if (!known) return null
+  return `No ${itemName(query).toLowerCase()} in ${query.section ? `section ${query.section}` : `chapter ${query.chapter}`}.`
 }
 
 /** The ranker's context: what the teacher is doing and where in the book they are. */
@@ -88,20 +110,35 @@ export async function matchLibrary(query: LibraryQuery, opts: { openBookId?: str
     return { error: 'This book needs a quick update. Opening it now.', code: 'reindex', bookId: book.id }
   }
 
+  const at = opts.near && opts.near.bookId === book.id && Number.isInteger(opts.near.pageIndex) && opts.near.pageIndex >= 0 && opts.near.pageIndex < book.pageCount ? opts.near.pageIndex : null
   try {
     if (query.kind === 'page') {
       // a book without printed numbers is looked up by file page
       const labels = book.labels.some(label => label !== null) ? book.labels : Array.from({ length: book.pageCount }, (_, i) => String(i + 1))
-      const index = findPageIndex(labels, query.label)
-      if (index === null || index >= book.pageCount) return { error: `Page ${query.label} is not in ${book.title}.` }
-      const page = await getPage(book.id, index).catch(() => null)
-      const candidate = pageCandidate(book, index, page ?? undefined)
-      return { query, book, ranked: [{ ...candidate, p: 1 }], confident: true, source: 'exact' }
+      let found = findPageIndexes(labels, query.label).filter(index => index < book.pageCount)
+      let note: string | undefined
+      // no printed page with that number: the file page with it, said out loud
+      const n = /^\d{1,4}$/.test(query.label.trim()) ? Number(query.label) : 0
+      if (!found.length && n >= 1 && n <= book.pageCount) { found = [n - 1]; note = `No printed page ${n}, added file page ${n}.` }
+      if (!found.length) return { error: `Page ${query.label} is not in ${book.title}.` }
+      const candidateAt = async (index: number, p: number): Promise<RankedCandidate> => ({ ...pageCandidate(book, index, (await getPage(book.id, index).catch(() => null)) ?? undefined), p })
+      // page numbers that repeat (a packet of units): the one nearest where the teacher is, else the teacher picks
+      if (found.length > 1 && at === null) {
+        const ranked = await Promise.all(found.slice(0, 3).map(index => candidateAt(index, 1 / found.length)))
+        return { query, book, ranked, confident: false, source: 'exact' }
+      }
+      const index = at === null ? found[0] : found.reduce((best, next) => Math.abs(next - at) < Math.abs(best - at) ? next : best)
+      return { query, book, ranked: [await candidateAt(index, 1)], confident: true, source: 'exact', ...(note ? { note } : {}) }
     }
 
+    // "the page I'm looking at" is the page open in the reference panel (else the last one inserted)
+    if (query.kind === 'topic' && at !== null && isHerePage(query.raw)) {
+      return { query, book, ranked: [{ ...pageCandidate(book, at, (await getPage(book.id, at).catch(() => null)) ?? undefined), p: 1 }], confident: true, source: 'exact' }
+    }
     const { pages, anchors } = await bookData(book)
-    const at = opts.near && opts.near.bookId === book.id && Number.isInteger(opts.near.pageIndex) && opts.near.pageIndex >= 0 && opts.near.pageIndex < book.pageCount ? opts.near.pageIndex : null
     const candidates = buildCandidates(query, book, pages, anchors, 40, at)
+    const missing = scopeMiss(query, book, anchors, candidates)
+    if (missing) return { error: missing }
     if (!candidates.length) {
       return { error: query.kind === 'item' ? `${itemName(query)} is not in ${book.title}.` : `Nothing in ${book.title} matches that.` }
     }

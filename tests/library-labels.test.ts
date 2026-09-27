@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
-import { assignPrintedLabels, findPageIndex, printedNumberCandidates, romanValue, toRoman } from '../src/library/labels'
+import { assignPrintedLabels, findPageIndex, findPageIndexes, printedNumberCandidates, romanValue, toRoman } from '../src/library/labels'
 import { pageLines } from '../src/library/pdfjs'
 
 const book = `${process.cwd()}/.local/test-books/calculus-volume-1.pdf`
@@ -88,8 +88,42 @@ describe('assignPrintedLabels', () => {
   it('does not trust a single stray number', () => {
     const pages = Array.from({ length: 20 }, (_, index) => ({ index, edges: index === 7 ? ['12 Things'] : ['No numbers here'] }))
     expect(assignPrintedLabels(pages).every(label => label === null)).toBe(true)
-    expect(assignPrintedLabels([{ index: 0, edges: ['Worksheet 3'] }])).toEqual(['3'])
+    // one number on one page is a title, not a page number
+    expect(assignPrintedLabels([{ index: 0, edges: ['Worksheet 3'] }])).toEqual([null])
     expect(assignPrintedLabels([])).toEqual([])
+  })
+})
+
+describe('short files and other footers', () => {
+  it('needs two pages that agree before a short file gets printed numbers', () => {
+    // a title number on one or two pages is not a page number
+    expect(assignPrintedLabels([{ index: 0, edges: ['Quiz 3', '1. Find the derivative.'] }])).toEqual([null])
+    expect(assignPrintedLabels([{ index: 0, edges: ['Homework 5'] }, { index: 1, edges: ['More questions for the week'] }])).toEqual([null, null])
+    // two footers that agree still label a two page excerpt
+    expect(assignPrintedLabels([{ index: 0, edges: ['text', '47'] }, { index: 1, edges: ['text', '48'] }])).toEqual(['47', '48'])
+  })
+
+  it('reads "Page 1 of 2" as page 1, never the page count', () => {
+    expect(printedNumberCandidates(['Page 1 of 2'])).toEqual(['1'])
+    expect(printedNumberCandidates(['Related Rates Practice   Page 2 of 12'])).toEqual(['2'])
+    expect(assignPrintedLabels([{ index: 0, edges: ['Related Rates', 'Page 1 of 2'] }, { index: 1, edges: ['Related Rates', 'Page 2 of 2'] }])).toEqual(['1', '2'])
+  })
+
+  it('reads front matter numbered in capital roman numerals', () => {
+    expect(printedNumberCandidates(['XII Preface', 'Contents VII', 'Mixed Iv'])).toEqual(['xii', 'vii'])
+    const pages = [...Array.from({ length: 6 }, (_, i) => ({ index: i, edges: ['Preface text', toRoman(i + 1).toUpperCase()] })),
+      ...Array.from({ length: 6 }, (_, i) => ({ index: i + 6, edges: ['Chapter text', String(i + 1)] }))]
+    expect(assignPrintedLabels(pages)).toEqual(['i', 'ii', 'iii', 'iv', 'v', 'vi', '1', '2', '3', '4', '5', '6'])
+  })
+})
+
+describe('findPageIndexes', () => {
+  it('lists every page with a repeated label', () => {
+    const labels = ['1', '2', '3', '1', '2', 'iv', null]
+    expect(findPageIndexes(labels, '2')).toEqual([1, 4])
+    expect(findPageIndexes(labels, 'IV')).toEqual([5])
+    expect(findPageIndexes(labels, '9')).toEqual([])
+    expect(findPageIndex(labels, '2')).toBe(1)
   })
 })
 

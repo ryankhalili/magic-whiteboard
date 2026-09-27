@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { INDEX_VERSION, bookTitle, ensureIndexed, importBook, inspectPdf, needsReindex } from '../src/library/indexer'
 import { hasPdfHeader, isPdfFile, setPdfJsLoader, textLinesFrom } from '../src/library/pdfjs'
-import { bookIdFor, getAnchors, getBook, getBookBytes, getPages, getThumb, listBooks, putAnchors, putBookBytes, putThumb, saveBook } from '../src/library/store'
+import { bookIdFor, getAnchors, getBook, getBookBytes, getPages, getThumb, listBooks, putAnchors, putBookBytes, putThumb, removeBook, saveBook } from '../src/library/store'
 import type { Anchor, BookRecord, ImportProgress } from '../src/library/types'
 
 const book = `${process.cwd()}/.local/test-books/calculus-volume-1.pdf`
@@ -96,6 +96,22 @@ describe('pdf helpers', () => {
     expect(grade.box.x + grade.box.w).toBeCloseTo(190 / 612, 3)
     expect(grade.size).toBeCloseTo(10 / 792, 5)
     expect(textLinesFrom([], toView, 0, 0)).toEqual([])
+  })
+
+  it('starts a line at an exercise number set after math or right against the cell before it', () => {
+    const item = (str: string, x: number, y: number, width: number, hasEOL = false) => ({ str, transform: [10, 0, 0, 10, x, y], width, hasEOL })
+    const toView = (x: number, y: number) => [x, 792 - y]
+    const lines = textLinesFrom([
+      // "with" then math drawn as graphics, then the next cell's number: "with 413 ." used to be one line
+      item('412', 210, 500, 14), item(' .', 224, 500, 2), item(' ', 226, 500, 50), item('with', 315, 500, 17), item(' ', 332, 500, 17),
+      item('413', 348, 500, 14), item(' .', 362, 500, 2), item(' ', 364, 500, 6), item('What is the value of', 370, 500, 76),
+      // a cell whose words reach the next cell's number: "from a11 ." used to be one line
+      item('10', 72, 400, 9), item('.', 81, 400, 2), item(' ', 83, 400, 6), item('person walks away from a', 90, 400, 138, true),
+      item('', 228, 400, 0, true), item('11', 228, 400, 9), item(' .', 237, 400, 2), item(' ', 239, 400, 6), item('Using the previous', 245, 400, 72, true),
+      // a numbered step inside a sentence stays whole
+      item('Step', 72, 300, 20), item(' ', 92, 300, 3), item('1', 95, 300, 5), item('.', 100, 300, 2), item(' Let h go to zero', 102, 300, 70),
+    ], toView, 612, 792)
+    expect(lines.map(line => line.text)).toEqual(['412 .', 'with', '413 . What is the value of', '10. person walks away from a', '11 . Using the previous', 'Step 1. Let h go to zero'])
   })
 })
 
@@ -189,10 +205,16 @@ describe('importBook', () => {
       && line.box.y > anchor.box.y + 0.01 && line.box.x + line.box.w > anchor.box.x + 0.01 && inBox(anchor, Math.max(line.box.x, anchor.box.x) + 0.005, line.box.y + line.box.h / 2)))
     expect(instructions.map(anchor => anchor.id)).toEqual([])
     // no crop takes in another exercise's number, except where the book itself prints two cells over each other
+    // (160 and 162 on file page 491 end their first line on top of 161 and 163)
     const spills = exercises.filter(anchor => exercises.some(other => other !== anchor && other.pageIndex === anchor.pageIndex
       && pages[anchor.pageIndex].lines.some(line => line.text.startsWith(other.label) && Math.abs(line.box.y - other.box.y) < 0.012 && Math.abs(line.box.x - other.box.x - 0.01) < 0.012
         && inBox(anchor, line.box.x + 0.003, line.box.y + line.box.h / 2))))
-    expect(spills.length).toBeLessThanOrEqual(6)
+    expect(spills.length).toBeLessThanOrEqual(7)
+    // exercise numbers set right after math or another cell's words are found: 413 on file page 424 was part of "with 413 ."
+    for (const [index, label] of [[424, '413'], [311, '11'], [335, '126'], [491, '161'], [538, '419']] as const) expect(at(index, 'exercise', label)).toBeDefined()
+    expect(exercises.length).toBeGreaterThanOrEqual(2436)
+    const twelve = at(424, 'exercise', '412')
+    expect(twelve.box.x + twelve.box.w).toBeLessThan(at(424, 'exercise', '413').box.x + 0.01)
     // a full reindex of the old version gives the same items
     await saveBook({ ...record, indexVersion: undefined })
     const again = await ensureIndexed(record.id)
@@ -227,10 +249,70 @@ async function splitBook(title = 'Split Theorem Book'): Promise<Uint8Array> {
   return pdf.save()
 }
 
+/** Two pages of worksheet problems under a big title, numbered "1)" or "1.", with "Page 1 of 2" footers and no exercises heading. */
+async function worksheet(mark: ')' | '.'): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create()
+  pdf.setTitle(`Unit 4 Quiz ${mark}`)
+  const font = await pdf.embedFont(StandardFonts.Helvetica)
+  let n = 1
+  for (let p = 0; p < 2; p++) {
+    const page = pdf.addPage([612, 792])
+    page.drawText('Unit 4 Quiz', { x: 72, y: 792 - 60, size: 20, font })
+    page.drawText('Solve each equation. Show your work.', { x: 72, y: 792 - 110, size: 10, font })
+    for (let row = 0; row < 4; row++) for (const x of [72, 330]) { page.drawText(`${n}${mark} ${n + 2}x + 3 = ${n * 4 + 1}`, { x, y: 792 - 150 - row * 120, size: 10, font }); n++ }
+    page.drawText(`Page ${p + 1} of 2`, { x: 280, y: 30, size: 9, font })
+  }
+  return pdf.save()
+}
+
+describe('worksheets and removed books', () => {
+  it('finds the numbered problems of a worksheet with no exercises heading', async () => {
+    for (const mark of [')', '.'] as const) {
+      const record = await importBook(pdfFile(await worksheet(mark), `quiz${mark === ')' ? 'paren' : 'dot'}.pdf`))
+      expect(record.labels).toEqual(['1', '2'])
+      const anchors = await getAnchors(record.id)
+      expect(anchors.filter(anchor => anchor.kind === 'exercise').map(anchor => Number(anchor.label)).sort((a, b) => a - b)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1))
+      const fourteen = anchors.find(anchor => anchor.label === '14')!
+      expect(fourteen.pageIndex).toBe(1)
+      expect(fourteen.box.w).toBeLessThan(0.5)
+    }
+  })
+
+  it('keeps a book removed during a re index removed, and importing it again brings it back whole', async () => {
+    const bytes = await splitBook('Removed Midway')
+    const record = await importBook(pdfFile(bytes, 'removed.pdf'))
+    await saveBook({ ...record, indexVersion: undefined })
+    let removing: Promise<void> | null = null
+    const job = ensureIndexed(record.id, p => { if (p.phase === 'reading' && p.done > 0 && !removing) removing = removeBook(record.id) })
+    await expect(job).rejects.toThrow('This book was removed from the library.')
+    await removing
+    expect(await getBook(record.id)).toBeNull()
+    expect(await getPages(record.id)).toEqual([])
+    expect(await getAnchors(record.id)).toEqual([])
+    expect((await listBooks()).some(book => book.id === record.id)).toBe(false)
+    const again = await importBook(pdfFile(bytes, 'removed.pdf'))
+    expect(again).toMatchObject({ id: record.id, indexed: true, indexVersion: INDEX_VERSION })
+    expect((await getBookBytes(record.id))?.byteLength).toBe(bytes.byteLength)
+    expect(await getPages(record.id)).toHaveLength(3)
+  })
+
+  it('puts back a missing file when the same PDF is imported again', async () => {
+    const bytes = await splitBook('Lost File Book')
+    const record = await importBook(pdfFile(bytes, 'lost.pdf'))
+    // a book an older version left without its file
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const open = indexedDB.open('magic-whiteboard-textbooks-v1', 1); open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error) })
+    await new Promise<void>((resolve, reject) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').delete(record.id); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error) })
+    db.close()
+    expect(await getBookBytes(record.id)).toBeNull()
+    await importBook(pdfFile(bytes, 'lost.pdf'))
+    expect((await getBookBytes(record.id))?.byteLength).toBe(bytes.byteLength)
+  })
+})
+
 describe('reindexing', () => {
   it('knows which books need reading again', () => {
     const base = { indexed: true, indexVersion: INDEX_VERSION } as BookRecord
-    expect(INDEX_VERSION).toBe(2)
+    expect(INDEX_VERSION).toBe(3)
     expect(needsReindex(base)).toBe(false)
     expect(needsReindex({ ...base, indexVersion: undefined })).toBe(true)
     expect(needsReindex({ ...base, indexVersion: 1 })).toBe(true)

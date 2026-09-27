@@ -37,6 +37,11 @@ export function openedText(openedAt: number, now = Date.now()): string {
   return `Opened ${new Date(openedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
 }
 
+/** Quick tunnel addresses change every run, and each address keeps its own browser storage. */
+export function onTunnelHost(host = typeof location === 'undefined' ? '' : location.hostname): boolean {
+  return /(^|\.)trycloudflare\.com$/i.test(String(host ?? ''))
+}
+
 export function bookDescription(book: BookRecord, now = Date.now()): string {
   if (!book.indexed) return 'Import not finished. Open it to finish reading it.'
   const parts = [openedText(book.openedAt, now), formatBytes(book.size)]
@@ -114,6 +119,6 @@ export function LibraryPanel({ books, openBookId, onOpen, onImport, onRemove, on
       <p>Import a PDF textbook, then ask for a page or a problem by number.</p>
       <button type="button" className="library-primary" onClick={onImport}><FileUp size={15}/>Import PDF</button>
     </div>}
-    <p className="library-footnote">Books are saved in this browser only.</p>
+    <p className="library-footnote">Books are saved in this browser only.{onTunnelHost() && <><br/>Books saved here stay with this web address.</>}</p>
   </div>
 }

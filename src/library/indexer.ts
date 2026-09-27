@@ -3,13 +3,13 @@ import { bodyFontSize, detectAnchors, type OpenItem } from './anchors'
 import { assignPrintedLabels } from './labels'
 import { closePdf, hasPdfHeader, openPdf, pageLines } from './pdfjs'
 import { thumbFromPage } from './render'
-import { bookIdFor, getAnchors, getBook, getBookBytes, putAnchors, putBookBytes, putPages, putThumb, removeAnchors, removeBook, requestPersistentStorage, saveBook, touchBook } from './store'
+import { bookIdFor, getAnchors, getBook, getBookBytes, putAnchors, putBookBytes, putPages, putThumb, removeAnchors, removeBook, replaceBook, requestPersistentStorage, saveBook, touchBook } from './store'
 import type { Anchor, BookRecord, ImportProgress, PageRecord } from './types'
 
 export const MAX_BOOK_BYTES = 400 * 1024 * 1024
 const BATCH = 25
 /** bumped whenever finding items changes, so books indexed before are read again */
-export const INDEX_VERSION = 2
+export const INDEX_VERSION = 3
 
 /** True when a book never finished indexing or was indexed by an older item finder. */
 export function needsReindex(book: BookRecord): boolean {
@@ -116,19 +116,35 @@ async function readBook(id: string, doc: PDFDocumentProxy, report: Report): Prom
   pages.forEach(page => { page.label = labels[page.index] ?? null })
   const sample = pages.length > 120 ? pages.filter((_, i) => i % Math.ceil(pages.length / 120) === 0) : pages
   const body = bodyFontSize(sample.flatMap(page => page.lines))
+  let anchors = findItems(id, pages, body, false)
+  // a worksheet packet numbers its problems with no "Exercises" heading: read it as one exercise set
+  if (!anchors.some(anchor => anchor.kind === 'exercise' || anchor.kind === 'problem' || anchor.kind === 'example')) anchors = findItems(id, pages, body, true)
+  const outline = await flatOutline(doc)
+  await yieldNow()
+  return { pages, anchors, labels: labels.slice(0, count), outline, textPages: pages.filter(page => page.text.replace(/\s/g, '').length >= 20).length }
+}
+
+function findItems(id: string, pages: PageRecord[], body: number, allExercises: boolean): Anchor[] {
   const anchors: Anchor[] = [], byId = new Map<string, Anchor>()
-  let exerciseMode = false, answers = 0, exerciseSize = 0, carry: OpenItem[] = []
+  let exerciseMode = allExercises, answers = 0, exerciseSize = 0, carry: OpenItem[] = []
   for (const page of pages) {
-    const found = detectAnchors(id, { index: page.index, lines: page.lines, exerciseMode, answers, exerciseSize, carry }, body)
+    const found = detectAnchors(id, { index: page.index, lines: page.lines, exerciseMode, answers, exerciseSize, carry, allExercises }, body)
     // items that ran off the page before learn where they go on
     for (const { id: anchorId, continues } of found.continued) { const anchor = byId.get(anchorId); if (anchor) anchor.continues = continues }
     for (const anchor of found.anchors) byId.set(anchor.id, anchor)
     anchors.push(...found.anchors)
     exerciseMode = found.exerciseMode; answers = found.answers; exerciseSize = found.exerciseSize; carry = found.open
   }
-  const outline = await flatOutline(doc)
-  await yieldNow()
-  return { pages, anchors, labels: labels.slice(0, count), outline, textPages: pages.filter(page => page.text.replace(/\s/g, '').length >= 20).length }
+  return anchors
+}
+
+const REMOVED = 'This book was removed from the library.'
+
+/** The last save of a read: a book removed while it was being read is cleaned up instead of coming back. */
+async function finish(done: BookRecord): Promise<void> {
+  if (await replaceBook(done)) return
+  await removeBook(done.id).catch(() => undefined)
+  throw new Error(REMOVED)
 }
 
 async function writeBook(read: Read, report: Report) {
@@ -161,6 +177,8 @@ export async function importBook(file: File, onProgress?: (p: ImportProgress) =>
   const id = await bookIdFor(bytes)
   const existing = await getBook(id)
   if (existing?.indexed) {
+    // write once, so this only puts back a file that went missing
+    await putBookBytes(id, bytes)
     if (needsReindex(existing)) await ensureIndexed(id, onProgress)
     return (await touchBook(id)) ?? existing
   }
@@ -193,7 +211,8 @@ async function readNewBook(id: string, bytes: Uint8Array, file: File, existing: 
     await writeBook(read, report)
     const cover = await coverOf(id, doc, book.cover)
     const done: BookRecord = { ...book, labels: read.labels, outline: read.outline, cover, indexed: true, textPages: read.textPages, indexVersion: INDEX_VERSION }
-    await saveBook(done)
+    await putBookBytes(id, bytes)
+    await finish(done)
     report('saving', count, count)
     return done
   } catch (error) {
@@ -238,7 +257,7 @@ async function reindex(bookId: string, report: Report): Promise<BookRecord> {
     await writeBook(read, report)
     const cover = book.cover ?? await coverOf(bookId, doc, null)
     const done: BookRecord = { ...base, cover, indexed: true, indexVersion: INDEX_VERSION }
-    await saveBook(done)
+    await finish(done)
     report('saving', count, count)
     return done
   } catch (error) {

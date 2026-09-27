@@ -17,7 +17,7 @@ export const optionId = z.enum(['A', 'B', 'C'])
 export const operationSchema = z.object({
   type: z.enum(['create_plot', 'create_math', 'create_text', 'create_geometry', 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo', 'propose_image', 'insert_library', 'library_action']),
   prompt: z.string().trim().min(1).max(4000).describe('For propose_image only: describe the requested image for user review before generation. This operation never generates or purchases an image.').optional(),
-  target: id.describe('Existing object ID for an edit or transform, not for creation. A retained selected ID does not turn a new plot/content request at an empty focus into an edit; omit target on create operations.').optional(), ids: z.array(id).max(100).optional(),
+  target: id.describe('Existing object ID for an edit or transform, not for creation. A retained selected ID does not turn a new plot/content request at an empty focus into an edit; omit target on create operations.').optional(), ids: z.array(id).max(2000).optional(),
   placement: z.enum(['focus', 'pointer', 'auto']).describe('focus places content near the reference cue with readable natural dimensions; literal focus mode confines content to its region. Reference mode does not copy the gesture rectangle.').optional(),
   expression: z.string().max(256).describe('Exact graph function or COMPLETE equality, preserving both sides and the variable before =. Examples: vertical line x=1 -> "x=1"; horizontal line y=1 -> "y=1"; circle -> "x^2+y^2=9". Bare "1" means y=1, NEVER x=1. Do not strip x= from a vertical-line request.').optional(), latex: z.string().max(8000).optional(),
   text: z.string().max(12000).optional(), title: z.string().max(200).optional(),

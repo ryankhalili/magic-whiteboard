@@ -3,7 +3,7 @@ import { Editor, type AssetRecord, type TLShape } from '../src/canvas/editor'
 import { normalizeSnapshot } from '../src/canvas/migration'
 import { createBoardController, focusImageBounds, getPlacementBounds, libraryAssetId, libraryImageSize, libraryItemKey, libraryQueryFromOperation, spotForOption } from '../src/board/controller'
 import { objectLabel } from '../src/board/ObjectInspector'
-import { findSpots, NATURAL_SIZES } from '../src/board/placementSpots'
+import { findSpots, guessContentSize, NATURAL_SIZES } from '../src/board/placementSpots'
 import { detectLibraryIntent } from '../src/library/intent'
 import { BOARD_INSTRUCTIONS, boardTools, commandSchema, compactContext, contextInstructions, contextSchema, placementOptionsFor, requestSchema, withPlacementOptions, type CommandRequest } from '../server/board-tools'
 import { runBoardCommand, type BoardModelResponse, type CommandRecoveryOptions } from '../server/command-repair'
@@ -12,7 +12,12 @@ import { readBoardCommand } from '../server/command-response'
 import { localRank, type RankRequest, type RankResult } from '../shared/ranking'
 import { parseBoardCommand } from '../shared/tool-command'
 import { createBoundsFor, createInsertLock, inspectorZone, manualOverride, matchWithReindex, reindexTarget, revealShift } from '../src/library/insertLayout'
-import type { BoardContext, BoardOperation, Bounds, PlacementOption } from '../shared/board'
+import type { BoardContext, BoardObject, BoardOperation, Bounds, PlacementOption } from '../shared/board'
+import { readFileSync } from 'node:fs'
+import { addedBounds, asksForPanelPage, boardOnly, commandAllowance, createSpeechStart, freeSpots, instructionTooLong, isPairingError, localHistoryCommand, MAX_INSTRUCTION, modelLibrary, modelObjects, onSheet, wantsPlacement } from '../src/appLogic'
+import { ApiRequestError } from '../src/ai/commands'
+import { contextFingerprint } from '../src/ai/voice-recovery'
+import { PAGE_BOUNDS } from '../src/files/boardFiles'
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
 const JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDA=='
@@ -596,5 +601,250 @@ describe('keeping inserts in view and out from under panels', () => {
     const spots = findSpots({ viewport: { x: 0, y: 0, w: 1440, h: 836 }, obstacles: [{ x: 100, y: 60, w: 700, h: 500 }], size: { w: 640, h: 183 }, workBelow: 260, avoid: [avoid] })
     expect(spots.length).toBeGreaterThan(0)
     for (const spot of spots) expect(overlapping(spot.bounds, avoid)).toBe(false)
+  })
+})
+
+describe('typed requests the board answers itself', () => {
+  it('runs undo and redo locally, with no model call', () => {
+    for (const text of ['undo', 'Undo.', ' redo ', 'undo that', 'please undo', 'redo please', 'Undo the last change!']) expect(localHistoryCommand(text), text).toBe(/redo/i.test(text) ? 'redo' : 'undo')
+    for (const text of ['undo and make it red', 'undo the last two changes', 'undone', 'why undo?', 'plot y = x^2']) expect(localHistoryCommand(text), text).toBeNull()
+  })
+  it('refuses a paste the server would reject with one plain message, and nothing else fails', () => {
+    const paste = 'Write this word problem on the board: ' + 'A ladder 10 m long rests against a vertical wall. '.repeat(60)
+    expect(paste.trim().length).toBe(3037)
+    expect(instructionTooLong(paste)).toBe('That instruction is 3,037 characters long. Shorten it to 3,000 or fewer and send it again.')
+    expect(instructionTooLong('x'.repeat(MAX_INSTRUCTION))).toBeNull()
+    expect(instructionTooLong(`  ${'x'.repeat(MAX_INSTRUCTION)}  `)).toBeNull()
+    // the same limit as the server, so a refused paste never reaches the history of later commands
+    const context = baseContext()
+    expect(requestSchema.safeParse({ text: 'x'.repeat(MAX_INSTRUCTION), context }).success).toBe(true)
+    expect(requestSchema.safeParse({ text: 'x'.repeat(MAX_INSTRUCTION + 1), context }).success).toBe(false)
+  })
+  it('knows "this page" and "the page I\'m looking at" mean the page in the reference panel', () => {
+    for (const text of ['this page', 'Put this page on the board.', 'insert the page I\u2019m looking at', 'show the page I have open', 'add the page I am on here', 'can you put the current page on the board please', 'the page I\'m on', 'give me this page']) expect(asksForPanelPage(text), text).toBe(true)
+    for (const text of ['clean up this page', 'what is on this page?', 'put page 5 on the board', 'this page has a typo', 'page i', 'the page before this one']) expect(asksForPanelPage(text), text).toBe(false)
+  })
+  it('skips placement ranking for an edit of the selection that creates nothing', () => {
+    const selected = { focus: null, selectedIds: ['shape:graph'] }
+    for (const text of ['make it red', 'make the graph red', 'move it right a bit', 'delete it', 'change the plot to y = x^3', 'rotate this 90 degrees']) expect(wantsPlacement(text, selected), text).toBe(false)
+    for (const text of ['write its derivative next to it', 'plot the derivative', 'add a label under it', 'graph y = 2x', 'make a table of values', 'solve it', 'show the tangent line']) expect(wantsPlacement(text, selected), text).toBe(true)
+    // follow up questions right after a create, with the new graph still selected, place their answers beside it
+    for (const text of ['find the derivative', "what's the derivative?", 'factor it', 'simplify it', 'find the roots', 'what are the roots?', 'evaluate it at x = 2', 'compute the integral', 'rewrite it in vertex form', 'complete the square', 'find the vertex', 'now do the second derivative', 'give me the tangent line at x = 1', 'what is f(2)?']) expect(wantsPlacement(text, selected), text).toBe(true)
+    expect(wantsPlacement('make it red', { focus: null, selectedIds: [] })).toBe(true)
+    expect(wantsPlacement('plot y = x', { focus: { kind: 'point', bounds: { x: 0, y: 0, w: 0, h: 0 }, targetIds: [] }, selectedIds: [] })).toBe(false)
+  })
+})
+
+describe('what the model sees', () => {
+  const view = { x: 0, y: 0, w: 1400, h: 900 }
+  const lesson = (): BoardObject[] => [
+    { id: 'shape:page1', kind: 'textbook_page', bounds: { x: 0, y: 0, w: 700, h: 906 }, rotation: 0, locked: true, title: 'Calculus Volume 1, page 23' },
+    { id: 'shape:page2', kind: 'textbook_page', bounds: { x: 0, y: 950, w: 700, h: 906 }, rotation: 0, locked: true, title: 'Calculus Volume 1, page 24' },
+    ...[1, 2, 3].map((n): BoardObject => ({ id: `shape:problem${n}`, kind: 'textbook_item', bounds: { x: 760, y: n * 300, w: 640, h: 180.4 }, rotation: 0, title: `Exercise ${n}` })),
+    { id: 'shape:graph', kind: 'plot', bounds: { x: 760.2, y: 1300.7, w: 440, h: 320 }, rotation: 0, expression: 'x^2-4*x+3' },
+    { id: 'shape:derivative', kind: 'math', bounds: { x: 1220, y: 1300, w: 300, h: 100 }, rotation: 0, latex: "f'(x)=2x-4" },
+    // the teacher then works the problem by hand: every pen stroke is its own shape
+    ...Array.from({ length: 40 }, (_, i): BoardObject => ({ id: `shape:ink${i}`, kind: 'draw', bounds: { x: 760 + (i % 4) * 60.37, y: 1650 + Math.floor(i / 4) * 45.61, w: 50.2, h: 20.9 }, rotation: 0, color: 'black' })),
+  ]
+  it('keeps the graph and the problems in the snapshot under a page of handwriting', () => {
+    const objects = modelObjects(lesson(), new Set(), view)
+    const snapshot = compactContext(contextSchema.parse(baseContext({ objects })) as BoardContext).objects
+    expect(snapshot).toHaveLength(35)
+    const ids = snapshot.map(o => o.id)
+    for (const id of ['shape:graph', 'shape:derivative', 'shape:problem1', 'shape:problem2', 'shape:problem3', 'shape:page1', 'shape:page2']) expect(ids, id).toContain(id)
+    // loose ink goes last, newest first among the rest
+    expect(snapshot.slice(0, 7).every(o => o.kind !== 'draw')).toBe(true)
+    // whole board units, never less than 1
+    for (const o of objects) expect(Object.values(o.bounds).every(v => Number.isInteger(v)) && o.bounds.w >= 1 && o.bounds.h >= 1, o.id).toBe(true)
+    expect(objects.find(o => o.id === 'shape:graph')!.bounds).toEqual({ x: 760, y: 1301, w: 440, h: 320 })
+  })
+  it('keeps circled or selected ink first, so cleaning up handwriting still has its ids', () => {
+    const objects = modelObjects(lesson(), new Set(['shape:ink3', 'shape:ink4']), view)
+    expect(objects.slice(0, 2).map(o => o.id)).toEqual(['shape:ink3', 'shape:ink4'])
+  })
+  it('sends worksheet text only for pages in view', () => {
+    const pages: BoardObject[] = [
+      { id: 'shape:w1', kind: 'pdf_page', bounds: { x: 0, y: 0, w: 794, h: 1123 }, rotation: 0, text: 'Problem 1' },
+      { id: 'shape:w2', kind: 'pdf_page', bounds: { x: 0, y: 5000, w: 794, h: 1123 }, rotation: 0, text: 'Problem 9' },
+    ]
+    const objects = modelObjects(pages, new Set(), view)
+    expect(objects.map(o => [o.id, o.text])).toEqual([['shape:w1', 'Problem 1'], ['shape:w2', undefined]])
+  })
+  const shelf = [
+    { id: BOOK, title: 'Calculus Volume 1', fileName: 'calc.pdf', pageCount: 769, labels: Array.from({ length: 769 }, (_, i) => i < 7 ? null : String(i - 7)) },
+    { id: 'sha256:' + 'b'.repeat(64), title: '', fileName: 'algebra.pdf', pageCount: 300 },
+  ]
+  it('sends book titles and page counts, not ids', () => {
+    const library = modelLibrary({ books: shelf, open: null, pending: null, highlights: [], panelPageIndex: null })!
+    expect(library.books).toEqual([{ title: 'Calculus Volume 1', pages: 769 }, { title: 'algebra.pdf', pages: 300 }])
+    expect(JSON.stringify(library)).not.toContain('sha256')
+    expect(contextSchema.parse(baseContext({ library: library as BoardContext['library'] })).library?.books).toEqual(library.books)
+    expect(modelLibrary({ books: [], open: null, pending: null, highlights: [], panelPageIndex: null })).toBeUndefined()
+  })
+  it('tells the model which page the reference panel shows', () => {
+    const open = shelf[0]
+    const library = modelLibrary({ books: shelf, open, pending: null, highlights: [], panelPageIndex: 241 })!
+    expect(library.panelPage).toEqual({ label: '234', pageIndex: 241 })
+    expect(modelLibrary({ books: shelf, open, pending: null, highlights: [], panelPageIndex: 3 })!.panelPage).toEqual({ label: null, pageIndex: 3 })
+    expect(modelLibrary({ books: shelf, open, pending: null, highlights: [], panelPageIndex: 5000 })!.panelPage).toBeUndefined()
+    expect(modelLibrary({ books: shelf, open: null, pending: null, highlights: [], panelPageIndex: 241 })!.panelPage).toBeUndefined()
+    expect(library.openBook).toEqual({ title: 'Calculus Volume 1' })
+    expect(JSON.stringify(library)).not.toContain('sha256')
+    const parsed = contextSchema.parse(baseContext({ library: library as BoardContext['library'] }))
+    expect(parsed.library?.panelPage).toEqual({ label: '234', pageIndex: 241 })
+    expect(parsed.library?.openBook).toEqual({ title: 'Calculus Volume 1' })
+  })
+})
+
+describe('a typed reply and the view', () => {
+  it('stays valid when only the pointer, a gesture or the view moved, and not when the board changed', () => {
+    const editor = new Editor()
+    const controller = createBoardController(editor, () => baseContext())
+    const [id] = controller.applyOperations([{ type: 'create_math', latex: 'x^2', bounds: { x: 100, y: 100, w: 200, h: 80 } }]).ids
+    const context = (extra: Partial<BoardContext> = {}) => ({ ...baseContext(), objects: controller.getObjects(), selectedIds: editor.getSelectedShapeIds() as string[], ...extra })
+    const key = (c: BoardContext) => contextFingerprint(boardOnly(c))
+    const before = key(context({ pointer: { x: 400, y: 300 } }))
+    expect(key(context({ pointer: { x: 401, y: 300 } }))).toBe(before)
+    expect(key(context({ pointer: { x: 400, y: 300 }, viewport: { x: 0, y: 40, w: 1200, h: 800 } }))).toBe(before)
+    expect(key(context({ pointer: null, gesture: { active: true, bounds: { x: 0, y: 0, w: 5, h: 5 }, start: { x: 0, y: 0 }, current: { x: 5, y: 5 } } }))).toBe(before)
+    expect(key(context({ selectedIds: [] }))).not.toBe(before)
+    expect(controller.applyOperations([{ type: 'transform_object', target: id, dx: 30 }]).ok).toBe(true)
+    expect(key(context({ pointer: { x: 400, y: 300 } }))).not.toBe(before)
+  })
+})
+
+describe('new content comes into view', () => {
+  it('glides to a typed equation placed below the view while the teacher reads a textbook page up close', async () => {
+    const editor = new Editor()
+    editor.setViewportScreenBounds({ x: 0, y: 56, w: 1440, h: 844 })
+    let options: PlacementOption[] | undefined
+    const context = (): BoardContext => { const vp = editor.getViewportPageBounds(); return baseContext({ pointer: null, viewport: { x: vp.x, y: vp.y, w: vp.w, h: vp.h }, ...(options ? { placementOptions: options } : {}) }) }
+    const controller = createBoardController(editor, context)
+    controller.applyOperations([pageOp(30, '23', { x: 0, y: 0, w: 700, h: 906 })])
+    editor.setCamera({ x: -(350 - 1440 / 1.6 / 2), y: -(300 - 844 / 1.6 / 2), z: 1.6 })
+    const vp = editor.getViewportPageBounds(), text = 'write the derivative of x^2'
+    const spots = freeSpots({ viewport: { x: vp.x, y: vp.y, w: vp.w, h: vp.h }, zoom: 1.6, objects: controller.getObjects(), size: guessContentSize(text), workBelow: 0 })
+    options = await placementOptionsFor(context(), spots.map(s => ({ id: s.id, bounds: s.bounds, description: s.description, features: s.features })), text, async request => localRank(request))
+    const before = editor.getCurrentPageShapeIds()
+    const result = controller.applyOperations([{ type: 'create_math', latex: '2x', placementOption: 'A' }])
+    expect(result.ok, result.message).toBe(true)
+    const added = addedBounds(editor, before, result.ids)!
+    const a = editor.pageToScreen(added), c = editor.pageToScreen({ x: added.x + added.w, y: added.y + added.h })
+    const item = { left: a.x, top: a.y, right: c.x, bottom: c.y }
+    // the stage below the 56 px header, less the tool rail, board options and footer, as in App.revealInserted
+    const area = { left: 84, top: 112, right: 1424, bottom: 860 }
+    const hidden = item.left < area.left || item.top < area.top || item.right > area.right || item.bottom > area.bottom
+    expect(hidden).toBe(true)
+    const shift = revealShift(item, area)!
+    expect(shift).not.toBeNull()
+    expect(item.left + shift.dx).toBeGreaterThanOrEqual(area.left)
+    expect(item.right + shift.dx).toBeLessThanOrEqual(area.right)
+    expect(item.top + shift.dy).toBeGreaterThanOrEqual(area.top)
+    expect(item.bottom + shift.dy).toBeLessThanOrEqual(area.bottom)
+  })
+  it('reveals only what the command added, and nothing for an edit', () => {
+    const { editor, controller } = setup()
+    controller.applyOperations([{ type: 'create_math', latex: 'x', bounds: { x: 0, y: 0, w: 100, h: 50 } }])
+    const before = editor.getCurrentPageShapeIds()
+    const edit = controller.applyOperations([{ type: 'update_object', target: 'last', color: '#dc2626' }])
+    expect(addedBounds(editor, before, edit.ids)).toBeNull()
+    const both = controller.applyOperations([{ type: 'create_text', text: 'a', bounds: { x: 500, y: 600, w: 200, h: 60 } }, { type: 'create_text', text: 'b', bounds: { x: 900, y: 700, w: 100, h: 60 } }])
+    expect(addedBounds(editor, before, both.ids)).toMatchObject({ x: 500, y: 600, w: 500 })
+  })
+})
+
+describe('A4 page mode placement', () => {
+  const inside = (b: Bounds) => onSheet(b, PAGE_BOUNDS)
+  function sheetBoard(stageW: number, stageH: number, background: boolean) {
+    const editor = new Editor()
+    editor.setViewportScreenBounds({ x: 0, y: 56, w: stageW, h: stageH })
+    // App.changeMode('page'): the A4 page fitted in view
+    editor.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 })
+    if (background) editor.run(() => {
+      editor.createAssets([{ id: 'asset:bg', typeName: 'asset', type: 'image', meta: {}, props: { name: 'hw', src: PNG, w: 1, h: 1, mimeType: 'image/png', isAnimated: false } }])
+      editor.createShape({ id: 'shape:bg', type: 'image', x: 0, y: 0, isLocked: true, props: { assetId: 'asset:bg', w: 794, h: 1123 }, meta: { marginaliaBackground: true } })
+    }, { ignoreShapeLock: true })
+    const controller = createBoardController(editor, () => baseContext())
+    const vp = editor.getViewportPageBounds()
+    const spots = (size: { w: number; h: number }, workBelow = 0) => freeSpots({
+      viewport: { x: vp.x, y: vp.y, w: vp.w, h: vp.h }, zoom: editor.getZoomLevel(), objects: controller.getObjects(), size, workBelow,
+      sheet: PAGE_BOUNDS, isBackground: id => editor.getShape(id as TLShape['id'])?.meta.marginaliaBackground === true,
+    })
+    return { editor, controller, spots }
+  }
+  it('puts typed content and library items on the sheet, over a homework background', () => {
+    for (const [w, h] of [[1440, 844], [1180, 764]]) for (const background of [true, false]) {
+      const { spots } = sheetBoard(w, h, background)
+      for (const text of ['write the quadratic formula', 'plot y = x^2']) {
+        const found = spots(guessContentSize(text))
+        expect(found.length, `${w} ${background} ${text}`).toBeGreaterThan(0)
+        for (const spot of found) expect(inside(spot.bounds), JSON.stringify(spot.bounds)).toBe(true)
+      }
+      const item = libraryImageSize({ w: 1400, h: 420 }, 'item')
+      const top = spots(item, item.workBelow)[0]
+      expect(top && inside(top.bounds)).toBe(true)
+    }
+  })
+  it('keeps clear of writing on the sheet, but not of the background itself', () => {
+    const { controller, spots } = sheetBoard(1440, 844, true)
+    controller.applyOperations([{ type: 'create_text', text: 'name', bounds: { x: 40, y: 40, w: 700, h: 300 } }])
+    const found = spots(guessContentSize('write the quadratic formula'))
+    expect(found.length).toBeGreaterThan(0)
+    for (const spot of found) expect(inside(spot.bounds) && !overlapping(spot.bounds, { x: 40, y: 40, w: 700, h: 300 })).toBe(true)
+  })
+  it('uses the whole sheet when none of it is in view, and nothing when it is full', () => {
+    const size = guessContentSize('plot y = x^2')
+    const far = freeSpots({ viewport: { x: 5000, y: 5000, w: 1440, h: 844 }, zoom: 1, objects: [], size, workBelow: 0, sheet: PAGE_BOUNDS })
+    expect(far.length).toBeGreaterThan(0)
+    for (const spot of far) expect(inside(spot.bounds)).toBe(true)
+    const full: BoardObject[] = [{ id: 'shape:full', kind: 'text', bounds: { ...PAGE_BOUNDS }, rotation: 0 }]
+    expect(freeSpots({ viewport: { x: -100, y: -70, w: 994, h: 1313 }, zoom: .6, objects: full, size, workBelow: 0, sheet: PAGE_BOUNDS })).toEqual([])
+  })
+  it('leaves the infinite canvas as it was', () => {
+    const size = guessContentSize('plot y = x^2'), viewport = { x: 0, y: 0, w: 1440, h: 844 }
+    const objects: BoardObject[] = [{ id: 'shape:bg', kind: 'image', bounds: { x: 0, y: 0, w: 794, h: 1123 }, rotation: 0 }]
+    expect(freeSpots({ viewport, zoom: 1, objects, size, workBelow: 0, isBackground: () => true })).toEqual(findSpots({ viewport, obstacles: [{ x: 0, y: 0, w: 794, h: 1123, label: 'image' }], size, workBelow: 0, max: 12, near: null, avoid: [], insets: { left: 84, top: 56, right: 16, bottom: 40 } }))
+  })
+})
+
+describe('pairing, allowance and voice turns', () => {
+  it('recognizes a lapsed pairing from typing, voice and image errors', () => {
+    expect(isPairingError(new ApiRequestError('Pair this device using the six-digit code shown on the laptop.', 401, 'pairing_required'))).toBe(true)
+    expect(isPairingError(new ApiRequestError('Unauthorized', 401))).toBe(true)
+    expect(isPairingError('Pair this device using the six-digit code shown on the laptop.')).toBe(true)
+    expect(isPairingError('Pair this device using the six-digit code shown on the laptop. Check this existing request before confirming another image; no automatic generation retry was sent.')).toBe(true)
+    for (const other of [new ApiRequestError('The configured command allowance has been reached.', 429, 'local_command_limit'), new Error('fetch failed'), 'Voice could not reconnect.', null, undefined]) expect(isPairingError(other)).toBe(false)
+  })
+  it('counts the typed commands left and warns from 90 percent', () => {
+    expect(commandAllowance({ limits: { commandLimit: 200 }, usage: { commands: 179 } })).toEqual({ used: 179, limit: 200, left: 21, low: false })
+    expect(commandAllowance({ limits: { commandLimit: 200 }, usage: { commands: 180 } })).toMatchObject({ left: 20, low: true })
+    expect(commandAllowance({ limits: { commandLimit: 200 }, usage: { commands: 250 } })).toMatchObject({ left: 0, low: true })
+    // an unpaired iPad gets no usage, so nothing is shown
+    expect(commandAllowance({ limits: { commandLimit: 200 } })).toBeNull()
+    expect(commandAllowance(null)).toBeNull()
+  })
+  it('finds the start of each utterance from the microphone level, once per sentence', () => {
+    const start = createSpeechStart()
+    let t = 0, starts = 0
+    const feed = (level: number, ms: number) => { for (const end = t + ms; t < end; t += 50) if (start(level, t)) starts++ }
+    // ten minutes of pen work in a quiet room: no speech, so no ranking at all
+    feed(.01, 600_000)
+    expect(starts).toBe(0)
+    // three sentences; a short breath inside one of them is still the same sentence
+    feed(.4, 1500); feed(.01, 2000); feed(.3, 800); feed(.02, 300); feed(.3, 900); feed(.01, 3000); feed(.5, 1200); feed(0, 1000)
+    expect(starts).toBe(3)
+  })
+})
+
+describe('where the inspector opens', () => {
+  it('measures it from an element with the inspector\'s own position rules', () => {
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ selectors: m[1].split(',').map(s => s.trim()), body: m[2] }))
+    const geometry = rules.filter(r => r.selectors.includes('.object-inspector') && /(^|;)\s*(top|right|width|max-height)\s*:/.test(r.body))
+    expect(geometry.length).toBeGreaterThanOrEqual(4)
+    for (const rule of geometry) expect(rule.selectors, rule.body).toContain('.inspector-zone')
+    const zone = rules.find(r => r.selectors.length === 1 && r.selectors[0] === '.inspector-zone')!
+    expect(zone.body).toMatch(/visibility:hidden/)
+    expect(zone.body).toMatch(/pointer-events:none/)
   })
 })

@@ -1,4 +1,5 @@
 import type { BoardCommand, BoardContext, BoardOperation } from '../../shared/board'
+import { SERVER_UNREACHABLE } from './commands'
 
 export type VoiceRecoveryState = {
   phase: 'repairing' | 'reconnecting' | 'renewing'; message: string; attempt: number
@@ -23,7 +24,8 @@ export function pinRecoveredCommand(command: BoardCommand, context: BoardContext
   return command.operations.map(operation => {
     if (['undo', 'redo', 'delete_objects'].includes(operation.type)) throw new Error('The correction includes a destructive action. Please give that instruction again.')
     if (operation.followPointer) throw new Error('Repeat the pointer-follow instruction after voice resumes.')
-    if (operation.type.startsWith('create_') || operation.type === 'propose_image') return operation
+    // library inserts and panel actions name no board object, so they pass through untargeted
+    if (operation.type.startsWith('create_') || ['propose_image', 'insert_library', 'library_action'].includes(operation.type)) return operation
     const explicit = operation.ids?.length ? operation.ids : operation.target && !['selected', 'selection', 'focus', 'last'].includes(operation.target) ? [operation.target] : selected
     if (!explicit.length || explicit.some(id => !allowed.has(id))) throw new Error('The correction targets a different object. Please select the intended object and repeat the instruction.')
     const pinned = { ...operation }; delete pinned.target; delete pinned.ids
@@ -52,8 +54,18 @@ export class VoiceApiError extends Error {
 /** Preserve structured status so auth/credit failures never become reconnect loops. */
 export async function voiceApiRequest<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const timeout = AbortSignal.timeout(25_000)
-  const response = await fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Marginalia': '1' }, body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
-  const data = await response.json().catch(() => ({ error: 'The voice server returned an unreadable response.' }))
+  const init: RequestInit = { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Marginalia': '1' }, body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, timeout]) : timeout }
+  let response: Response
+  try { response = await fetch(url, init) }
+  catch (error) {
+    // a cancelled request keeps its own reason; a network failure or timeout stays retryable
+    if (signal?.aborted) throw error
+    throw new VoiceApiError(SERVER_UNREACHABLE, 0, true, undefined, 'server_unreachable')
+  }
+  const parsed = await response.json().catch(() => null)
+  // a tunnel or proxy error page means the laptop behind it did not answer
+  if (!parsed && response.status >= 500) throw new VoiceApiError(SERVER_UNREACHABLE, response.status, true, undefined, 'server_unreachable')
+  const data = parsed ?? { error: 'The voice server returned an unreadable response.' }
   if (!response.ok) {
     const retryAfter = response.headers?.get('Retry-After')
     const retryAfterMs = typeof data.retryAfterMs === 'number' ? data.retryAfterMs : retryAfter && Number.isFinite(Number(retryAfter)) ? Number(retryAfter) * 1000 : undefined

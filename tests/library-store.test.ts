@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { describe, expect, it, vi } from 'vitest'
 import {
   bookIdFor, getAnchors, getBook, getBookBytes, getPage, getPages, getThumb, listBooks, putAnchors, putBookBytes, putPages, putThumb,
-  removeBook, requestPersistentStorage, saveBook, touchBook,
+  removeBook, replaceBook, requestPersistentStorage, saveBook, touchBook,
 } from '../src/library/store'
 import type { Anchor, BookRecord, PageRecord } from '../src/library/types'
 
@@ -72,6 +72,39 @@ describe('library store', () => {
     expect(await getAnchors('kept')).toHaveLength(1)
     expect(await getThumb('kept:0:240')).not.toBeNull()
     await removeBook('never-there')
+  })
+
+  it('saves a finished read only while the book is still in the library', async () => {
+    await saveBook(bookRecord('here', 1))
+    expect(await replaceBook({ ...bookRecord('here', 1), title: 'Updated' })).toBe(true)
+    expect((await getBook('here'))?.title).toBe('Updated')
+    expect(await replaceBook(bookRecord('removed', 1))).toBe(false)
+    expect(await getBook('removed')).toBeNull()
+  })
+
+  it('says the device is out of space when a write runs out of room', async () => {
+    const proto = IDBObjectStore.prototype as unknown as { put: (...args: unknown[]) => IDBRequest }
+    const put = proto.put
+    const quota = () => new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+    const pages = Array.from({ length: 5 }, (_, i) => pageRecord('full', i))
+    let n = 0, failAt = 3, mode: 'throw' | 'request' = 'throw'
+    proto.put = function (this: IDBObjectStore & { transaction: { _execRequestAsync?: (job: unknown) => IDBRequest } }, ...args: unknown[]) {
+      if (this.name === 'pages' && ++n === failAt) {
+        // a browser reports the error on the put request itself; the pages written before it are aborted after
+        if (mode === 'request' && this.transaction._execRequestAsync) return this.transaction._execRequestAsync({ source: this, operation: () => { throw quota() } })
+        throw quota()
+      }
+      return put.apply(this, args)
+    }
+    try {
+      for (const [how, at] of [['throw', 1], ['throw', 3], ['request', 1], ['request', 3]] as const) {
+        mode = how; failAt = at; n = 0
+        await expect(putPages(pages)).rejects.toThrow('This device is out of storage space for textbooks. Remove a book from the library and try again.')
+      }
+    } finally { proto.put = put }
+    expect(await getPages('full')).toEqual([])
+    await putPages(pages)
+    expect(await getPages('full')).toHaveLength(5)
   })
 
   it('fingerprints files with sha256', async () => {

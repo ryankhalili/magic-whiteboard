@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { localRank } from '../shared/ranking'
-import { buildCandidates, certainItem, parseLibraryQuery, pickBook, searchPages, titleMatch } from '../src/library/search'
+import { buildCandidates, certainItem, isHerePage, parseLibraryQuery, pickBook, searchPages, subjectBooks, titleMatch } from '../src/library/search'
 import type { Anchor, AnchorKind, BookRecord, PageRecord } from '../src/library/types'
 
 describe('parseLibraryQuery', () => {
@@ -14,6 +14,20 @@ describe('parseLibraryQuery', () => {
     expect(q('page xii')).toMatchObject({ kind: 'page', label: 'xii' })
     expect(q('put page 22 on the board')).toMatchObject({ kind: 'page', label: '22' })
     expect(q('bring up page 145 please')).toMatchObject({ kind: 'page', label: '145' })
+  })
+
+  it('never reads the teacher saying "I" after page as page i', () => {
+    for (const text of ["put the page I'm looking at on the board", 'show the page I have open', 'the page I am on', 'the page i am looking at', 'the page I’m on', 'put page I on the board']) {
+      expect(q(text)).toBeNull()
+    }
+    expect(q('page i')).toMatchObject({ kind: 'page', label: 'i' })
+    expect(q('page IV')).toMatchObject({ kind: 'page', label: 'iv' })
+    expect(q('page iv of the book')).toMatchObject({ kind: 'page', label: 'iv' })
+  })
+
+  it('knows "this page" and "the page I have open" mean the page the teacher is on', () => {
+    for (const text of ['this page', 'the current page', "the page I'm looking at", 'put the page I have open on the board', 'the page we are on']) expect(isHerePage(text)).toBe(true)
+    for (const text of ['page', 'page 22', 'the page about limits', 'the next page']) expect(isHerePage(text)).toBe(false)
   })
 
   it('reads item requests and their kind', () => {
@@ -224,6 +238,22 @@ describe('buildCandidates', () => {
     const many = Array.from({ length: 80 }, (_, i) => anchor(i % 12, 'exercise', '5', `5. Item ${i}`))
     expect(buildCandidates(parseLibraryQuery('exercise 5')!, BOOK, PAGES, many)).toHaveLength(40)
     expect(buildCandidates(parseLibraryQuery('exercise 5')!, BOOK, PAGES, many, 3)).toHaveLength(3)
+  })
+})
+
+describe('subjectBooks', () => {
+  const book = (id: string, title: string) => ({ id, title, fileName: `${id}.pdf`, openedAt: 1 }) as BookRecord
+  const calculus = book('c', 'Calculus Volume 1'), chemistry = book('h', 'Chemistry 2e'), packet = book('p', 'Unit 4 Packet')
+  it('turns "the math book" into the books of that subject, else the books with no subject in their title', () => {
+    expect(subjectBooks('math', [calculus, chemistry])).toEqual([calculus])
+    expect(subjectBooks('maths', [chemistry, packet])).toEqual([packet])
+    expect(subjectBooks('science', [calculus, chemistry])).toEqual([chemistry])
+    expect(subjectBooks('mathematics', [chemistry])).toBeNull()
+  })
+  it('leaves real names alone', () => {
+    expect(subjectBooks('chemistry', [calculus])).toBeNull()
+    expect(subjectBooks('stewart', [calculus])).toBeNull()
+    expect(subjectBooks('math and physics', [calculus])).toBeNull()
   })
 })
 

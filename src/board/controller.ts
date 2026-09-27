@@ -261,7 +261,13 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
   return p
 }
 
-type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[]; layers: { ids: TLShapeId[]; front: boolean }[]; assets: AssetRecord[]; locked: TLShapeId[] }
+type Plan = { creates: TLCreateShapePartial[]; updates: TLShapePartial[]; deletes: TLShapeId[]; pageDeletes: TLShapeId[]; touched: TLShapeId[]; nextLast: string[]; layers: { ids: TLShapeId[]; front: boolean }[]; assets: AssetRecord[]; locked: TLShapeId[] }
+
+/** An inserted textbook page: locked like paper, but a mistaken insert can still be removed. */
+export function isLibraryPage(shape: TLShape | undefined): boolean {
+  const info = shape?.type === 'image' ? shape.meta?.library : undefined
+  return !!info && typeof info === 'object' && (info as { kind?: unknown }).kind === 'page'
+}
 
 export class BoardController {
   private lastIds: string[] = []
@@ -303,7 +309,7 @@ export class BoardController {
 
   private prepare(operations: BoardOperation[], baseContext: BoardContext): Plan {
     const virtual = new Map<string, TLShape>(this.editor.getCurrentPageShapes().map(shape => [shape.id, shape]))
-    const creates = new Map<TLShapeId, TLCreateShapePartial>(), updates = new Map<TLShapeId, TLShapePartial>(), deletes = new Set<TLShapeId>(), touched = new Set<TLShapeId>()
+    const creates = new Map<TLShapeId, TLCreateShapePartial>(), updates = new Map<TLShapeId, TLShapePartial>(), deletes = new Set<TLShapeId>(), pageDeletes = new Set<TLShapeId>(), touched = new Set<TLShapeId>()
     const context = { ...baseContext, selectedIds: [...baseContext.selectedIds], lastCreatedIds: this.lastCreatedIds.length ? this.lastCreatedIds : baseContext.lastCreatedIds }
     const layers: Plan['layers'] = []
     const assets = new Map<string, AssetRecord>(), locked: TLShapeId[] = []
@@ -377,10 +383,13 @@ export class BoardController {
       }
       for (const id of ids) {
         const shape = virtual.get(id)!
-        if (shape.isLocked || (this.editor.getShape(id) && this.editor.isShapeOrAncestorLocked(shape))) throw new Error('That object is locked. Unlock it before changing it.')
+        // shapes made earlier in this plan are still being placed, so a locked new page can be scaled or moved
+        const removablePage = operation.type === 'delete_objects' && isLibraryPage(shape) && !(this.editor.getShape(id) && this.editor.isShapeOrAncestorLocked(shape.parentId))
+        if (!creates.has(id) && !removablePage && (shape.isLocked || (this.editor.getShape(id) && this.editor.isShapeOrAncestorLocked(shape)))) throw new Error('That object is locked. Unlock it before changing it.')
         requireInside(region, shapePageBounds(this.editor, shape), 'The selected object')
         if (operation.type === 'delete_objects') {
-          virtual.delete(id); updates.delete(id); if (!creates.delete(id)) deletes.add(id); touched.delete(id)
+          virtual.delete(id); updates.delete(id); touched.delete(id)
+          if (!creates.delete(id)) (shape.isLocked ? pageDeletes : deletes).add(id)
           continue
         }
         if (operation.type !== 'update_object' && operation.type !== 'edit_content' && operation.type !== 'transform_object') throw new Error('Undo or redo must be a separate action.')
@@ -464,13 +473,14 @@ export class BoardController {
         virtual.set(id, next)
         if (creates.has(id)) creates.set(id, { ...creates.get(id), x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta, opacity: next.opacity } as TLCreateShapePartial)
         else updates.set(id, { id, type: next.type, x: next.x, y: next.y, rotation: next.rotation, props: next.props, meta: next.meta, opacity: next.opacity } as TLShapePartial)
-        touched.add(id)
+        if (!locked.includes(id)) touched.add(id)
       }
       context.selectedIds = ids.filter(id => virtual.has(id))
-      if (operation.layer && operation.type !== 'delete_objects') layers.push({ ids: context.selectedIds, front: operation.layer === 'front' })
+      // a locked page stays paper at the back, whatever layer the batch asks for
+      if (operation.layer && operation.type !== 'delete_objects') layers.push({ ids: context.selectedIds.filter(id => !locked.includes(id)), front: operation.layer === 'front' })
       context.lastCreatedIds = context.selectedIds.length ? context.selectedIds : context.lastCreatedIds.filter(id => virtual.has(id))
     }
-    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], touched: [...touched], nextLast: context.lastCreatedIds, layers,
+    return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], pageDeletes: [...pageDeletes], touched: [...touched], nextLast: context.lastCreatedIds, layers,
       assets: [...assets.values()].filter(asset => [...creates.values()].some(shape => shape.type === 'image' && shape.props?.assetId === asset.id)),
       locked: locked.filter(id => creates.has(id)) }
   }
@@ -478,7 +488,7 @@ export class BoardController {
   applyOperations(operations: BoardOperation[]): BoardResult {
     if (!Array.isArray(operations) || operations.length === 0 || operations.length > 20) return { ok: false, message: 'Send between 1 and 20 whiteboard actions.', ids: [] }
     if (operations.length === 1 && (operations[0].type === 'undo' || operations[0].type === 'redo')) {
-      this.editor[operations[0].type](); return { ok: true, message: operations[0].type === 'undo' ? 'Undone.' : 'Redone.', ids: [], objects: this.getObjects() }
+      this.editor[operations[0].type](); return { ok: true, message: operations[0].type === 'undo' ? 'Undone.' : 'Redone.', ids: [] }
     }
     let plan: Plan
     try { plan = this.prepare(operations, this.getContext()) }
@@ -490,15 +500,17 @@ export class BoardController {
         if (plan.creates.length) this.editor.createShapes(plan.creates)
         if (plan.updates.length) this.editor.updateShapes(plan.updates)
         if (plan.deletes.length) this.editor.deleteShapes(plan.deletes)
+        if (plan.pageDeletes.length) this.editor.run(() => this.editor.deleteShapes(plan.pageDeletes), { ignoreShapeLock: true })
         // a locked book page is paper: under everything the teacher can touch, so it never hides or shields anything
         if (plan.locked.length) this.editor.run(() => this.editor.sendToBack(plan.locked, { aboveLocked: true }), { ignoreShapeLock: true })
-        for (const layer of plan.layers) this.editor[layer.front ? 'bringToFront' : 'sendToBack'](layer.ids)
+        // back means behind other content, never behind pages or backgrounds
+        for (const layer of plan.layers) if (layer.front) this.editor.bringToFront(layer.ids); else this.editor.sendToBack(layer.ids, { aboveLocked: true })
         if (plan.touched.length) this.editor.select(...plan.touched)
         else if (plan.locked.length) this.editor.selectNone()
       })
       this.editor.markHistoryStoppingPoint('after-magic-command')
       this.lastIds = plan.nextLast
-      return { ok: true, message: 'Whiteboard updated.', ids: [...plan.touched, ...plan.locked], objects: this.getObjects() }
+      return { ok: true, message: 'Whiteboard updated.', ids: [...plan.touched, ...plan.locked] }
     } catch (error) {
       this.editor.bailToMark(mark)
       return { ok: false, message: error instanceof Error ? error.message : 'The whiteboard could not apply that change.', ids: [] }

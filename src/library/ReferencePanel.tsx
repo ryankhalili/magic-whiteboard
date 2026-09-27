@@ -122,11 +122,17 @@ export function renderEdge(cssWidth: number, aspect: number, pixelRatio = 1): nu
 export const pageLabelText = (labels: (string | null)[], index: number) => labels[index] ? `p. ${labels[index]}` : `file page ${index + 1}`
 const pageName = (labels: (string | null)[], index: number) => labels[index] ? `page ${labels[index]}` : `file page ${index + 1}`
 
-export function pageFromQuery(labels: (string | null)[], text: string): number | null {
+/** The page a search like "page 22" scrolls to: the one nearest `near` when the number repeats, else the file page with that number. */
+export function pageFromQuery(labels: (string | null)[], text: string, near: number | null = null): number | null {
   const match = /^\s*(?:page|pg\.?|p\.?)\s*(\d{1,4}|[ivxlcdm]{1,8})\s*$/i.exec(text)
   if (!match) return null
-  const wanted = match[1].toLowerCase(), index = labels.findIndex(label => label != null && label.toLowerCase() === wanted)
-  return index >= 0 ? index : null
+  const wanted = match[1].toLowerCase()
+  const found = labels.flatMap((label, index) => label != null && label.toLowerCase() === wanted ? [index] : [])
+  if (!found.length) {
+    const n = /^\d+$/.test(wanted) ? Number(wanted) : 0
+    return n >= 1 && n <= labels.length ? n - 1 : null
+  }
+  return near === null || !Number.isFinite(near) ? found[0] : found.reduce((best, next) => Math.abs(next - near) < Math.abs(best - near) ? next : best)
 }
 
 export function anchorTitle(anchor: Anchor): string {
@@ -412,7 +418,7 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   const submit = () => {
     const text = query.trim()
     if (!text || busy) return
-    const index = pageFromQuery(book.labels, text)
+    const index = pageFromQuery(book.labels, text, count ? pageAt(layout, scrollTop + view.h / 2) : null)
     if (index !== null && layout.tops[index] !== undefined) scrollToY(layout.tops[index])
     onSearch(text)
   }

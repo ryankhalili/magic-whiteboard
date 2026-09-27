@@ -3,7 +3,7 @@ import { AssetRecordType, createShapeId, type Editor, type TLImageShape } from '
 import type { AppSettings, Bounds } from '../../shared/board'
 import { hasPdfHeader, openPdf } from '../library/pdfjs'
 import { PAGE_BOUNDS } from './boardFiles'
-import { pdfKey, putPdfSource } from './pdfSources'
+import { dropPdfSources, pdfKey } from './pdfSources'
 import {
   ASSET_CHAR_LIMIT, PX_PER_PT, RASTER_BUDGET,
   assetChars, boardImportLimit, joinTextItems, layoutPdfPages, worksheetPages, type PdfPageInfo,
@@ -19,7 +19,7 @@ export type PdfImportOptions = {
 }
 export type PdfImportResult = {
   ids: string[]; pages: number; first: Bounds; layout: Bounds[]; doc: string; at: number;
-  /** Content key of the original PDF. `keptSource` says whether its bytes are stored on this device. */
+  /** Content key of the original PDF. The bytes are not kept (keptSource is always false): nothing reads them. */
   source: string | null
   switchToInfinite: boolean; keptSource: boolean; hasText: boolean
 }
@@ -70,18 +70,6 @@ async function readPage(pdf: PDFDocumentProxy, number: number, budget: number): 
   } finally { page.cleanup() }
 }
 
-/** Best effort: keep the original on this device, but never let storage stall the import. */
-async function keepSource(bytes: Uint8Array): Promise<{ source: string | null; stored: boolean }> {
-  const source = await pdfKey(bytes).catch(() => null)
-  if (!source) return { source: null, stored: false }
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const stored = await Promise.race([
-    putPdfSource(bytes).then(() => true, () => false),
-    new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 8000) }),
-  ]).finally(() => clearTimeout(timer))
-  return { source, stored }
-}
-
 /**
  * Import every page as a locked background image, stacked like a document. The page text
  * goes into the shape metadata so the assistant can read the worksheet. Long books belong
@@ -103,8 +91,9 @@ export async function importPdfFile(editor: Editor, file: File, options: PdfImpo
     const perPage = Math.min(2_400_000, Math.floor(room / count))
     if (perPage < 60_000) throw new Error('This notebook is too full for this PDF. Create a new notebook and import it there.')
 
-    // a failed store (private browsing, full disk) still imports
-    const { source, stored } = await keepSource(bytes)
+    // only the hash is kept, for stable image ids; originals saved by earlier versions are freed
+    const source = await pdfKey(bytes).catch(() => null)
+    dropPdfSources()
     // the same file gives the same page image ids, so importing it again reuses the images
     const imageId = (page: number) => source ? `asset:pdf-${source.slice(7, 31)}-p${page}` : AssetRecordType.createId()
     const name = file.name.replace(/\.pdf$/i, '').trim().slice(0, 120) || 'Worksheet'
@@ -125,7 +114,8 @@ export async function importPdfFile(editor: Editor, file: File, options: PdfImpo
 
     editor.markHistoryStoppingPoint('Import PDF')
     editor.run(() => {
-      // in A4 mode a one page PDF becomes the page background, like an image background
+      // in A4 mode a one page PDF becomes the page background, like an image background.
+      // other worksheet pages are not backgrounds, so pasting or setting an image never removes them
       if (fitA4) editor.deleteShapes(existing.filter(shape => shape.meta.marginaliaBackground === true).map(shape => shape.id))
       rendered.forEach((page, index) => {
         const assetId = imageId(index + 1), bounds = layout[index]
@@ -137,7 +127,7 @@ export async function importPdfFile(editor: Editor, file: File, options: PdfImpo
         editor.createShape<TLImageShape>({
           id: ids[index], type: 'image', x: bounds.x, y: bounds.y, isLocked: true,
           props: { assetId, w: bounds.w, h: bounds.h, altText: `${name}, page ${index + 1} of ${count}` },
-          meta: { marginaliaBackground: true, pdf: info },
+          meta: { marginaliaBackground: fitA4, pdf: info },
         })
       })
       editor.sendToBack(ids).selectNone()
@@ -150,7 +140,7 @@ export async function importPdfFile(editor: Editor, file: File, options: PdfImpo
     return {
       ids, pages: count, first: layout[0], layout, doc, at, source,
       switchToInfinite: options.mode === 'page' && !fitA4,
-      keptSource: stored, hasText: rendered.some(page => page.text.length > 0),
+      keptSource: false, hasText: rendered.some(page => page.text.length > 0),
     }
   } finally {
     await pdf.loadingTask.destroy().catch(() => undefined)

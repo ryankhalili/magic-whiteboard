@@ -214,8 +214,15 @@ Start a new preview in PowerShell:
 npm run dev
 ```
 
-If the app server is already running, restart it after starting the new tunnel. The helper prints the HTTPS URL and tunnel process ID, and saves only the exact generated hostname in `.local/preview-host.txt`. Vite permits that hostname explicitly. It does not permit every tunnel hostname. The helper installs no service and makes no autostart change.
+On macOS, Linux or Windows, the cross platform helper does the same with `cloudflared` from `.local` or from your PATH, and reads `PORT` (default 3000):
 
-Open the HTTPS URL in Safari on the iPad, enter the pairing code from **Help & iPad connection** on the laptop, and use **Check voice connection** before starting the microphone. On the laptop, use `http://localhost:3000`. Stop the app with Ctrl+C. Stop the tunnel with the `Stop-Process -Id ...` command printed by the helper; stop an old tunnel before starting another. A newly started tunnel receives a different URL and therefore a separate browser-storage origin; download notebook files before changing preview addresses. A server restart changes the pairing code.
+```sh
+node server/start-tunnel.mjs
+npm run dev
+```
+
+The helpers print the HTTPS URL and tunnel process ID, and save the generated hostname in `.local/preview-host.txt`. In development, Vite accepts any `*.trycloudflare.com` hostname, so a server that is already running does not need a restart for a new tunnel. Cloudflare assigns those names, so they cannot be pointed back at this computer by someone else. The helpers install no service and make no autostart change.
+
+Open the HTTPS URL in Safari on the iPad, enter the pairing code from **Help & iPad connection** on the laptop, and use **Check voice connection** before starting the microphone. On the laptop, use `http://localhost:3000`. Stop the app with Ctrl+C. Stop the tunnel with the stop command printed by the helper; stop an old tunnel before starting another. A newly started tunnel receives a different URL and therefore a separate browser-storage origin; download notebook files before changing preview addresses. A server restart changes the pairing code, and so do 20 wrong pairing attempts; Help on the laptop always shows the current code.
 
 To check only the OpenAI voice configuration without opening media, run `npx tsx server/check-realtime.ts`. The script reports success or an error without printing credentials. Actual speech, pen latency, and iPad audio behavior still require device testing.
