@@ -8,5 +8,6 @@ API.txt
 .local/
 *.log
 test-results/
+.playwright-mcp/
 *.tsbuildinfo
 .DS_Store

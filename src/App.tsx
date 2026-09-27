@@ -448,12 +448,14 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
   const doExport = async (format: 'png' | 'pdf') => {
     if (!editor) return
+    editor.completeInteraction()
     setMenu(null); setBusy(true)
     try { await exportBoard(editor, format, settings); notify(`${format.toUpperCase()} exported.`) } catch (e) { setError((e as Error).message) }
     finally { setBusy(false) }
   }
   const importImage = async (file: File) => {
     if (!editorRef.current) return
+    editorRef.current.completeInteraction()
     stopFollowing()
     setBusy(true)
     try {
@@ -505,7 +507,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     editor.run(() => editor.deleteShapes(editor.getCurrentPageShapes().filter(s => s.meta.marginaliaBackground === true).map(s => s.id)), { ignoreShapeLock: true })
     setMenu(null); notify('Background removed. Undo will restore it.')
   }
-  const save = () => { if (editor) { saveProject(editor, settings); notify('Editable notebook downloaded.') } }
+  const save = () => { if (editor) { editor.completeInteraction(); saveProject(editor, settings); notify('Editable notebook downloaded.') } }
   const downloadOriginal = async () => {
     try { await downloadOriginalNotebook(notebook.id, settings); notify('Original notebook backup downloaded. Your current board is unchanged.') }
     catch (error) { setError((error as Error).message) }
@@ -560,7 +562,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       </div>
     </header>
 
-    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) { importAsBackground.current = true; void importImage(f) } }}>
+    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDropCapture={e => { const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) { e.preventDefault(); e.stopPropagation(); importAsBackground.current = true; void importImage(f) } }}>
       <div className="paper-pattern"/>
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
       <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
@@ -590,7 +592,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
           <div className="format-controls"><label>Size<input aria-label="Object font size" type="number" min="8" max="160" value={selectedRecord.props.fontSize} onChange={e => { const fontSize=Number(e.target.value); if(fontSize>=8 && fontSize<=160) execute([{type:'update_object',target:selected.id,fontSize}]) }}/></label><label>Ink<input aria-label="Object ink color" type="color" value={selectedRecord.props.color} onChange={e=>execute([{type:'update_object',target:selected.id,color:e.target.value}])}/></label></div>
         </>}
         {selectionHasInk && <><button className="edit-on-board" disabled={busy} onClick={formalizeSelection}><Sparkles size={14}/>Clean up handwriting</button><button className="edit-on-board" disabled={busy} onClick={()=>void runPrompt('Read the function in the selected handwriting and plot it nearby. Keep the original handwriting. If unclear, ask me.')}><Sigma size={14}/>Plot this handwriting</button></>}
-        <div className="object-actions"><button aria-label="Rotate left 90 degrees" title="Rotate left 90°" onClick={() => execute([{ type: 'transform_object', target: selected.id, rotateBy: -90 }])}><RotateCcw size={16}/></button><button aria-label="Rotate right 90 degrees" title="Rotate right 90°" onClick={() => execute([{ type: 'transform_object', target: selected.id, rotateBy: 90 }])}><RotateCw size={16}/></button><button aria-label="Make smaller" title="Make smaller" onClick={() => execute([{ type: 'transform_object', target: selected.id, scale: .85 }])}><Minus size={16}/></button><button aria-label="Make bigger" title="Make bigger" onClick={() => execute([{ type: 'transform_object', target: selected.id, scale: 1.15 }])}><Plus size={16}/></button><button className="delete-object" aria-label="Delete selected object" onClick={() => execute([{ type: 'delete_objects', ids: editor?.getSelectedShapeIds() as string[] || [selected.id] }])}><Trash2 size={16}/></button></div><p className="inspector-hint">Double-click text or math to edit individual characters.</p>
+        <div className="object-actions"><button aria-label="Rotate left 90 degrees" title="Rotate left 90°" onClick={() => execute([{ type: 'transform_object', target: selected.id, rotateBy: -90 }])}><RotateCcw size={16}/></button><button aria-label="Rotate right 90 degrees" title="Rotate right 90°" onClick={() => execute([{ type: 'transform_object', target: selected.id, rotateBy: 90 }])}><RotateCw size={16}/></button><button aria-label="Make smaller" title="Make smaller" onClick={() => execute([{ type: 'transform_object', target: selected.id, scale: .85 }])}><Minus size={16}/></button><button aria-label="Make bigger" title="Make bigger" onClick={() => execute([{ type: 'transform_object', target: selected.id, scale: 1.15 }])}><Plus size={16}/></button><button className="delete-object" aria-label="Delete selected object" onClick={() => execute([{ type: 'delete_objects', ids: editor?.getSelectedShapeIds() as string[] || [selected.id] }])}><Trash2 size={16}/></button></div><p className="inspector-hint">Double-click text or math to edit. Hold Shift while resizing to change proportions.</p>
       </aside>}
       {showHistory && <aside className="history-panel"><div className="inspector-heading"><span>Conversation</span><button aria-label="Close conversation" onClick={() => setShowHistory(false)}><X size={16}/></button></div><div className="messages">{messages.length ? messages.map(m => <div className={`message ${m.role}`} key={m.id}><span>{m.role === 'user' ? 'You' : 'Assistant'}</span><p>{m.text}</p></div>) : <p className="quiet">Your instructions and replies will appear here.</p>}</div></aside>}
 
@@ -615,6 +617,6 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       </div>
     </main>
     <input className="hidden-input" ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={e => { const f = e.target.files?.[0]; if (f) void importImage(f); e.target.value = '' }}/>
-    <input className="hidden-input" ref={projectInput} type="file" accept=".json,.marginalia" onChange={async e => { const f = e.target.files?.[0]; if (f && editor) { setBusy(true); try { stopFollowing(); setSettings(await loadProject(editor, f)); notify('Notebook opened.'); setMenu(null); setFocus(null) } catch (error) { setError((error as Error).message) } finally { setBusy(false) } } e.target.value = '' }}/>
+    <input className="hidden-input" ref={projectInput} type="file" accept=".json,.marginalia" onChange={async e => { const f = e.target.files?.[0]; if (f && editor) { setBusy(true); try { editor.completeInteraction(); stopFollowing(); setSettings(await loadProject(editor, f)); notify('Notebook opened.'); setMenu(null); setFocus(null) } catch (error) { setError((error as Error).message) } finally { setBusy(false) } } e.target.value = '' }}/>
   </div>
 }

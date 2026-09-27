@@ -1,4 +1,5 @@
 import type { Bounds, Point } from '../../shared/board'
+import { uuid } from '../utils/uuid'
 import { Box, Matrix2d, getStrokeRadius, getStrokeWidth, hitStroke, strokePoints, transformBounds } from './geometry'
 import { normalizeSnapshot } from './migration'
 import type { AssetRecord, Camera, DocumentRecord, ImageExportOptions, ImageExportResult, MagicShapeProps, ShapeKind, TLEditorSnapshot, TLShape, TLShapeId, TLShapePartial, TLCreateShapePartial } from './types'
@@ -7,8 +8,8 @@ export { Box, Matrix2d, colorValue, getStrokeWidth, strokePoints, transformBound
 
 export const DefaultColorStyle = 'color'
 export const DefaultSizeStyle = 'size'
-export const createShapeId = (suffix?: string): TLShapeId => `shape:${suffix ?? crypto.randomUUID()}`
-export const createAssetId = (suffix?: string): string => `asset:${suffix ?? crypto.randomUUID()}`
+export const createShapeId = (suffix?: string): TLShapeId => `shape:${suffix ?? uuid()}`
+export const createAssetId = (suffix?: string): string => `asset:${suffix ?? uuid()}`
 export const AssetRecordType = { createId: createAssetId }
 
 const defaultMagic: MagicShapeProps = {
@@ -22,7 +23,7 @@ type HistoryMark = { state: DocumentState; undoLength: number; redo: DocumentSta
 type RunOptions = { history?: 'ignore' | 'record'; ignoreShapeLock?: boolean }
 type ImageExporter = (editor: Editor, ids: TLShapeId[], options: ImageExportOptions) => Promise<ImageExportResult>
 
-/** An application-owned scene model. It does not use or execute a third-party canvas SDK. */
+/** Portable application document and shared history, projected onto the Excalidraw interaction canvas. */
 export class Editor {
   private records = new Map<string, DocumentRecord>()
   private pageId = 'page:main'
@@ -361,7 +362,7 @@ export class Editor {
   }
   zoomToFit() {
     const boxes = this.getCurrentPageShapes().map(s => this.getShapePageBounds(s)!)
-    return boxes.length ? this.zoomToBounds(Box.Common(boxes)) : this.setCamera({ x: 0, y: 0, z: 1 })
+    return boxes.length ? this.zoomToBounds(Box.Common(boxes), { inset: 96 }) : this.setCamera({ x: 0, y: 0, z: 1 })
   }
   getSnapshot(): TLEditorSnapshot {
     return clone({ document: { schema: { schemaVersion: 1, engine: 'magic-whiteboard' }, store: Object.fromEntries(this.records) },
