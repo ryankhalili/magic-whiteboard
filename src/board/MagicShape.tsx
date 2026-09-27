@@ -59,9 +59,30 @@ function LiveMathGraphic({ shape, allowResize }: { shape: MagicShape; allowResiz
   return <MathGraphic shape={shape} contentRef={content}/>
 }
 
-function TextGraphic({ shape }: { shape: MagicShape }) {
+function TextGraphic({ shape, contentRef }: { shape: MagicShape; contentRef?: Ref<HTMLDivElement> }) {
   const p = shape.props
-  return <div style={{ width: p.w, height: p.h, boxSizing: 'border-box', padding: 8, fontSize: p.fontSize, lineHeight: 1.4, color: p.color, fontFamily: 'Arial, Helvetica, sans-serif', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'hidden' }}>{p.text}</div>
+  return <div style={{ width: p.w, height: p.h, boxSizing: 'border-box', padding: 8, fontSize: p.fontSize, lineHeight: 1.4, color: p.color, fontFamily: 'Arial, Helvetica, sans-serif', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'hidden' }}><div ref={contentRef}>{p.text}</div></div>
+}
+
+/** Box height that shows all of a text's lines (8 px padding above and below), or null when it already fits. */
+export function grownTextHeight(height: number, contentHeight: number): number | null {
+  if (!Number.isFinite(contentHeight) || contentHeight <= 0) return null
+  const needed = Math.min(10000, Math.ceil(contentHeight + 16))
+  return needed > height + 1 ? needed : null
+}
+
+// text written by the assistant, dictation or the inspector grows its box like typing on the board does
+function LiveTextGraphic({ shape, allowResize }: { shape: MagicShape; allowResize: boolean }) {
+  const editor = useEditor(), content = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (!allowResize || !content.current) return
+    const current = editor.getShape<MagicShape>(shape.id)
+    if (!current || current.props.kind !== 'text' || current.meta?.literalBounds) return
+    const h = grownTextHeight(current.props.h, content.current.scrollHeight)
+    // layout housekeeping, not a separate undo step
+    if (h) editor.run(() => editor.updateShape<MagicShape>({ id: current.id, type: 'magic', props: { h } }), { history: 'ignore' })
+  }, [editor, shape.id, shape.props.text, shape.props.fontSize, shape.props.w, allowResize])
+  return <TextGraphic shape={shape} contentRef={content}/>
 }
 
 export function MagicShapeView({ shape }: { shape: MagicShape }) {
@@ -82,27 +103,36 @@ export function MagicShapeView({ shape }: { shape: MagicShape }) {
   if (isEditing && shape.props.kind === 'plot') return <div className="magic-shape-content" style={{ pointerEvents: 'all', overflow: 'visible' }}><svg width={shape.props.w} height={shape.props.h} style={{ overflow }}><PlotGraphic shape={visible} hideExpression/></svg><InlineEditor shape={shape} preview={preview}/></div>
   if (isEditing && shape.props.kind !== 'geometry') return <div className="magic-shape-content" style={{ pointerEvents: 'all', overflow: 'visible' }}><InlineEditor shape={shape} preview={preview}/></div>
   if (shape.props.kind === 'math') return <div className="magic-shape-content"><LiveMathGraphic shape={visible} allowResize={!preview}/></div>
-  if (shape.props.kind === 'text') return <div className="magic-shape-content"><TextGraphic shape={visible}/></div>
+  if (shape.props.kind === 'text') return <div className="magic-shape-content"><LiveTextGraphic shape={visible} allowResize={!preview}/></div>
   return <svg width={visible.props.w} height={visible.props.h} viewBox={`0 0 ${visible.props.w} ${visible.props.h}`} style={{ overflow }}>{visible.props.kind === 'plot' ? <PlotGraphic shape={visible}/> : <GeometryGraphic shape={visible}/>}</svg>
+}
+
+/** Every browser that draws these images reads woff2, a quarter of the size of all three font formats. */
+export function woff2FontsOnly(css: string): string {
+  return css.replace(/,\s*url\([^)]*\)\s*format\(["']?(?:woff|truetype)["']?\)/g, '')
 }
 
 let exportCssPromise: Promise<string> | null = null
 async function getExportCss(): Promise<string> {
   exportCssPromise ??= (async () => {
     // Raster exports need the math webfonts embedded in their SVG, rather than external URL references.
-    const urls = [...new Set([...katexCss.matchAll(/url\(([^)]+)\)/g)].map(m => m[1].replace(/^['"]|['"]$/g, '')))]
-    let css = katexCss
-    await Promise.all(urls.map(async url => {
+    const css = woff2FontsOnly(katexCss), embedded = new Map<string, string>()
+    let missing = 0
+    await Promise.all([...new Set(css.match(/url\([^)]+\)/g) ?? [])].map(async token => {
+      const url = token.slice(4, -1).trim().replace(/^['"]|['"]$/g, '')
       if (url.startsWith('data:')) return
       try {
         const res = await fetch(url)
-        if (!res.ok) return
+        if (!res.ok) { missing++; return }
         const blob = await res.blob()
         const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob) })
-        css = css.split(url).join(data)
-      } catch { /* The live board still renders even if a font cannot be embedded. */ }
+        embedded.set(token, `url(${data})`)
+      } catch { missing++ } // the live board still renders even if a font cannot be embedded
     }))
-    return css
+    // a failed round is not kept, so the next render fetches the fonts again
+    if (missing) exportCssPromise = null
+    // whole url(...) tokens only, so one font's address never rewrites part of another's
+    return css.replace(/url\([^)]+\)/g, token => embedded.get(token) ?? token)
   })()
   return exportCssPromise
 }

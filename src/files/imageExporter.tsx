@@ -9,7 +9,7 @@ import { legacyText, shapeOpacity } from '../canvas/content'
 import { ImageGraphic } from '../canvas/ImageGraphic'
 import type { ImageExportOptions, ImageExportResult, TLShape } from '../canvas/types'
 import { magicShapeToSvg } from '../board/MagicShape'
-import { exportTimeout } from './exportTimeout'
+import { MAX_EXPORT_PIXELS, exportTimeout } from './exportTimeout'
 
 async function graphic(editor: Editor, shape: TLShape): Promise<ReactNode> {
   if (shape.type === 'magic') return magicShapeToSvg(shape)
@@ -56,7 +56,7 @@ export async function renderShapesToSvg(editor: Editor, ids: TLShapeId[], option
   bounds.x -= padding; bounds.y -= padding; bounds.w = Math.max(1, bounds.w + padding * 2); bounds.h = Math.max(1, bounds.h + padding * 2)
   if (![bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite) || bounds.w <= 0 || bounds.h <= 0) throw new Error('The export area is invalid.')
   const requestedScale = (options.scale ?? 1) * (options.pixelRatio ?? 1)
-  const scale = Math.min(Math.max(0.001, requestedScale), 8192 / bounds.w, 8192 / bounds.h, Math.sqrt(24_000_000 / (bounds.w * bounds.h)))
+  const scale = Math.min(Math.max(0.001, requestedScale), 8192 / bounds.w, 8192 / bounds.h, Math.sqrt(MAX_EXPORT_PIXELS / (bounds.w * bounds.h)))
   const width = Math.max(1, Math.round(bounds.w * scale)), height = Math.max(1, Math.round(bounds.h * scale))
   const graphics = await Promise.all(shapes.map(async shape => {
     const content = await graphic(editor, shape)

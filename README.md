@@ -104,7 +104,11 @@ The `.marginalia.json` file extension and existing browser-storage keys are reta
 - Project files contain editable scene records, embedded images, and board settings. They never include server credentials. Project import validates and migrates the document before replacing the active board. The legacy `.marginalia.json` format remains supported.
 - Local browser storage holds each notebook. Download an editable project backup before switching browsers/devices, changing preview addresses, or clearing website data.
 
-Image input is limited to 12 MB; large photographs are resized to at most 2400 pixels on their longest side. Project import is limited to 40 MB. PDF import is not included in this version.
+Image input is limited to 12 MB; large photographs are resized to at most 2400 pixels on their longest side. Project import is limited to 40 MB.
+
+**Import** accepts PDFs as well as images. Choose **Put on the board** to add each PDF page as a locked sheet you can annotate, or **Save to library** to keep the original PDF in this browser and retrieve pages or problems later. Board imports support up to 120 pages and 40 MB, subject to notebook storage limits. Multi-page imports use the infinite canvas; a single page can fit the A4 background.
+
+**Library** opens saved books in a reference panel. Search for a printed page, section, exercise, or example, then insert a page, a detected problem, or a manual crop. Search uses the PDF's text layer; scanned pages without text need manual browsing and cropping. Placement leaves room around existing work. Jev can rank candidates when configured; local ranking remains available without a key. **Selected area PDF** exports a circled region or selected objects. Library books stay in this browser; inserted page images travel with an editable notebook backup.
 
 Generated images use low quality and one of `1024x1024`, `1536x1024`, or `1024x1536`. The server runs one image generation at a time with a bounded queue; polling the job does not create another request. Image jobs never retry the provider automatically. A timeout can still incur a charge, so the request ID and reservation remain recorded. Generated results are temporarily cached on the server for up to 30 minutes, subject to a memory bound; inserted images are saved with the notebook. A server restart loses temporary results but retains hashed request IDs, preventing an old request from being charged again automatically.
 
@@ -186,7 +190,7 @@ See the [earlier Excalidraw interaction review](research/EXCALIDRAW-INSPIRATION.
 
 1. Test a full voice/pen interaction on the physical iPad, especially the timing of “this” and “here.”
 2. Improve handwriting cleanup with a reviewable recognition preview, symbol corrections, and an explicit keep-original option.
-3. Add multi-page PDF import and ordered document/LaTeX export.
+3. Add ordered document/LaTeX export and improve recognition of scanned PDF content.
 4. Improve offline recovery, cloud document synchronization, and collaboration.
 5. Evaluate native packaging and high-fidelity Pencil input after measuring the browser experience.
 6. Improve continuous speech-to-math latency and vocabulary; transcript drafts are incremental, while final voice edits remain turn-based.
@@ -222,8 +226,15 @@ Start a new preview in PowerShell:
 npm run dev
 ```
 
-If the app server is already running, restart it after starting the new tunnel. The helper prints the HTTPS URL and tunnel process ID, and saves only the exact generated hostname in `.local/preview-host.txt`. Vite permits that hostname explicitly. It does not permit every tunnel hostname. The helper installs no service and makes no autostart change.
+On macOS, Linux or Windows, the cross platform helper does the same with `cloudflared` from `.local` or from your PATH, and reads `PORT` (default 3000):
 
-Open the HTTPS URL in Safari on the iPad, enter the pairing code from **Help & iPad connection** on the laptop, and use **Check voice connection** before starting the microphone. On the laptop, use `http://localhost:3000`. Stop the app with Ctrl+C. Stop the tunnel with the `Stop-Process -Id ...` command printed by the helper; stop an old tunnel before starting another. A newly started tunnel receives a different URL and therefore a separate browser-storage origin; download notebook files before changing preview addresses. A server restart changes the pairing code.
+```sh
+node server/start-tunnel.mjs
+npm run dev
+```
+
+The helpers print the HTTPS URL and tunnel process ID, and save the generated hostname in `.local/preview-host.txt`. In development, Vite accepts any `*.trycloudflare.com` hostname, so a server that is already running does not need a restart for a new tunnel. Cloudflare assigns those names, so they cannot be pointed back at this computer by someone else. The helpers install no service and make no autostart change.
+
+Open the HTTPS URL in Safari on the iPad, enter the pairing code from **Help & iPad connection** on the laptop, and use **Check voice connection** before starting the microphone. On the laptop, use `http://localhost:3000`. Stop the app with Ctrl+C. Stop the tunnel with the stop command printed by the helper; stop an old tunnel before starting another. A newly started tunnel receives a different URL and therefore a separate browser-storage origin; download notebook files before changing preview addresses. A server restart changes the pairing code, and so do 20 wrong pairing attempts; Help on the laptop always shows the current code.
 
 To check only the OpenAI voice configuration without opening media, run `npx tsx server/check-realtime.ts`. The script reports success or an error without printing credentials. Actual speech, pen latency, and iPad audio behavior still require device testing.

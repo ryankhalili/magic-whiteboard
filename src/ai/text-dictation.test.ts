@@ -90,6 +90,25 @@ describe('literal text dictation', () => {
 describe('literal region and safe previews', () => {
   const region: BoardContext = { ...editing, focusMode: 'literal', focus: { kind: 'region', targetIds: ['note'], bounds: { x: 0, y: 0, w: 300, h: 200 } } }
   it('permits a text object fully inside the literal region', () => expect(prepare('world', region).ok).toBe(true))
+  it('accepts controller page-bounds rounding at a decimal literal-region boundary', () => {
+    const bounds = { x: 10.2, y: 20.2, w: 300.3, h: 100.3 }
+    const ctx = { ...region, focus: { ...region.focus!, bounds }, objects: [{ ...object,
+      bounds: { x: 10.199999999999989, y: 20.199999999999996, w: 300.3, h: 100.30000000000001 },
+    }] }
+    expect(prepare('world.', ctx)).toMatchObject({ ok: true, target: 'note', value: 'Hello world.' })
+    expect(generateTextTranscriptPreview('decimal-region', 'world.', ctx, ctx)).toMatchObject({ target: 'note', value: 'Hello world.' })
+  })
+  it.each(['left', 'top', 'right', 'bottom'])('still rejects a real %s overflow beyond rounding tolerance', edge => {
+    const bounds = { x: 10.2, y: 20.2, w: 300.3, h: 100.3 }
+    const inner = { ...bounds }
+    if (edge === 'left') inner.x -= 1e-6
+    if (edge === 'top') inner.y -= 1e-6
+    if (edge === 'right') inner.w += 1e-6
+    if (edge === 'bottom') inner.h += 1e-6
+    const ctx = { ...region, focus: { ...region.focus!, bounds }, objects: [{ ...object, bounds: inner }] }
+    expect(prepare('world', ctx).ok).toBe(false)
+    expect(generateTextTranscriptPreview('outside-region', 'world', ctx, ctx)).toBeNull()
+  })
   it('rejects a partially outside object even when its ID is focused', () => {
     expect(prepare('world', { ...region, objects: [{ ...object, bounds: { ...object.bounds, x: 200 } }] }).ok).toBe(false)
   })

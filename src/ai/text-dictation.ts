@@ -12,7 +12,10 @@ const validBounds = (bounds: Bounds, minimum = 16) => [bounds.x, bounds.y, bound
   && Math.abs(bounds.x) <= 1e7 && Math.abs(bounds.y) <= 1e7 && bounds.w >= minimum && bounds.h >= minimum && bounds.w <= 10000 && bounds.h <= 10000
 
 function inside(outer: Bounds, inner: Bounds) {
-  return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h
+  // Match the board controller's allowance for page-bounds rounding noise.
+  const epsilon = 1e-8
+  return inner.x >= outer.x - epsilon && inner.y >= outer.y - epsilon
+    && inner.x + inner.w <= outer.x + outer.w + epsilon && inner.y + inner.h <= outer.y + outer.h + epsilon
 }
 
 function scopeKey(context: BoardContext): string {

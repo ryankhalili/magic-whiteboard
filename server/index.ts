@@ -1,18 +1,22 @@
 import express from 'express'
 import OpenAI from 'openai'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
 import { z } from 'zod'
-import { contextSchema, requestSchema } from './board-tools'
+import { contextSchema, requestSchema, withPlacementOptions, type CommandRequest } from './board-tools'
 import { DEFAULT_TEXT_MODEL } from './model-config'
 import { runBoardCommand, repairBoardCommand, repairRequestSchema, type CommandRecoveryOptions } from './command-repair'
 import { classifyCommandFailure, CommandRecoveryError, publicCommandError } from './command-retry'
 import { createOpenAIImageProvider, DEFAULT_IMAGE_MODEL, ImageJobError, ImageJobManager } from './image-generation'
 import { configuredLimit, UsageLedger, UsageLedgerError } from './usage-ledger'
-import { accessToken, authorized, blockedPath, grantAccess, isLocalBrowser, pairingCode, RateLimiter, sameOrigin, validPairCode } from './security'
+import { accessToken, attemptPairing, authorized, blockedPath, claimVoiceSlot, createVoiceLimiter, DEV_ALLOWED_HOSTS, grantAccess, isLocalBrowser, pairingCode, RateLimiter, sameOrigin } from './security'
 import { realtimeConfig } from './realtime-config'
+import { jevModel, readJevKey } from './jev'
+import { rankItems, registerRankRoute, sharedJevBreaker, type RankUsage } from './rank'
+import type { RankRequest } from '../shared/ranking'
+import type { PlacementOption } from '../shared/board'
 import { audioTranscriptionRequestSchema, createOpenAIAudioTranscriber, transcribeRecoveredAudio } from './audio-transcription'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -27,13 +31,20 @@ const MAX_VOICE_SECONDS = configuredLimit(process.env.OPENAI_VOICE_MINUTES_LIMIT
 const MAX_COMMANDS = configuredLimit(process.env.OPENAI_COMMAND_LIMIT, 200, 1_000_000)
 const MAX_IMAGES = configuredLimit(process.env.OPENAI_IMAGE_LIMIT, 20, 1000)
 const usagePath = path.join(root, '.local', 'usage.json')
-let previewHost: string | undefined
-try {
-  const candidate = (await readFile(path.join(root, '.local', 'preview-host.txt'), 'utf8')).trim()
-  if (/^[a-z0-9]+(?:-[a-z0-9]+)*\.trycloudflare\.com$/.test(candidate)) previewHost = candidate
-} catch { /* No temporary iPad preview is running. */ }
 const usage = await UsageLedger.open(usagePath)
 if (!usage.snapshot()) console.warn('Saved usage counters are unreadable. Paid requests are disabled; existing counters have not been reset.')
+// jev calls are counted apart from the paid OpenAI ledger
+const jevUsagePath = path.join(root, '.local', 'jev-usage.json')
+const jevUsage = { calls: 0, inputTokens: 0 }
+try {
+  const saved = JSON.parse(await readFile(jevUsagePath, 'utf8'))
+  if (Number.isFinite(saved?.calls)) jevUsage.calls = saved.calls
+  if (Number.isFinite(saved?.inputTokens)) jevUsage.inputTokens = saved.inputTokens
+} catch { /* first launch */ }
+let jevWrites = Promise.resolve()
+function persistJevUsage() {
+  jevWrites = jevWrites.then(async () => { await mkdir(path.dirname(jevUsagePath), { recursive: true }); await writeFile(jevUsagePath, JSON.stringify(jevUsage, null, 2)) }).catch(() => console.warn('Could not save Jev usage counters.'))
+}
 
 async function readKey() {
   if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY
@@ -80,15 +91,16 @@ app.get('/api/status', async (req, res) => {
   const allowed = local || authorized(req)
   res.json({
     configured: Boolean(await readKey()), authorized: allowed, pairingRequired: !allowed,
+    jev: { configured: Boolean(await readJevKey(root)), model: jevModel() },
     ...(local ? { pairingCode } : {}), models: { text: textModel, realtime: realtimeModel, image: imageModel },
     limits: { sessionMinutes: 5, inactivitySeconds: 90, commandLimit: MAX_COMMANDS, voiceMinutesLimit: MAX_VOICE_SECONDS / 60, imageLimit: MAX_IMAGES },
-    ...(allowed ? { usage: { ...usage.snapshot(), available: Boolean(usage.snapshot()), images: imageJobs.getUsage(), note: 'Cumulative local usage counters, not a dollar balance. OpenAI billing is authoritative.' } } : {}),
+    ...(allowed ? { usage: { ...usage.snapshot(), available: Boolean(usage.snapshot()), images: imageJobs.getUsage(), jevCalls: jevUsage.calls, jevInputTokens: jevUsage.inputTokens, note: 'Cumulative local usage counters, not a dollar balance. OpenAI billing is authoritative.' } } : {}),
   })
 })
 
 const pairLimiter = new RateLimiter(10, 10 * 60_000)
 const apiLimiter = new RateLimiter(15, 60_000)
-const voiceLimiter = new RateLimiter(6, 10 * 60_000)
+const voiceLimiter = createVoiceLimiter()
 const imageLimiter = new RateLimiter(15, 60_000)
 app.use('/api', (req, res, next) => {
   if (req.method !== 'GET' && (!sameOrigin(req) || req.headers['x-marginalia'] !== '1')) {
@@ -97,16 +109,25 @@ app.use('/api', (req, res, next) => {
   next()
 })
 app.post('/api/pair', (req, res) => {
-  const address = String(req.headers['cf-connecting-ip'] || req.socket.remoteAddress || 'remote')
-  // A global bucket also limits spoofed proxy headers.
-  if (!pairLimiter.take('all') || !pairLimiter.take(address)) { res.status(429).json({ error: 'Too many pairing attempts. Try again in ten minutes.' }); return }
-  if (!validPairCode(req.body?.code)) { res.status(401).json({ error: 'That pairing code is not correct. Check the code on the laptop.' }); return }
+  const attempt = attemptPairing(req, pairLimiter)
+  if (attempt.rotated) console.log(`Too many wrong pairing codes, so the code changed. New iPad pairing code: ${pairingCode}`)
+  if (attempt.status !== 200) { res.status(attempt.status).json({ error: attempt.error }); return }
   grantAccess(req, res); res.json({ ok: true })
 })
 app.use('/api', (req, res, next) => {
   if (!authorized(req)) { res.status(401).json({ error: 'Pair this device using the six-digit code shown on the laptop.', code: 'pairing_required', retryable: false }); return }
   next()
 })
+
+function countJev({ calls, inputTokens }: RankUsage) {
+  jevUsage.calls += calls; jevUsage.inputTokens += inputTokens; persistJevUsage()
+}
+// ranks placement or library candidates inside a command, with a short budget so a slow Jev never holds it up
+async function rankForCommand(req: RankRequest, timeoutMs = 1500) {
+  return rankItems(req, { key: await readJevKey(root), timeoutMs, onUsage: countJev, breaker: sharedJevBreaker })
+}
+// the route waits at most 2 s for Jev and shares its failure pause with the command ranking above
+registerRankRoute(app, { readKey: () => readJevKey(root), onUsage: countJev, timeoutMs: 2000, breaker: sharedJevBreaker })
 
 for (const mode of ['command', 'repair'] as const) app.post(`/api/${mode}`, async (req, res) => {
   const parsed = (mode === 'command' ? requestSchema : repairRequestSchema).safeParse(req.body)
@@ -132,8 +153,15 @@ for (const mode of ['command', 'repair'] as const) app.post(`/api/${mode}`, asyn
         return response
       },
     }
-    const result = await (mode === 'command' ? runBoardCommand(parsed.data, options) : repairBoardCommand(parsed.data, options))
-    if (!lifetime.signal.aborted && !res.destroyed) res.json(result)
+    // placement candidates are ranked (Jev or local, 1.5 s budget) into options A, B, C inside this same request
+    let placementOptions: PlacementOption[] | undefined
+    let input: unknown = parsed.data
+    if (mode === 'command') {
+      const placed = await withPlacementOptions(parsed.data as CommandRequest, rankRequest => rankForCommand(rankRequest))
+      input = placed.input; placementOptions = placed.placementOptions
+    }
+    const result = await (mode === 'command' ? runBoardCommand(input, options) : repairBoardCommand(parsed.data, options))
+    if (!lifetime.signal.aborted && !res.destroyed) res.json(placementOptions ? { ...result, placementOptions } : result)
   } catch (error) { sendFailure(res, error) }
   finally { lifetime.dispose() }
 })
@@ -169,7 +197,7 @@ app.get('/api/images/:id', (req, res) => {
   res.json(job)
 })
 
-type LiveCall = { owner: string; started: number; reserved: number; timeout: NodeJS.Timeout; key: string; closing?: Promise<boolean> }
+type LiveCall = { owner: string; tab?: string; started: number; reserved: number; timeout: NodeJS.Timeout; key: string; closing?: Promise<boolean> }
 const calls = new Map<string, LiveCall>()
 const pendingOwners = new Set<string>()
 async function closeCall(id: string): Promise<boolean> {
@@ -200,14 +228,20 @@ async function closeCall(id: string): Promise<boolean> {
   })()
   return call.closing
 }
-const voiceRequest = z.object({ sdp: z.string().min(20).max(40_000), context: contextSchema, spokenReplies: z.boolean().optional() })
+const voiceRequest = z.object({ sdp: z.string().min(20).max(40_000), context: contextSchema, spokenReplies: z.boolean().optional(), tab: z.string().max(100).optional() })
 app.post('/api/realtime/session', async (req, res) => {
   const parsed = voiceRequest.safeParse(req.body)
   if (!parsed.success) { res.status(400).json({ error: 'The voice session request is incomplete.', code: 'invalid_request', retryable: false }); return }
   const owner = accessToken(req)
-  if (!voiceLimiter.take(owner)) { res.setHeader('Retry-After', '600'); res.status(429).json({ error: 'Please wait before opening another voice session.', code: 'local_rate_limit', retryable: true }); return }
-  if (pendingOwners.has(owner) || [...calls.values()].some(call => call.owner === owner)) { res.status(409).json({ error: 'Stop your existing voice session before starting another.', code: 'voice_session_active', retryable: false }); return }
-  pendingOwners.add(owner)
+  const refusal = await claimVoiceSlot(owner, {
+    starting: pendingOwners, close: closeCall, limiter: voiceLimiter,
+    callsOf: who => [...calls].filter(([, call]) => call.owner === who).map(([id, call]) => ({ id, tab: call.tab })),
+  }, parsed.data.tab)
+  if (refusal) {
+    if (res.destroyed) return
+    if (refusal.retryAfter) res.setHeader('Retry-After', refusal.retryAfter)
+    res.status(refusal.status).json(refusal.body); return
+  }
   const key = await readKey()
   if (!key) { pendingOwners.delete(owner); res.status(503).json({ error: 'Add your OpenAI API key to api.txt on the laptop.', code: 'missing_key', retryable: false }); return }
   const lifetime = requestLifetime(res)
@@ -241,15 +275,17 @@ app.post('/api/realtime/session', async (req, res) => {
     }
     const timeout = setTimeout(() => { void closeCall(sessionId) }, Math.max(1, reservation * 1000 - (Date.now() - started)))
     timeout.unref()
-    calls.set(sessionId, { owner, started, reserved: reservation, timeout, key })
+    calls.set(sessionId, { owner, tab: parsed.data.tab, started, reserved: reservation, timeout, key })
     try {
       const sdp = await upstream.text()
       if (lifetime.signal.aborted || res.destroyed) { await closeCall(sessionId); return }
       res.json({ sdp, sessionId, maxDurationSeconds: Math.max(1, Math.floor((reservation * 1000 - (Date.now() - started)) / 1000)) })
     } catch (error) { await closeCall(sessionId); throw error }
   } catch (error) {
-    // A timed-out network call can have reached the provider. Keep its reservation.
-    if (reservation && !started) await usage.settleVoice(reservation, 0).catch(() => {})
+    // A timed-out network call can have reached the provider. Keep its reservation,
+    // unless the laptop could not reach the provider at all.
+    const code = (error as { cause?: { code?: string } })?.cause?.code ?? ''
+    if (reservation && (!started || ['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ECONNREFUSED'].includes(code))) await usage.settleVoice(reservation, 0).catch(() => {})
     sendFailure(res, error)
   } finally { pendingOwners.delete(owner); lifetime.dispose() }
 })
@@ -268,8 +304,8 @@ if (process.argv.includes('--production')) {
 } else {
   const { createServer: createViteServer } = await import('vite')
   const vite = await createViteServer({
-    root, server: { middlewareMode: true, hmr: { server: httpServer }, allowedHosts: previewHost ? [previewHost] : [],
-      fs: { deny: ['**/api.txt', '**/.env', '**/.env.*', '**/.git/**', '**/.local/**', '**/server/**', '**/*.{crt,pem,key}'] },
+    root, server: { middlewareMode: true, hmr: { server: httpServer }, allowedHosts: DEV_ALLOWED_HOSTS,
+      fs: { deny: ['**/api.txt', '**/jev.txt', '**/.env', '**/.env.*', '**/.git/**', '**/.local/**', '**/server/**', '**/*.{crt,pem,key}'] },
     }, appType: 'spa',
   })
   app.use(vite.middlewares)

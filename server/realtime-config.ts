@@ -1,14 +1,14 @@
-import type { BoardContext } from '../shared/board'
-import { BOARD_INSTRUCTIONS, boardTools } from './board-tools'
+import { BOARD_INSTRUCTIONS, boardTools, type SnapshotContext } from './board-tools'
 
-export function realtimeConfig(_context: BoardContext, spokenReplies = true, model = 'gpt-realtime-mini') {
+// rules only: the client's first context item carries the board and replaces itself as the board changes
+export function realtimeConfig(_context?: SnapshotContext, spokenReplies = true, model = 'gpt-realtime-mini') {
   return {
-    // The client sends fresh state after the data channel opens and before each
-    // response. A connection-time snapshot here would remain stale in the
-    // session instructions even after the user switches dictation mode.
-    type: 'realtime', model, instructions: `${BOARD_INSTRUCTIONS}\n\nVOICE STATE: Read current board state from the newest Updated whiteboard state message sent by the client, or a subsequently requested get_board_context result. Session setup deliberately contains no initial board snapshot. Until the client supplies current state, no current mode, selection, source or placement is available; do not infer those values or edit the board. Never reuse a connection-time mode or an older tool result over a newer state message.`,
+    type: 'realtime', model, instructions: BOARD_INSTRUCTIONS,
     output_modalities: spokenReplies ? ['audio'] : ['text'],
     max_output_tokens: 1400, tools: boardTools, tool_choice: 'auto',
+    // Bound conversation history separately from the full instructions/tools.
+    // The client replaces board snapshots; retain room for that snapshot and audio.
+    truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 12000 } },
     audio: {
       input: {
         format: { type: 'audio/pcm', rate: 24000 },

@@ -21,9 +21,11 @@ const validId = (id: string) => typeof id === 'string' && id.length > 0 && id.le
 const changedNotice = 'The writing target changed. Dictate the phrase again for the current selection.'
 const retryNotice = "I couldn't transcribe that phrase. Please repeat it."
 
-// Pointer hover and inactive gesture coordinates do not change the writing target.
+// Reading a library book, pointer hover and inactive gesture coordinates do not
+// change a literal writing target. All board objects and selection/source data remain.
 function key(context: BoardContext): string {
-  return contextFingerprint({ ...context, pointer: null, gesture: context.gesture?.active ? context.gesture : null,
+  const { library: _library, ...board } = context
+  return contextFingerprint({ ...board, pointer: null, gesture: context.gesture?.active ? context.gesture : null,
     selectedIds: [...context.selectedIds].sort(), lastCreatedIds: [...context.lastCreatedIds].sort(),
     objects: [...context.objects].sort((a, b) => a.id.localeCompare(b.id)) })
 }

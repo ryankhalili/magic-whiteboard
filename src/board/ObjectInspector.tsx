@@ -15,7 +15,8 @@ type Props = {
 }
 
 export function objectLabel(object: BoardObject): string {
-  const name = object.kind === 'plot' ? 'Graph' : object.kind === 'math' ? 'Equation' : object.kind === 'geometry' ? 'Shape' : object.kind === 'image' ? 'Image' : object.kind === 'draw' ? 'Handwriting' : 'Text'
+  const name = object.kind === 'plot' ? 'Graph' : object.kind === 'math' ? 'Equation' : object.kind === 'geometry' ? 'Shape' : object.kind === 'image' ? 'Image' : object.kind === 'draw' ? 'Handwriting'
+    : object.kind === 'textbook_page' ? 'Book page' : object.kind === 'textbook_item' ? 'Book excerpt' : object.kind === 'pdf_page' ? 'PDF page' : 'Text'
   const source = object.title || object.expression || object.latex || object.text
   return source ? `${name}: ${source.replace(/\s+/g, ' ').slice(0, 35)}` : name
 }
@@ -104,7 +105,8 @@ export function ObjectInspector({ editor, object, shape, editing, busy, execute,
   }
   const layer = (front: boolean) => {
     flushSourceEdits(); editor.completeInteraction(); editor.markHistoryStoppingPoint('Change object layer')
-    if (front) editor.bringToFront([shape.id]); else editor.sendToBack([shape.id])
+    // back stays in front of locked pages and backgrounds
+    if (front) editor.bringToFront([shape.id]); else editor.sendToBack([shape.id], { aboveLocked: true })
     editor.markHistoryStoppingPoint('Finish object layer')
   }
   const crop = shape.type === 'image' ? shape.props.crop ?? { x: 0, y: 0, w: 1, h: 1 } : null
@@ -119,6 +121,7 @@ export function ObjectInspector({ editor, object, shape, editing, busy, execute,
     <div className="inspector-heading"><span>{objectLabel({ ...object, title: '', expression: '', latex: '', text: '' })}</span><div className="inspector-heading-actions"><button aria-label={locked ? 'Unlock object' : 'Lock object'} title={locked ? 'Unlock object' : 'Lock object'} onClick={() => { flushSourceEdits(); editor.completeInteraction(); editor.markHistoryStoppingPoint('Change object lock'); editor.run(() => editor.updateShape({ id: shape.id, type: shape.type, isLocked: !locked }), { ignoreShapeLock: true }); editor.markHistoryStoppingPoint('Finish object lock') }}>{locked ? <Lock size={14}/> : <Unlock size={14}/>}</button><button aria-label="Collapse object controls" onClick={onCollapse}><ChevronDown size={16}/></button><button aria-label="Deselect object" onClick={onDeselect}><X size={16}/></button></div></div>
     <button className="inspector-text-button" onClick={() => { const bounds = editor.getShapePageBounds(shape); if (bounds) editor.zoomToBounds(bounds, { inset: 140 }) }}>Zoom to object</button>
     {locked && <p className="inspector-hint">This object is locked. Unlock it to change its content or appearance.</p>}
+    {object.kind === 'textbook_page' && <button className="inspector-text-button" disabled={busy} onClick={() => execute([{ type: 'delete_objects', ids: [shape.id] }])}>Remove page</button>}
     {magic && <>
       {magic.props.kind !== 'geometry' && <button className={`edit-on-board ${editing ? 'is-editing' : ''}`} disabled={locked} onPointerDown={event => event.preventDefault()} onClick={onEdit}><Pencil size={14}/>{editing ? 'Editing on board · click to focus' : 'Edit on board'}</button>}
       <LiveSource key={shape.id} editor={editor} shape={magic} disabled={locked}/>

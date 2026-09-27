@@ -304,7 +304,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     channel.receive({ type: 'response.output_item.added', response_id: 'metadata', item: { ...call, arguments: '' } })
     channel.receive({ type: 'response.function_call_arguments.done', response_id: 'metadata', call_id: call.call_id, item_id: call.id, arguments: call.arguments })
     await vi.advanceTimersByTimeAsync(0)
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: '\\int \\sin(x)\\,dx' }], expect.any(Function))
     channel.receive({ type: 'response.output_item.done', response_id: 'metadata', item: call })
     channel.receive({ type: 'response.done', response: { id: 'metadata', status: 'completed', output: [call] } })
     await vi.advanceTimersByTimeAsync(0)
@@ -338,7 +338,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(handlers.getVisualContext).not.toHaveBeenCalled()
     expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ failure: expect.objectContaining({ message: expect.stringContaining('inconsistent function metadata') }) }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction], expect.any(Function))
     client.disconnect()
   })
   it('does not add a second response merely to confirm a successful dictated fragment', async () => {
@@ -393,7 +393,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     const good = toolCall('good', [{ ...correctedEdit, target: 'selected' }])
     channel.receive({ ...good, type: 'response.function_call_arguments.done', response_id: 'repair' })
     await vi.advanceTimersByTimeAsync(0)
-    expect(handlers.applyOperations).toHaveBeenLastCalledWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenLastCalledWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     channel.receive({ type: 'response.done', response: { id: 'repair', status: 'completed', output: [good] } })
     await vi.advanceTimersByTimeAsync(0)
     expect(handlers.applyOperations).toHaveBeenCalledTimes(2)
@@ -545,7 +545,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await finishResponse(channel, 'broken', [{ type: 'function_call', call_id: 'malformed', name: 'apply_board_operations', arguments: argumentsText }])
     expect(repairRequest).toHaveBeenCalledTimes(1)
     expect(repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Extend this equation with equals question mark', context: mathContext, failure: expect.objectContaining({ kind: 'malformed_arguments', rawArguments: argumentsText }) }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     expect(handlers.onRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ phase: 'repairing', attempt: 1 }))
     expect(handlers.onRecoveryState).toHaveBeenLastCalledWith(null)
     expect(audioTrack.enabled).toBe(true)
@@ -562,7 +562,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await client.connect()
     const channel = FakePeer.latest.channel
     await finishResponse(channel, 'single', [{ type: 'function_call', call_id: 'single', name: 'apply_board_operations', arguments: '{"type":"create_text","text":"Hello"}' }])
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_text', text: 'Hello' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_text', text: 'Hello' }], expect.any(Function))
     expect(repairRequest).not.toHaveBeenCalled()
     client.disconnect()
   })
@@ -576,7 +576,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await finishResponse(channel, 'unknown-tool', [call])
     expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
     expect(handlers.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Write the integral of sine x', failure: expect.objectContaining({ kind: 'malformed_arguments', rawArguments: call.arguments }) }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([correction], expect.any(Function))
     expect(handlers.onError).not.toHaveBeenCalled()
     channel.receive({ type: 'response.done', response: { id: 'unknown-tool', status: 'completed', output: [call] } })
     await vi.advanceTimersByTimeAsync(0)
@@ -815,7 +815,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     await client.connect(); client.sendText('Extend the equation')
     await finishResponse(FakePeer.latest.channel, 'failed', [], status)
     expect(handlers.repairRequest).toHaveBeenCalledTimes(1)
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     expect(handlers.onError).not.toHaveBeenCalled()
     client.disconnect()
   })
@@ -888,7 +888,7 @@ describe('voice lifecycle without microphone or paid API calls', () => {
     channel.receive({ type: 'response.done', response: { id: 'original-response', status: 'completed', output: [failedCall] } })
     await completeAudioRecovery(channel, recovery, 'audio-only', 'This equals negative cosine of x evaluated from pi to two pi')
     expect(handlers.repairRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ instruction: 'This equals negative cosine of x evaluated from pi to two pi' }), expect.any(AbortSignal))
-    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }])
+    expect(handlers.applyOperations).toHaveBeenCalledExactlyOnceWith([{ ...correctedEdit, target: 'math:a' }], expect.any(Function))
     expect(handlers.onAssistant).toHaveBeenCalledExactlyOnceWith('Equation corrected.', true)
     expect(handlers.onTranscript).not.toHaveBeenCalled()
     expect(handlers.onContentPreview.mock.calls.every(([preview]) => preview === null)).toBe(true)
@@ -1066,11 +1066,18 @@ describe('voice lifecycle without microphone or paid API calls', () => {
   it('bounds transient connection retries and never retries an authentication failure', async () => {
     fetchMock.mockImplementation(async (url: string) => url.endsWith('/session') ? { ok: false, status: 503, json: async () => ({ error: 'Voice service temporarily unavailable', retryable: true }) } : { ok: true, json: async () => ({ ok: true }) })
     const handlers = callbacks(), client = createRealtimeClient(handlers)
+    const sessionCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/session')).length
     const connecting = client.connect()
-    await vi.advanceTimersByTimeAsync(1000); await connecting
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/session'))).toHaveLength(3)
+    // retries back off (0.5, 1, 2, 4, 8 s) and stop at the one minute reconnect deadline
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sessionCalls()).toBe(3)
+    await vi.advanceTimersByTimeAsync(59_000); await connecting
+    expect(sessionCalls()).toBe(12)
     expect(handlers.onError).toHaveBeenCalledTimes(1)
+    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('within one minute'))
     expect(stopTrack).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(sessionCalls()).toBe(12)
     fetchMock.mockClear().mockImplementation(async () => ({ ok: false, status: 401, json: async () => ({ error: 'Invalid API key', retryable: false }) }))
     await client.connect()
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -1079,13 +1086,16 @@ describe('voice lifecycle without microphone or paid API calls', () => {
 
   it('renews sessions between turns and retains hard credit and intentional idle-stop behavior', async () => {
     let sessions = 0
+    // sessions of a minute or less no longer renew early, so this one is 75 s (renewal 15 s before the end)
     fetchMock.mockImplementation(async (url: string) => url.endsWith('/session') ? ++sessions === 1
-      ? { ok: true, json: async () => ({ sdp: 'answer', sessionId: 'first', maxDurationSeconds: 30 }) }
+      ? { ok: true, json: async () => ({ sdp: 'answer', sessionId: 'first', maxDurationSeconds: 75 }) }
       : { ok: false, status: 429, json: async () => ({ error: 'The voice credit allowance has been reached.', retryable: false }) }
       : { ok: true, json: async () => ({ ok: true }) })
     const handlers = { ...callbacks(), onRecoveryState: vi.fn() }, client = createRealtimeClient(handlers)
     await client.connect()
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(sessions).toBe(1)
+    await vi.advanceTimersByTimeAsync(1000)
     expect(sessions).toBe(2)
     expect(handlers.onRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ phase: 'renewing' }))
     expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('credit allowance'))

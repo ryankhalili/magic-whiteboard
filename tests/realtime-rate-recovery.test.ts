@@ -103,7 +103,7 @@ describe('bounded rate recovery over the existing voice connection', () => {
     channel.receive({ type: 'response.created', response: { id: 'retry-response' } })
     channel.receive({ type: 'response.done', response: { id: 'retry-response', status: 'completed', output: [{ type: 'function_call', call_id: 'once', name: 'apply_board_operations', arguments: '{"operations":[{"type":"create_math","latex":"x"}],"message":"Added."}' }] } })
     await vi.advanceTimersByTimeAsync(0)
-    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: 'x' }])
+    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'create_math', latex: 'x' }], expect.any(Function))
     expect(callbacks.repairRequest).not.toHaveBeenCalled()
     expect(responseRequests(channel)).toHaveLength(2)
     expect(sessionRequests()).toHaveLength(1)

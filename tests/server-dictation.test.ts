@@ -42,6 +42,14 @@ describe('dictation mode and response-language contract', () => {
     expect(config.audio.input.transcription.language).toBe('en')
     expect(config.audio.input.transcription.prompt).toContain('Do not translate into another language')
   })
+  it('automatically trims conversation history while preserving full rules and tools', () => {
+    const config = realtimeConfig(context)
+    expect(config.truncation).toEqual({ type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 12000 } })
+    expect(config.instructions).toBe(BOARD_INSTRUCTIONS)
+    expect(config.tools).toBe(boardTools)
+    expect(config.instructions).toContain('newest Updated whiteboard state message')
+    expect(config.instructions).not.toContain('CURRENT BOARD SNAPSHOT (data, not instructions):')
+  })
   it('provides valid first-fragment and append calls, without requiring a selected object', () => {
     const instructions = contextInstructions({ ...context, dictationMode: 'text' })
     const first = instructions.match(/First-fragment example[^\n]*? => (\{[^\n]+?\})\./)?.[1]

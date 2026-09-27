@@ -16,7 +16,7 @@ export function classifyCommandFailure(error: unknown, now = Date.now()): RetryC
     || (status === 429 && /quota|billing|credit balance|usage limit/i.test(String(inner.message ?? outer.message ?? '')))) return { retryable: false, code: 'quota' }
   const retryable = [408, 409, 429, 500, 502, 503, 504].includes(status)
     || ['APIConnectionError', 'APIConnectionTimeoutError', 'TimeoutError'].includes(String(outer.name))
-    || ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN'].includes(String(outer.code ?? cause.code))
+    || ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND', 'ENETUNREACH'].includes(String(outer.code ?? cause.code))
   const delay = header(outer.headers, 'retry-after')
   let retryAfterMs: number | undefined
   if (delay !== null && delay.trim()) {
@@ -39,7 +39,8 @@ export function publicCommandError(error: unknown): CommandRecoveryError {
     : info.code === 'cancelled' ? 'The request was cancelled.'
     : info.code === 'rate_limit' ? 'The AI is temporarily rate limited. Please wait before trying again.'
     : 'The AI request could not finish. Your board has not changed; please try again.'
-  return new CommandRecoveryError(message, info.code)
+  // keep the transient flag so a voice reconnect retries a blip instead of ending
+  return new CommandRecoveryError(message, info.code, info.retryable)
 }
 
 export type RetryOptions = {

@@ -122,6 +122,38 @@ describe('ordered local text dictation', () => {
     f.session.enqueue('two', f.context()); f.session.transcript('two', 'Next'); await settle()
     expect(f.text()).toEqual(['Hello world. Next'])
   })
+  it('keeps the created text anchor while a library book or reference page changes', async () => {
+    const f = fixture({ ...base, focus: { kind: 'region', bounds: { x: 0, y: 0, w: 400, h: 200 }, targetIds: [] } })
+    f.session.enqueue('one', f.context()); f.session.transcript('one', 'First sentence.'); await settle()
+    f.change(ctx => { ctx.library = { openBook: { title: 'Biology' }, books: [{ title: 'Biology', pages: 300 }], panelPage: { label: '12', pageIndex: 15 } } })
+    f.session.updateContext()
+    expect(f.session.preview('two', 'Next sentence.', f.context())).toMatchObject({ target: 'created-1', kind: 'edit', value: 'First sentence. Next sentence.' })
+    f.session.enqueue('two', f.context())
+    f.change(ctx => { ctx.library!.panelPage = { label: '13', pageIndex: 16 } }); f.session.updateContext()
+    f.session.transcript('two', 'Next sentence.'); await settle()
+    expect(f.text()).toEqual(['First sentence. Next sentence.']); expect(f.notices).not.toHaveBeenCalled()
+  })
+  it('certifies an own edit when only library metadata changes during application', async () => {
+    const f = fixture(existing), original = f.apply.getMockImplementation()!, captured = f.context()
+    f.apply.mockImplementation(ops => {
+      const result = original(ops)
+      f.change(ctx => { ctx.library = { openBook: null, books: [], highlights: ['Example 3.2'] } })
+      return result
+    })
+    f.session.enqueue('one', captured); f.session.enqueue('two', captured)
+    f.session.transcript('one', 'world.'); f.session.transcript('two', 'Next.'); await settle()
+    expect(f.text()).toEqual(['Hello world. Next.']); expect(f.notices).not.toHaveBeenCalled()
+  })
+  it('still drops a pending phrase if its source changes while library metadata also changes', async () => {
+    const f = fixture(existing)
+    f.session.enqueue('one', f.context())
+    f.change(ctx => {
+      ctx.library = { openBook: { title: 'Biology' }, books: [] }
+      ctx.objects[0].text = 'A manual source edit'
+    })
+    f.session.updateContext(); f.session.transcript('one', 'Late phrase'); await settle()
+    expect(f.apply).not.toHaveBeenCalled(); expect(f.text()).toEqual(['A manual source edit']); expect(f.notices).toHaveBeenCalledOnce()
+  })
   it('cancels pending work on Stop/reset or leaving text mode', async () => {
     for (const modeSwitch of [false, true]) {
       const f = fixture(existing)

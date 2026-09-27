@@ -12,10 +12,12 @@ const operationBounds = bounds.extend({
 const id = z.string().max(200)
 const vertices = z.array(z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })).min(2).max(16)
 const crop = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), w: z.number().min(.01).max(1), h: z.number().min(.01).max(1) })
+export const optionId = z.enum(['A', 'B', 'C'])
+// create_image is made by the app from a resolved insert_library and is never accepted from the model
 export const operationSchema = z.object({
-  type: z.enum(['create_plot', 'create_math', 'create_text', 'create_geometry', 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo', 'propose_image']),
+  type: z.enum(['create_plot', 'create_math', 'create_text', 'create_geometry', 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo', 'propose_image', 'insert_library', 'library_action']),
   prompt: z.string().trim().min(1).max(4000).describe('For propose_image only: describe the requested image for user review before generation. This operation never generates or purchases an image.').optional(),
-  target: id.describe('Existing object ID for an edit or transform, not for creation. A retained selected ID does not turn a new plot/content request at an empty focus into an edit; omit target on create operations.').optional(), ids: z.array(id).max(100).optional(),
+  target: id.describe('Existing object ID for an edit or transform, not for creation. A retained selected ID does not turn a new plot/content request at an empty focus into an edit; omit target on create operations.').optional(), ids: z.array(id).max(2000).optional(),
   placement: z.enum(['focus', 'pointer', 'auto']).describe('focus places content near the reference cue with readable natural dimensions; literal focus mode confines content to its region. Reference mode does not copy the gesture rectangle.').optional(),
   expression: z.string().max(256).describe('Exact graph function or COMPLETE equality, preserving both sides and the variable before =. Examples: vertical line x=1 -> "x=1"; horizontal line y=1 -> "y=1"; circle -> "x^2+y^2=9". Bare "1" means y=1, NEVER x=1. Do not strip x= from a vertical-line request.').optional(), latex: z.string().max(8000).optional(),
   text: z.string().max(12000).optional(), title: z.string().max(200).optional(),
@@ -44,5 +46,12 @@ export const operationSchema = z.object({
   replacement: z.string().max(12000).describe('For edit_content: ONLY the new fragment, not the entire updated source. With start/end, replaces that range. With no range/find, APPENDS to existing source. Example existing x^2, spoken plus three: replacement must be +3, NOT x^2+3. For a full rewritten source instead use update_object with latex/text/expression.').optional(),
   find: z.string().max(12000).describe('For edit_content: a literal substring occurring exactly once in the current source. No regular expressions.').optional(),
   replace: z.string().max(12000).describe('For edit_content with find: the replacement for that substring only. Empty string deletes it.').optional(),
+  page: z.string().max(16).describe('insert_library: the PRINTED page number exactly as the teacher says it, like "22" or "xii". Never a file page count.').optional(),
+  item: z.string().max(60).describe('insert_library: a numbered item with its kind word, like "problem 3.2", "example 3.12", "exercise 48", "checkpoint 3.26", "theorem 2.1", "section 3.2". A bare number like "3.2" is allowed. Keep a section or chapter the teacher names, like "exercise 48 in section 5.1".').optional(),
+  query: z.string().max(300).describe('insert_library: a few words describing an item that has no number given, like "chain rule example". Omit when page or item is known.').optional(),
+  book: z.string().max(200).describe('insert_library or library_action: a book title from library.books. Only when the teacher names a book; the open book is the default.').optional(),
+  action: z.enum(['open_book', 'close_reference', 'store_import', 'board_import', 'pick']).describe('library_action only: open_book opens a book beside the board, close_reference closes it, store_import saves the waiting PDF (library.pendingImport) to the library, board_import puts it on the board, pick inserts one of the matches in library.highlights (set index).').optional(),
+  index: z.number().int().min(1).max(3).describe('library_action pick only: the number of the highlighted match, 1 for the first title in library.highlights.').optional(),
+  placementOption: optionId.describe('Pick one of context.placementOptions (A is the best free area) for a new object when there is no focus. Omit bounds and placement when you set it.').optional(),
 })
 export const commandSchema = z.object({ operations: z.array(operationSchema).max(12), message: z.string().max(1000) })

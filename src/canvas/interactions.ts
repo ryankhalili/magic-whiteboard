@@ -1,4 +1,5 @@
 import { Editor, createShapeId, getStrokeWidth, strokePoints, type TLShape, type TLShapeId, type TLShapePartial } from './editor'
+import { eraserProtectedIds } from './excalidrawScene'
 
 export type Point = { x: number; y: number }
 export type Rect = Point & { w: number; h: number }
@@ -196,7 +197,8 @@ export class CanvasInteractions {
       const hit = this.hit({ x: from.x + (to.x - from.x) * step / steps, y: from.y + (to.y - from.y) * step / steps }, 8)
       if (hit) ids.add(hit.id)
     }
-    this.editor.deleteShapes([...ids])
+    const kept = new Set(eraserProtectedIds(this.editor, [...ids]))
+    this.editor.deleteShapes([...ids].filter(id => !kept.has(id)))
   }
   private resize(gesture: Gesture, point: Point, preserveAspect: boolean) {
     const frame = gesture.frame!, rect = resizeFrame(frame, gesture.handle!, point, preserveAspect)
