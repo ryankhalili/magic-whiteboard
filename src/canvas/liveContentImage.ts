@@ -10,7 +10,7 @@ export function isLiveContentShape(shape: TLShape): shape is LiveContentShape {
 }
 
 // Increment when the bitmap renderer changes so old content-addressed files cannot be reused.
-const RENDERER_VERSION = 1
+const RENDERER_VERSION = 2
 const MAX_EDGE = 4096
 const MAX_PIXELS = 2048 * 2048
 

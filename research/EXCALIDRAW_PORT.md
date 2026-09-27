@@ -2,6 +2,8 @@
 
 Branch: `codex/excalidraw-port`. Verified September 26–27, 2026.
 
+This report covers the initial port. See the [interactive math merge report](INTERACTIVE_MATH_MERGE.md) for the later integration and its 291-test run and ego-browser verification.
+
 Excalidraw is viable as this app's canvas base. This branch uses the published
 `@excalidraw/excalidraw@0.18.1` React component with the app's focused toolbar.
 It replaces the handwritten canvas interaction layer while retaining notebook

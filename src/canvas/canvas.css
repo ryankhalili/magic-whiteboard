@@ -6,6 +6,7 @@
 /* Native images render custom content in scene order. The DOM copy supplies accessibility,
    autosizing, and the live editor; it also previews content while a new image is prepared. */
 .whiteboard-live-content{position:absolute;left:0;top:0;z-index:3;transform-origin:0 0;pointer-events:none}
+.whiteboard-editing-shield{position:absolute;inset:0;z-index:2;pointer-events:auto}
 .whiteboard-live-shape{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none}
 .whiteboard-live-shape.is-editing{z-index:5;pointer-events:auto}
 .whiteboard-live-shape.is-rendered{opacity:0!important}

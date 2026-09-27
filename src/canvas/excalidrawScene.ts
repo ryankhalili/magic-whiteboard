@@ -3,6 +3,7 @@ import type { BinaryFileData, BinaryFiles } from '@excalidraw/excalidraw/types'
 import type { Editor } from './editor'
 import { Box, colorValue, getStrokeWidth, strokePoints } from './geometry'
 import { shapeOpacity } from './content'
+import { cropFromNative, cropToNative } from './imageCrop'
 import type { AssetRecord, TLCreateShapePartial, TLShape, TLShapePartial } from './types'
 
 type Point = { x: number; y: number }
@@ -95,7 +96,7 @@ function shapeToElement(editor: Editor, shape: TLShape, previous?: ExcalidrawEle
   else if (shape.type === 'image') element = {
     ...common, type: 'image', fileId: shape.props.assetId as BinaryFileData['id'] | null,
     status: 'saved', scale: Array.isArray(shape.props.excalidrawScale) ? shape.props.excalidrawScale as [number, number] : [1, 1],
-    crop: (shape.props.excalidrawCrop as Extract<ExcalidrawElement, { type: 'image' }>['crop']) ?? null,
+    crop: cropToNative(shape.props, editor.getAsset(shape.props.assetId)?.props.w ?? shape.props.w, editor.getAsset(shape.props.assetId)?.props.h ?? shape.props.h),
   }
   else if (native && native.id === shape.id) {
     // Native clipboard shapes retain their original rendering and extra fields across save/reload.
@@ -207,7 +208,8 @@ function shapeFromElement(editor: Editor, element: ExcalidrawElement): TLShape |
     if (next.type === 'image' && element.type === 'image') {
       next.props.assetId = element.fileId
       if (element.scale[0] !== 1 || element.scale[1] !== 1 || next.props.excalidrawScale) next.props.excalidrawScale = [...element.scale]
-      if (element.crop || next.props.excalidrawCrop) next.props.excalidrawCrop = element.crop
+      if (element.crop || next.props.crop || next.props.excalidrawCrop) next.props.crop = element.crop ? cropFromNative(element.crop) : { x: 0, y: 0, w: 1, h: 1 }
+      delete next.props.excalidrawCrop
     }
     if (next.type === 'text' && element.type === 'text') next.props = { ...next.props, text: element.text, fontSize: element.fontSize, color: element.strokeColor }
   }
@@ -246,7 +248,7 @@ export function sceneToEditorChanges(editor: Editor, elements: readonly Excalidr
       const file = files[shape.props.assetId], asset = editor.getAsset(shape.props.assetId)
       if (file && file.dataURL !== asset?.props.src && !changes.assets.some(item => item.id === file.id)) changes.assets.push({
         id: file.id, typeName: 'asset', type: 'image', meta: asset?.meta ?? {},
-        props: { ...asset?.props, src: file.dataURL, mimeType: file.mimeType, name: asset?.props.name ?? 'Pasted image', w: asset?.props.w ?? element.width, h: asset?.props.h ?? element.height },
+        props: { ...asset?.props, src: file.dataURL, mimeType: file.mimeType, name: asset?.props.name ?? 'Pasted image', w: asset?.props.w ?? (element.type === 'image' ? element.crop?.naturalWidth : undefined) ?? element.width, h: asset?.props.h ?? (element.type === 'image' ? element.crop?.naturalHeight : undefined) ?? element.height },
       })
     }
   }

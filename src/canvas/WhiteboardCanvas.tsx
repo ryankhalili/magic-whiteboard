@@ -9,6 +9,7 @@ import { legacyText } from './content'
 import { editorToExcalidrawScene, sceneToEditorChanges } from './excalidrawScene'
 import { shapeOpacity } from './content'
 import { isLiveContentShape, liveContentKey, renderLiveContentImage } from './liveContentImage'
+import { flushSourceEdits } from '../board/liveSource'
 import '@excalidraw/excalidraw/index.css'
 import './canvas.css'
 
@@ -62,6 +63,24 @@ function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & 
   const camera = editor.getCamera()
   const customShapes = editor.getCurrentPageShapesSorted().filter(isLiveContentShape)
   const nativeFiles = new Map(api?.getSceneElements().filter(element => element.type === 'image').map(element => [element.id, element.fileId]) ?? [])
+
+  useEffect(() => {
+    if (!editing) return
+    // Keep source controls clear of the persistent inspector and command bar.
+    const frame = requestAnimationFrame(() => {
+      const bounds = editor.getShapePageBounds(editing), viewport = editor.getViewportScreenBounds()
+      if (!bounds) return
+      const inspector = container.current?.parentElement?.querySelector('.object-inspector')?.getBoundingClientRect()
+      const left = 86, top = 85, right = inspector ? inspector.left - viewport.x - 20 : viewport.w - 30, bottom = viewport.h - 150
+      const width = Math.max(160, right - left), height = Math.max(120, bottom - top)
+      const current = editor.getCamera()
+      const z = Math.max(.1, Math.min(current.z, width / (bounds.w + 40), height / (bounds.h + 70)))
+      if (z !== current.z || (bounds.x + current.x) * z < left || (bounds.x + bounds.w + current.x) * z > right || (bounds.y + current.y) * z < top || (bounds.y + bounds.h + current.y) * z + 45 > bottom) {
+        editor.setCamera({ x: (left + width / 2) / z - bounds.center.x, y: (top + height / 2) / z - bounds.center.y, z })
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [editing, editor])
 
   const ingest = useCallback((elements: readonly ExcalidrawElement[], state: AppState, files: BinaryFiles) => {
     if (disposed.current || receiving.current) return
@@ -251,6 +270,12 @@ function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & 
     onContextMenuCapture={event => { if (!(event.target as Element).closest(inputSelector)) { event.preventDefault(); event.stopPropagation() } }}
     onPointerDownCapture={event => {
       if ((event.target as Element).closest(inputSelector)) return
+      if (editing) {
+        event.preventDefault(); event.stopPropagation(); flushSourceEdits(); editor.setEditingShape(null)
+        const hit = editor.getShapeAtPoint(editor.screenToPage({ x: event.clientX, y: event.clientY }), { hitInside: true, filter: shape => !editor.isShapeOrAncestorLocked(shape) })
+        if (hit) editor.select(hit.id); else editor.selectNone()
+        return
+      }
       if (pendingPush.current) syncRef.current()
       editor.markHistoryStoppingPoint('Canvas gesture')
       pointer.current = event.nativeEvent
@@ -273,8 +298,9 @@ function CanvasScene({ editor, renderShape, children }: WhiteboardCanvasProps & 
     }}
     onKeyUpCapture={event => { if (!(event.target as Element).closest(inputSelector) && ['Delete', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) queueMicrotask(finishGesture) }}>
     <Excalidraw excalidrawAPI={receiveApi} initialData={initialData} onChange={ingest} UIOptions={uiOptions}
-      theme="light" zenModeEnabled gridModeEnabled={false} viewModeEnabled={!!editing} handleKeyboardGlobally={false} autoFocus={false} aiEnabled={false}
+      theme="light" zenModeEnabled gridModeEnabled={false} handleKeyboardGlobally={false} autoFocus={false} aiEnabled={false}
       validateEmbeddable={false}/>
+    {editing && <div className="whiteboard-editing-shield" aria-hidden="true"/>}
     <div className="whiteboard-live-content" style={{ transform: `translate(${camera.x * camera.z}px,${camera.y * camera.z}px) scale(${camera.z})` }}>
       {customShapes.map(shape => <div key={shape.id} className={`whiteboard-live-shape${editing === shape.id ? ' is-editing' : ''}${editing !== shape.id && renderedImages.current.get(shape.id)?.key === liveContentKey(shape) && nativeFiles.get(shape.id) === renderedImages.current.get(shape.id)?.file.id ? ' is-rendered' : ''}`} data-shape-id={shape.id}
         style={{ transform: editor.getShapePageTransform(shape).toCssString(), width: shape.props.w || 100, height: shape.props.h || 100, opacity: shapeOpacity(editor, shape) }}>

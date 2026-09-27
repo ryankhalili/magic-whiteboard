@@ -255,9 +255,30 @@ export class Editor {
     return this.run(() => { for (const asset of assets) { this.beforeMutation(); this.records.set(asset.id, clone(asset)); this.changed(true) } return this })
   }
   sendToBack(ids: TLShapeId[]) {
-    const selected = new Set(ids), shapes = this.getCurrentPageShapesSorted()
-    const reordered = [...shapes.filter(s => selected.has(s.id)), ...shapes.filter(s => !selected.has(s.id))]
-    return this.updateShapes(reordered.map((shape, index) => ({ id: shape.id, type: shape.type, index } as TLShapePartial)))
+    return this.reorderLayers(ids, false)
+  }
+  bringToFront(ids: TLShapeId[]) {
+    return this.reorderLayers(ids, true)
+  }
+  private reorderLayers(ids: TLShapeId[], front: boolean) {
+    const selected = new Set(ids.filter(id => this.getShape(id) && (this.ignoreLocks || !this.isShapeOrAncestorLocked(id))))
+    const siblings = new Map<string, TLShape[]>()
+    for (const shape of this.getCurrentPageShapesSorted()) {
+      const list = siblings.get(shape.parentId) ?? []
+      list.push(shape); siblings.set(shape.parentId, list)
+    }
+    const updates: TLShapePartial[] = []
+    for (const list of siblings.values()) {
+      const moving = list.filter(shape => selected.has(shape.id))
+      if (!moving.length) continue
+      const rest = list.filter(shape => !selected.has(shape.id))
+      const ordered = front ? [...rest, ...moving] : [...moving, ...rest]
+      if (ordered.every((shape, index) => shape.id === list[index].id)) continue
+      ordered.forEach((shape, index) => updates.push({ id: shape.id, type: shape.type, index } as TLShapePartial))
+    }
+    // Renumber locked peers too, preserving their order and avoiding duplicate indices.
+    // Locked targets remain excluded unless an enclosing import explicitly allows them.
+    return this.run(() => this.updateShapes(updates), { ignoreShapeLock: true })
   }
   isShapeOrAncestorLocked(value?: TLShape | TLShapeId) {
     let shape = value ? this.getShape(value) : undefined; const seen = new Set<string>()

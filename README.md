@@ -34,7 +34,29 @@ npm start
 
 The empty board offers a graph example and a sample homework page. These add content to the current notebook. You can also load the sample homework background from Help. Backgrounds can be removed from Page settings, with Undo available afterward.
 
-Use ordinary drawing and selection to annotate, drag, resize, and rotate objects. To edit individual characters, double-click text or an equation, or select it and choose **Edit on board**. MathLive provides a visual equation editor, including a math keyboard; **LaTeX source** switches to source editing. A graph's expression can also be edited directly. The inspector exposes the full source and graph range.
+Use ordinary drawing and selection to annotate, drag, resize, and rotate objects. To edit individual characters, double-click text or an equation, or select it and choose **Edit on board**. MathLive provides a visual equation editor, including a math keyboard; **LaTeX source** switches to source editing. A graph's expression can also be edited directly.
+
+## Object controls and live source
+
+Select an object to open **Object controls**. The card stays available while editing its content. Collapsing it leaves an **Object controls** button to reopen it; deselecting the object closes its controls.
+
+Edit the **Function or equation**, **LaTeX source**, or text field to update the board automatically after a short typing pause. Valid drafts compile locally, without an AI request. An incomplete or invalid expression stays in the field with an explanation while the board keeps its last valid version. **Restore last valid** discards that invalid draft. Ctrl/Cmd+Enter or leaving the field also applies a valid draft.
+
+The card provides manual ink color, font size, graph/shape line width, shape fill and fill opacity, object opacity, size, rotation, layer order, and locking controls where applicable. Graph controls include X/Y limits, axis scaling, and separate grid/axes switches. Numeric fields apply on Enter or when leaving the field. Unlock a locked object before changing it.
+
+**Zoom to object** brings the selected item into view without changing its contents. Voice and typed commands can also set an object's color, fill, opacity, rotation, crop, or layer: try “Bring this shape to the front.” Valid source edits are flushed before saving, exporting, or switching notebooks.
+
+## Equations and custom geometry
+
+Graphs support explicit functions such as `y=sin(x)` and implicit equations such as `x=1`, `x^2+y^2=9`, and `xy=1`. An equality involving both variables draws its numerically sampled zero contour in the visible graph window. This supports vertical lines, circles, and relations that are not single-valued functions of X. Graphs remain sampled approximations; a very small feature or discontinuity may need a different view. Inequalities, shaded solution regions, and a general symbolic equation solver are not implemented.
+
+Implicit contour sampling can miss isolated points, tangencies without a sign change, or features smaller than the sampling grid. Check the graph against the source; it is not a complete mathematical solution-set oracle.
+
+![Exported vertical line, circle, and constrained quadrilateral](research/interactive-math.png)
+
+Ask, “Draw a quadrilateral with interior angles 91, 91, 90, and 88 degrees.” The polygon uses four actual vertices with those angles; labels are not substituted for geometric constraints. Convex angle lists must have 3–16 entries, each between 0.1° and 179.9°, and sum to `(n−2)×180°`. Inconsistent sums, crossing edges, and degenerate shapes return an explanation.
+
+Angle constraints alone do not uniquely determine side lengths. The app chooses one valid convex construction tangent to a circle. Resizing fits the polygon uniformly within its object bounds to preserve its angles, so it may leave space inside a wide or tall box. Explicit custom polygons use 3–16 ordered normalized vertices (`{x,y}`, each coordinate from 0 to 1); open polylines use 2–16 vertices. One coordinate scale is preserved when fitting them. If both vertices and angles are supplied, they must agree. Comma-separated text such as `A,B,C,D` supplies vertex labels.
 
 ## Placement and graph scale
 
@@ -43,13 +65,13 @@ The magic pen offers two focus modes, saved separately for each notebook:
 - **Reference** is the default. A circled region supplies a location and context. New objects use its center as a placement reference and retain readable, natural proportions; the circle does not prescribe an exact width and height.
 - **Literal** treats the circled region as a boundary. New objects use that area, and AI edits, moves, and resizes must stay inside it. Changes to objects outside the region are rejected. Draw a larger area if content cannot fit. Use this for a specific space on a worksheet or a deliberate layout.
 
-A graph also has its own axis-scaling choice. **Equal units** gives one unit on each axis the same visual length, so `y = x` appears at 45 degrees. It preserves the chosen x range and adjusts the displayed y range; parts of a tall curve can be outside the visible window. **Auto scale** fits the curve vertically. **Natural graph size** restores a comfortable rectangle and equal units on an existing graph. Placement mode and graph axis scaling control different things.
+A graph also has its own axis-scaling choice. **Equal units** gives one unit on each axis the same visual length, so `y = x` appears at 45 degrees and a circle retains its proportions. It preserves the chosen x range and adjusts the displayed y range; parts of a tall curve can be outside the visible window. **Independent axes** uses separate horizontal and vertical scales; editing a Y limit selects this mode. Explicit functions can receive an automatic initial Y range, while implicit equations use a finite two-dimensional view. **Natural graph size** restores a comfortable rectangle and equal units on an existing graph. Placement mode and graph axis scaling control different things.
 
 ## Voice interaction
 
 **Voice mode** hides the typing bar and shows the microphone control, live transcript, and an action selector. The microphone circle responds to measured microphone volume (RMS). Choose **Assistant** for board commands, **Dictate math** for equations, or **Dictate text** for prose. Spoken replies are optional.
 
-The connection provides continuous audio input, turn detection, transcripts, and board tool calls. Streaming text and math previews show partial model output before a complete edit is committed. Complete changes commit after recognized speech turns; recognition and generation latency still apply, and this is not guaranteed instant, per-word LaTeX transcription. Selecting characters or math content gives follow-up instructions more specific context. Check a resulting edit when the selection or spoken reference is ambiguous.
+The connection provides continuous audio input, turn detection, transcripts, and board tool calls. Streaming text and math previews show partial model output before a complete edit is committed. Complete changes commit after recognized speech turns; recognition and generation latency still apply. **True per-word math compilation while the user is still speaking is deferred.** The current behavior combines speech turns with streamed model output, rather than a continuously correct transcription of every spoken word. Selecting characters or math content gives follow-up instructions more specific context. Check a resulting edit when the selection or spoken reference is ambiguous.
 
 ## Notebooks
 
@@ -66,6 +88,7 @@ The `.marginalia.json` file extension and existing browser-storage keys are reta
 ## Images, pages, and saving
 
 - Import a PNG, JPEG, WebP, or GIF as an ordinary image or a locked background. Pasted screenshots use the same portable image storage. A new background replaces the previous background on the current board.
+- **Image crop** in Object controls hides percentages from the left, right, top, and bottom edges without deleting the original image bytes. **Reset crop** restores the full image. Unlock a background before cropping it. The crop is used in the live board, PNG/PDF export, and AI board captures.
 - A4 mode uses a fixed 794 × 1123 canvas region; infinite mode expands around the content. Choose plain, dotted, grid, or ruled paper and a background color.
 - PNG and PDF exports include the entire current board and its locked image background. A4 mode crops to the page; infinite mode includes all content with a small margin.
 - PDF output contains a high-resolution flattened rendering. Graph expressions and equations remain editable in the app and in downloaded `.marginalia.json` project files.
@@ -90,12 +113,16 @@ An application manifest and iPad home-screen icon are included. There is no offl
 
 ## Voice and API cost
 
-The canvas, drawing, rendering, image import, and file export run locally. Natural-language commands and Realtime voice use the paid OpenAI API. They use the key supplied for this hackathon; a ChatGPT subscription is not used for billing.
+The canvas, drawing, rendering, image import, source compilation, and file export run locally. Natural-language commands and Realtime voice use the paid OpenAI API with this project's server-side key.
+
+Codex can use a ChatGPT sign-in for subscription access, or an API key for usage-based access. That development-tool login does not replace the Platform API key used by this application; general API calls use separate API billing. See [official Codex authentication documentation](https://developers.openai.com/codex/auth/).
 
 Default backend models:
 
 - Typed commands: `gpt-4.1-mini`, using a constrained board-operation tool.
 - Voice: `gpt-realtime-mini`, with `gpt-4o-mini-transcribe` for visible input transcription.
+
+Help displays the running server's configured text and voice models. `OPENAI_TEXT_MODEL` and `OPENAI_REALTIME_MODEL` can change the defaults. The app responds to typed instructions and user-started voice turns through board tools; it has no autonomous background agent that continues working on notebooks.
 
 To contain prototype usage, the backend allows 200 typed commands and 30 total reserved voice minutes, and stops a voice session after five minutes. The voice client also stops after 90 seconds of inactivity. Counters persist in the ignored `.local/usage.json` file. These are local usage allowances, **not a guaranteed dollar spending cap**; account billing and available credits are authoritative. Check the OpenAI project before increasing the allowances. End the voice session when finished.
 
@@ -109,7 +136,7 @@ The API key stays on the server. `api.txt`, `.env` files, and local usage record
 - The application owns one undo history for drawing gestures, direct edits, and AI commands. It completes pointer interactions before applying an external edit.
 - Custom `magic` shapes retain expressions, LaTeX, geometry, labels, ranges, and object IDs. Excalidraw element metadata also preserves their source records.
 - Custom math, graphs, text, and geometry appear as generated PNG images inside Excalidraw. Their source remains editable through the app's live editors and inspector.
-- mathjs parses supported scalar expressions. SVG paths render graphs, and KaTeX renders equations. MathLive supplies direct equation editing and a math keyboard.
+- mathjs parses allowlisted scalar expressions and equalities. Sampled SVG paths render explicit functions and implicit contours. Shared geometry helpers construct and validate angle-constrained polygons with uniform fitting. KaTeX renders equations; MathLive supplies direct editing and a math keyboard.
 - IndexedDB stores each notebook's editable records and embedded image assets. Portable `.marginalia.json` files, legacy migration, and application PNG/PDF export remain supported.
 - A Vite plugin serves Excalidraw fonts locally and includes them in production builds. The app sets `EXCALIDRAW_ASSET_PATH` to this local directory.
 - An Express backend calls the Responses API for typed commands and negotiates WebRTC Realtime sessions for voice.
@@ -125,21 +152,30 @@ The [dependency inventory](research/production-license-inventory.json) and notic
 
 ## Scope and next steps
 
-This prototype is strongest at graph creation and revision, equations, simple geometry, and spatial board editing. It is not yet a comprehensive solver or a source of verified mathematical proofs.
+This prototype is strongest at graph creation and revision, equations, constrained polygons, and spatial board editing. It is not yet a comprehensive solver or a source of verified mathematical proofs.
+
+See the [earlier Excalidraw interaction review](research/EXCALIDRAW-INSPIRATION.md) for reusable templates, bound connectors, and structured AI diagram tools. This branch now uses the Excalidraw package as described above. Team development follows [the feature-branch workflow](CONTRIBUTING.md).
 
 1. Test a full voice/pen interaction on the physical iPad, especially the timing of “this” and “here.”
 2. Improve handwriting cleanup with a reviewable recognition preview, symbol corrections, and an explicit keep-original option.
 3. Add multi-page PDF import and ordered document/LaTeX export.
 4. Improve offline recovery, cloud document synchronization, and collaboration.
 5. Evaluate native packaging and high-fidelity Pencil input after measuring the browser experience.
+6. Explore incremental speech-to-math rendering while speaking, with explicit draft/final states and correction handling; current voice edits remain turn-based.
 
 Automated tests cover command validation, geometry, file validation, notebook migration/isolation, and serialized checkpoint persistence. Browser visual checks and physical-iPad verification remain separate from those tests; do not infer device readiness from a successful TypeScript build alone.
+
+## Development workflow
+
+Keep `main` stable. Work on feature branches and merge through reviewed pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Validation
 
 Run `npm run check`, `npm test`, `npm run build`, and `npm audit` after dependency or integration changes. Automated tests cover scene conversion, custom image identity, history, file handling, notebook persistence, migration, and board commands. Test results from the previous canvas do not establish Excalidraw port readiness.
 
 See the [Excalidraw port verification report](research/EXCALIDRAW_PORT.md) for the browser checks, fixes, integration tradeoffs, and repeatable smoke script from this branch.
+
+The [interactive math merge report](research/INTERACTIVE_MATH_MERGE.md) records the subsequent integration, 291 automated tests, and ego-browser checks against development and production builds.
 
 Browser testing must include drawing over math and image backgrounds, selection, transforms, direct editing, AI edits, undo/redo, notebook switching, reload, and file exports. A full voice session, Apple Pencil pressure, touch gestures, and iPad download behavior still require tests on the physical device. PNG previews use bounded resolution, so extreme zoom can expose raster pixels.
 

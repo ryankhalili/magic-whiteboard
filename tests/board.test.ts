@@ -14,12 +14,12 @@ const baseContext = (): BoardContext => ({
 describe('safe scalar math', () => {
   it('normalizes common notation and evaluates actual functions', () => {
     const equation = validateExpression('y = x² + 3')
-    expect(equation.expression).toBe('x^2 + 3')
+    expect(equation.expression).toBe('y = x^2 + 3')
     expect(equation.evaluate(2)).toBe(7)
     expect(validateExpression('2x + sin(pi / 2)').evaluate(3)).toBeCloseTo(7)
     expect(validateExpression('log(x, 10)').evaluate(100)).toBeCloseTo(2)
   })
-  it.each(['x = 42', 'import("fs")', 'evaluate("2+2")', '[1, 2]', 'x.constructor', 'random()', 'factorial(100000)', 'sum(1:1000)', 'constructor(1)', 'x; 4'])('rejects code-like or unbounded input %s', input => {
+  it.each(['a = 42', 'import("fs")', 'evaluate("2+2")', '[1, 2]', 'x.constructor', 'random()', 'factorial(100000)', 'sum(1:1000)', 'constructor(1)', 'x; 4'])('rejects code-like or unbounded input %s', input => {
     expect(() => validateExpression(input)).toThrow()
   })
   it('rejects invalid domains and limits expression size', () => {
