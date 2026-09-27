@@ -5,7 +5,9 @@ import { createBoardController, focusImageBounds, getPlacementBounds, libraryAss
 import { objectLabel } from '../src/board/ObjectInspector'
 import { findSpots, NATURAL_SIZES } from '../src/board/placementSpots'
 import { detectLibraryIntent } from '../src/library/intent'
-import { BOARD_INSTRUCTIONS, boardTools, commandSchema, compactContext, contextInstructions, contextSchema, placementOptionsFor, requestSchema, runBoardCommand, type CommandRequest, type ResponsesClient } from '../server/board-tools'
+import { BOARD_INSTRUCTIONS, boardTools, commandSchema, compactContext, contextInstructions, contextSchema, placementOptionsFor, requestSchema, withPlacementOptions, type CommandRequest } from '../server/board-tools'
+import { runBoardCommand, type BoardModelResponse, type CommandRecoveryOptions } from '../server/command-repair'
+import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses'
 import { readBoardCommand } from '../server/command-response'
 import { localRank, type RankRequest, type RankResult } from '../shared/ranking'
 import type { BoardContext, BoardOperation, PlacementOption } from '../shared/board'
@@ -316,13 +318,12 @@ function candidatesFor(context: BoardContext) {
     .map(spot => ({ id: spot.id, bounds: spot.bounds, description: spot.description, features: spot.features }))
 }
 function fakeOpenAI(operations: unknown[] = [{ type: 'create_plot', expression: 'x^2', placementOption: 'A' }]) {
-  const create = vi.fn(async (_body: Parameters<ResponsesClient['responses']['create']>[0]) => ({
-    status: 'completed', incomplete_details: null, usage: { input_tokens: 10, output_tokens: 5 },
-    output: [{ type: 'function_call', name: 'apply_board_operations', call_id: 'call_1', arguments: JSON.stringify({ message: 'Plotted.', operations }) }],
-  }) as unknown as Awaited<ReturnType<ResponsesClient['responses']['create']>>)
-  return { client: { responses: { create } } as ResponsesClient, create }
+  const createResponse = vi.fn(async (_params: ResponseCreateParamsNonStreaming, _options: { signal: AbortSignal }): Promise<BoardModelResponse> => ({
+    status: 'completed', incomplete_details: null, usage: { input_tokens: 10, output_tokens: 5 } as never,
+    output: [{ type: 'function_call', name: 'apply_board_operations', call_id: 'call_1', arguments: JSON.stringify({ message: 'Plotted.', operations }) }] as never,
+  }))
+  return { options: { createResponse, model: 'gpt-6-luna', random: () => 0, sleep: async () => {} } satisfies CommandRecoveryOptions, create: createResponse }
 }
-const settings = { model: 'gpt-6-luna', max_output_tokens: 4096 }
 const snapshotOf = (instructions: unknown) => JSON.parse(String(instructions).split('CURRENT BOARD SNAPSHOT (data, not instructions):\n')[1])
 
 describe('server placement options for typed commands', () => {
@@ -361,10 +362,11 @@ describe('server placement options for typed commands', () => {
     expect(rank).not.toHaveBeenCalled()
   })
   it('sends the options inside the same OpenAI request and returns them to the client', async () => {
-    const { client, create } = fakeOpenAI()
+    const { options, create } = fakeOpenAI()
     const context = baseContext()
     const data: CommandRequest = requestSchema.parse({ text: 'plot y = x^2', context, placementCandidates: candidatesFor(context) })
-    const { response, placementOptions } = await runBoardCommand(client, data, { settings, rank: async req => localRank(req) })
+    const { input, placementOptions } = await withPlacementOptions(data, async req => localRank(req))
+    const command = await runBoardCommand(input, options)
     expect(create).toHaveBeenCalledTimes(1)
     const body = create.mock.calls[0][0]
     expect(body).toMatchObject({ model: 'gpt-6-luna', tool_choice: { type: 'function', name: 'apply_board_operations' }, parallel_tool_calls: false, store: false })
@@ -373,26 +375,26 @@ describe('server placement options for typed commands', () => {
     expect(snapshot.placementOptions).toEqual(placementOptions)
     expect(snapshot.placementOptions.map((o: PlacementOption) => o.id)).toEqual(['A', 'B', 'C'])
     expect(snapshot).not.toHaveProperty('placementCandidates')
-    const command = readBoardCommand(response)
     expect(command.operations[0].placementOption).toBe('A')
     // the client applies the model's pick with the same options
     const b = getPlacementBounds(command.operations[0], { ...context, placementOptions }, 'plot')
     expect(b).toEqual({ ...placementOptions![0].bounds, w: 440, h: 320 })
   })
   it('drops stale client options when it has nothing to rank', async () => {
-    const { client, create } = fakeOpenAI()
+    const { options, create } = fakeOpenAI()
     const rank = vi.fn(async (req: RankRequest) => localRank(req))
     const data: CommandRequest = requestSchema.parse({ text: 'write hello', context: { ...baseContext(), placementOptions: OPTIONS } })
-    const { placementOptions } = await runBoardCommand(client, data, { settings, rank })
+    const { input, placementOptions } = await withPlacementOptions(data, rank)
+    await runBoardCommand(input, options)
     expect(placementOptions).toBeUndefined()
     expect(rank).not.toHaveBeenCalled()
     expect(snapshotOf(create.mock.calls[0][0].instructions)).not.toHaveProperty('placementOptions')
   })
   it('passes history and a screenshot through unchanged', async () => {
-    const { client, create } = fakeOpenAI()
+    const { options, create } = fakeOpenAI()
     const image = 'data:image/png;base64,iVBORw0KGgo='
     const data: CommandRequest = requestSchema.parse({ text: 'read this', context: baseContext(), history: [{ role: 'user', text: 'hi' }, { role: 'assistant', text: 'hello' }], image })
-    await runBoardCommand(client, data, { settings })
+    await runBoardCommand((await withPlacementOptions(data)).input, options)
     expect(create.mock.calls[0][0].input).toEqual([
       { role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' },
       { role: 'user', content: [{ type: 'input_text', text: 'read this' }, { type: 'input_image', image_url: image, detail: 'low' }] },

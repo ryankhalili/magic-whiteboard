@@ -1,5 +1,7 @@
 # Excalidraw ideas for Magic Whiteboard
 
+Historical review from `feat/interactive-math`, written before the canvas port. The merged branch now uses Excalidraw; see the [port report](EXCALIDRAW_PORT.md) and [interactive math merge verification](INTERACTIVE_MATH_MERGE.md) for its current implementation.
+
 Reviewed 2026-09-26 against the official repository and developer documentation. Most recommendations below are implementation proposals. This branch adds **Zoom to object** using our own editor, and exposes existing front/back layering to AI commands. No Excalidraw dependency or source code was added in this review.
 
 Excalidraw is a useful interaction reference for our existing canvas. Keep Magic Whiteboard's editable equations, numerical plots, constrained geometry, voice context, and notebook persistence; extend the object workflow around them. Replacing the canvas would introduce another data migration and require adapting these custom objects.

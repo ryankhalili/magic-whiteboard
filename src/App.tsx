@@ -9,7 +9,11 @@ import { findSpots, guessContentSize, NATURAL_SIZES, obstaclesFromObjects } from
 import { finishPointerFollow, focusFromGesture, movePointerFollow, startPointerFollow, type PointerFollow } from './board/interactions'
 import { createRealtimeClient, checkVoiceConnection, type ContentPreview } from './ai/realtime'
 import { NotebookSwitcher, useNotebookLibrary, saveNotebookSnapshot, loadNotebookSnapshot, type NotebookLibrary } from './notebooks'
-import { apiRequest, pairDevice } from './ai/commands'
+import { sendBoardCommand, pairDevice, repairBoardCommand } from './ai/commands'
+import { contextFingerprint, type VoiceRecoveryState } from './ai/voice-recovery'
+import { prepareBoardRepair, pinBoardRepair } from './ai/board-repair'
+import { useImageGeneration } from './images/useImageGeneration'
+import { ImageGenerationPanel } from './images/ImageGenerationPanel'
 import { downloadOriginalNotebook, exportBoard, exportRegionPdf, importImageFile, installBoardImageExporter, loadProject, regionFromSelection, saveProject } from './files/boardFiles'
 import { captureBoardContext } from './files/capture'
 import { boardImportLimit, isPdfFile, overlaps } from './files/pdfPages'
@@ -30,7 +34,7 @@ import { DEFAULT_SETTINGS, type AppSettings, type BoardCommand, type BoardContex
 
 type Tool = 'magic' | 'select' | 'draw' | 'eraser' | 'hand' | 'text' | 'math'
 type Message = { id: number; role: 'user' | 'assistant' | 'event'; text: string }
-type ApiStatus = { configured: boolean; authorized: boolean; pairingRequired: boolean; pairingCode?: string; models?: { text: string; realtime: string } }
+type ApiStatus = { configured: boolean; authorized: boolean; pairingRequired: boolean; pairingCode?: string; models?: { text: string; realtime: string; image?: string }; limits?: { sessionMinutes: number; voiceMinutesLimit: number; imageLimit?: number } }
 const COLORS = ['#202124', '#2563eb', '#dc2626', '#15803d', '#7c3aed']
 const INK_COLORS = ['black', 'blue', 'red', 'green', 'violet'] as const
 const OPTION_IDS = ['A', 'B', 'C'] as const
@@ -39,6 +43,8 @@ let importId = 0
 type PendingImport = { id: number; file: File; info: ImportInfo | null; progress: ImportProgress | null; busy: boolean; choosing: ImportTarget | null }
 type LibrarySource = { book: BookRecord; pageIndex: number; candidate?: Candidate; box?: PageBox }
 type ResolvedInsert = { op: BoardOperation; reserve: Bounds } | { result: BoardResult }
+// library catalog and ranked spots refresh on their own, so they never count as a board change
+const boardOnly = (context: BoardContext): BoardContext => ({ ...context, library: undefined, placementOptions: undefined })
 const isLibraryOp = (op: BoardOperation | undefined) => op?.type === 'insert_library' || op?.type === 'library_action' || op?.type === 'create_image'
 const pickText = (count: number) => count > 1 ? `Pick one of the ${count} highlighted matches.` : 'Tap the highlighted match to insert it.'
 const errorText = (error: unknown, fallback: string) => error instanceof Error && error.message ? error.message : fallback
@@ -82,6 +88,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const snapshotFailed = useRef(false)
   const snapshotLoad = useRef<Promise<void>>(Promise.resolve())
   const snapshotTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const commandAbort = useRef<AbortController | null>(null)
   const settings = notebook.settings
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -102,6 +109,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const [following, setFollowing] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
+  const [recovery, setRecovery] = useState<VoiceRecoveryState>(null)
+  const [commandProgress, setCommandProgress] = useState('')
+  const aiPaused = !!recovery || !!commandProgress
   const [voiceStatus, setVoiceStatus] = useState('idle')
   const [voiceMode, setVoiceMode] = useState(false)
   const [dictationMode, setDictationMode] = useState<'assistant' | 'math' | 'text'>('assistant')
@@ -184,8 +194,28 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     followRef.current = null; setFollowing(false)
     if (follower && editorRef.current) finishPointerFollow(editorRef.current, follower)
   }, [])
+  const images = useImageGeneration(notebook.id, () => snapshotReady.current ? editorRef.current : null, getContext, async () => {
+    const ed = editorRef.current
+    if (!snapshotReady.current || !ed) throw new Error('Wait for this notebook to finish opening before saving the image.')
+    clearTimeout(snapshotTimer.current)
+    await saveNotebookSnapshot(notebook.id, snapshotWithPendingSource(ed, { finishHistory: false }))
+    setSaveState('Saved on this device')
+    notify('Your image is ready. Select it to move, resize, rotate, or crop it.')
+  })
   const execute = useCallback((ops: BoardOperation[], reportFailure = true): BoardResult => {
     if (!controller.current) return { ok: false, message: 'The board is still loading.', ids: [] }
+    if (ops.some(operation => operation.type === 'propose_image')) {
+      try {
+        if (ops.length !== 1) throw new Error('Propose one image at a time, separately from other board changes.')
+        if (!ops[0].prompt?.trim()) throw new Error('Describe the image before proposing it.')
+        images.propose(ops[0])
+        return { ok: true, message: 'Review the shaded image area and description, then click the checkmark to generate.', ids: [] }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'The image preview could not open.'
+        if (reportFailure) setError(message)
+        return { ok: false, message, ids: [] }
+      }
+    }
     const editor = editorRef.current!
     flushSourceEdits()
     editor.completeInteraction()
@@ -207,7 +237,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       }
     } else if (reportFailure) setError(result.message)
     return result
-  }, [notify, stopFollowing, getContext])
+  }, [notify, stopFollowing, getContext, images.propose])
   const executeManual = useCallback((ops: BoardOperation[]): BoardResult => {
     const ed = editorRef.current
     if (!ed) return { ok: false, message: 'The board is still loading.', ids: [] }
@@ -222,7 +252,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(''), 4200); return () => clearTimeout(id) }, [toast])
   useEffect(() => { fetch('/api/status').then(r => r.json()).then(setApi).catch(() => setError('The local AI server is not reachable. Drawing still works.')) }, [])
-  useEffect(() => () => voiceRef.current?.disconnect(), [])
+  useEffect(() => () => { voiceRef.current?.disconnect(); commandAbort.current?.abort() }, [])
+  useEffect(() => {
+    if (!aiPaused) return
+    stopFollowing(); gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([])
+  }, [aiPaused, stopFollowing])
   useEffect(() => { voiceRef.current?.updateContext() }, [settings.focusMode])
   useEffect(() => {
     const onSelection = (event: Event) => {
@@ -370,6 +404,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   const pointerMove = (event: React.PointerEvent) => {
     if (!editorRef.current) return
+    if (aiPaused && tool === 'magic') return
     if ((event.target as HTMLElement).closest('button,input,textarea,aside,nav,.command-dock,.popover,.board-options,.canvas-footer,.empty-board')) return
     if (touches.current.has(event.pointerId)) {
       touches.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
@@ -394,6 +429,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     setPath([...pathRef.current])
   }
   const magicDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (aiPaused && tool === 'magic') { event.preventDefault(); event.stopPropagation(); return }
     if (event.button !== 0 || !editorRef.current || !ready) return
     if (tool === 'text' || tool === 'math') {
       event.preventDefault(); event.stopPropagation()
@@ -424,6 +460,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     gestureRef.current = { active: true, bounds: { ...point, w: 0, h: 0 }, start: point, current: point }
   }
   const magicUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (aiPaused && tool === 'magic') { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); return }
     if (pendingNewContent.current) {
       event.preventDefault(); event.stopPropagation()
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
@@ -444,7 +481,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
 
   const runPrompt = async (text = prompt) => {
-    if (!text.trim() || busy) return
+    if (!text.trim() || busy || recovery || voiceStatus === 'connecting') return
     const intent = detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0 })
     if (intent) {
       setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
@@ -458,30 +495,50 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     }
     if (api?.pairingRequired && !api.authorized) { setError('Enter the pairing code shown in Help on your laptop to connect this device.'); return }
     setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
+    const abort = new AbortController(); commandAbort.current = abort
+    let progressTimer: ReturnType<typeof setTimeout> | undefined
     try {
+      flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
       if (voiceRef.current?.isConnected()) { voiceRef.current.sendText(text); return }
+      setCommandProgress('Working on your request…')
+      progressTimer = setTimeout(() => setCommandProgress('This request is taking a little longer than usual. I’m checking it before changing the board…'), 3500)
+      const before = structuredClone(getContext())
       const needsImage = editorRef.current?.getCurrentPageShapes().some(s => s.type === 'image' || s.type === 'draw')
       const visual = needsImage ? await getVisualContext() : null
       // without a focus, the server ranks these free spots into placement options A, B, C
-      const context: BoardContext = { ...getContext(), placementOptions: undefined }
-      const placementCandidates = context.focus ? undefined : typedCandidates(text)
-      const history = messages.filter(m => m.role !== 'event').slice(-8).map(m => ({ role: m.role as 'user' | 'assistant', text: m.text }))
-      const result = await apiRequest<BoardCommand>('/api/command', { text, context, history, image: visual || undefined, placementCandidates })
+      const placementCandidates = before.focus ? undefined : typedCandidates(text)
+      const result = await sendBoardCommand(text, { ...before, placementOptions: undefined }, messages.filter(m => m.role !== 'event').slice(-8).map(m => ({ role: m.role as 'user' | 'assistant', text: m.text })), visual || undefined, abort.signal, placementCandidates)
+      if (abort.signal.aborted) return
+      flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
+      if (contextFingerprint(boardOnly(before)) !== contextFingerprint(boardOnly(getContext()))) { notify('The board changed while I was working, so I left this response unapplied. Give the instruction again when ready.'); return }
       let applied: BoardResult | null = null
       if (result.operations.length) {
         const previous = placementRef.current
         placementRef.current = result.placementOptions ?? null
-        try { applied = await executeResolved(result.operations, true, result.placementOptions ?? null) }
+        try { applied = await executeResolved(result.operations, false, result.placementOptions ?? null) }
         finally { placementRef.current = previous }
       }
+      if (applied && !applied.ok) {
+        const repair = prepareBoardRepair(result.operations, before, getContext(), applied)
+        if (repair.ok) {
+          clearTimeout(progressTimer); setCommandProgress('This request is taking a little longer than usual. I’m correcting the edit…')
+          const corrected = await repairBoardCommand({ instruction: text, context: before, failedOperations: result.operations, failure: { kind: 'operation_rejected', message: applied.message } }, abort.signal)
+          if (abort.signal.aborted) return
+          flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
+          const pinned = pinBoardRepair(repair.value, corrected.operations, getContext())
+          if (!pinned.ok) { notify('The original content changed, so I left the correction unapplied.'); return }
+          applied = execute(pinned.value, false)
+        }
+        if (applied && !applied.ok) setError(`I couldn’t safely finish that edit after checking it. ${applied.message} You can keep working or give a new instruction.`)
+      }
       // the board, not the model, knows whether a book lookup inserted something or is waiting for a tap
-      const fromLibrary = result.operations.some(isLibraryOp)
-      addMessage('assistant', applied && (!applied.ok || fromLibrary) ? applied.message : result.message || applied?.message || 'Done.')
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-    finally { setBusy(false) }
+      addMessage('assistant', applied && (!applied.ok || result.operations.some(op => op.type === 'propose_image' || isLibraryOp(op))) ? applied.message : result.message || applied?.message || 'Done.')
+    } catch (e) { if (!abort.signal.aborted) setError(e instanceof Error ? e.message : String(e)) }
+    finally { clearTimeout(progressTimer); if (commandAbort.current === abort) commandAbort.current = null; setBusy(false); setCommandProgress('') }
   }
   const toggleVoice = async () => {
     if (voiceStatus !== 'idle') { voiceRef.current?.disconnect(); setVoiceStatus('idle'); setLiveTranscript(''); return }
+    if (busy) return
     setError('')
     if (api?.pairingRequired && !api.authorized) { setError('Connect this device with the laptop pairing code before starting voice.'); return }
     if (!window.isSecureContext) { setError('Microphone access needs HTTPS on your iPad. Use the secure preview address; localhost works on this computer.'); return }
@@ -498,13 +555,16 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         onAudioLevel: level => voiceOrbRef.current?.style.setProperty('--mic-level', String(level)),
         onContentPreview: handleContentPreview,
         onStatus: setVoiceStatus,
+        onRecoveryState: state => { setRecovery(state); if (state) setError('') },
+        onNotice: notify,
+        repairRequest: repairBoardCommand,
         onTranscript: (text: string, final: boolean) => { setLiveTranscript(text); if (final) addMessage('user', text) },
         onAssistant: (text: string, final: boolean) => { if (final) { addMessage('assistant', text); setLiveTranscript('') } },
         onError: (text: string) => setError(text), spokenReplies,
       })
       voiceRef.current = client
       await client.connect()
-      chooseTool('magic')
+      if (voiceRef.current === client && client.isConnected()) chooseTool('magic')
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setVoiceStatus('idle') }
   }
 
@@ -538,6 +598,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('marginalia-focus-editor', { detail: { shapeId: shape.id } })))
   }
   const editAtPointer = (event: React.MouseEvent) => {
+    if (aiPaused && tool === 'magic') return
     const ed = editorRef.current
     if (!ed) return
     const point = ed.screenToPage({ x: event.clientX, y: event.clientY })
@@ -1012,6 +1073,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       <div className="header-left"><span className="brand">Magic Whiteboard</span><NotebookSwitcher library={library} beforeChange={flushNotebook}/></div>
       <div className="document-title"><input aria-label="Notebook title" value={settings.name} onChange={e => setSettings(s => ({ ...s, name: e.target.value }))}/><span><Check size={12}/>{saveState}</span></div>
       <div className="header-actions">
+        <button aria-label="Generate image" className="plain-button" disabled={!ready || aiPaused || !!images.draft} onClick={() => { try { images.propose({ type: 'propose_image' }) } catch (error) { setError((error as Error).message) } }}><ImagePlus size={17}/><span>Generate image</span></button>
         <button aria-label={voiceMode ? 'Type' : 'Voice mode'} className={`plain-button voice-mode-toggle ${voiceMode ? 'active' : ''}`} onClick={() => { if (voiceMode) setVoiceMode(false); else { setVoiceMode(true); if (voiceStatus === 'idle') void toggleVoice() } }}>{voiceMode ? <Keyboard size={18}/> : <Mic size={18}/>}<span>{voiceMode ? 'Type' : 'Voice mode'}</span></button>
         <button aria-label="Background" className="plain-button hide-small" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/><span>Background</span></button>
         <button aria-label="Import" title="Import a PDF or an image" className="plain-button" disabled={!!pendingImport?.busy} onClick={() => importInput.current?.click()}><FileUp size={17}/><span>Import</span></button>
@@ -1020,19 +1082,22 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       </div>
     </header>
 
-    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f && (isPdfFile(f) || f.type.startsWith('image/'))) importFile(f, true) }}>
+    <main ref={stageRef} className={`board-stage paper-${settings.paper} mode-${settings.mode}`} style={paperStyle} onPointerMoveCapture={pointerMove} onDragOver={e => e.preventDefault()} onDropCapture={e => { const f = e.dataTransfer.files[0]; if (f && isPdfFile(f)) { e.preventDefault(); e.stopPropagation(); importFile(f, true) } else if (f?.type.startsWith('image/')) { e.preventDefault(); e.stopPropagation(); importAsBackground.current = true; void importImage(f) } }}>
       <div className="paper-pattern"/>
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
       <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
       {!ready && <div className="notebook-loading">Opening notebook…</div>}
-      {['magic', 'text', 'math'].includes(tool) && <div className={`magic-surface ${following ? 'is-following' : ''}`} onPointerDown={magicDown} onPointerUp={magicUp} onDoubleClick={editAtPointer} onPointerCancel={() => { gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([]) }}/>}
+      {['magic', 'text', 'math'].includes(tool) && <div className={`magic-surface ${following ? 'is-following' : ''} ${aiPaused && tool === 'magic' ? 'is-recovering' : ''}`} onPointerDown={magicDown} onPointerUp={magicUp} onDoubleClick={editAtPointer} onPointerCancel={() => { gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([]) }}/>}
       <svg className="gesture-overlay" aria-hidden="true">{path.length > 1 && <path d={path.map((p, i) => { const v = pageToLocal(p); return `${i ? 'L' : 'M'} ${v.x} ${v.y}` }).join(' ')} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>}</svg>
       {focus && !path.length && !isEditing && <div className={`magic-focus ${focus.kind} focus-${settings.focusMode ?? 'reference'}`} style={focus.kind === 'region' ? localBounds(focus.bounds) : { left: pageToLocal(focus.bounds).x - 12, top: pageToLocal(focus.bounds).y - 12 }}><span>{focus.kind === 'region' ? `Work here · ${settings.focusMode === 'literal' ? 'Literal' : 'Reference'}` : settings.focusMode === 'literal' ? 'Circle an area for Literal mode' : 'Reference point'}</span></div>}
       {contentPreview && previewBounds && <div className="streaming-preview" style={{...localBounds(previewBounds), fontSize: 28 * zoom, ...(settings.focusMode === 'literal' ? {overflow:'hidden'} : {})}}>{contentPreview.field === 'latex' ? <span style={{display:'inline-block'}} dangerouslySetInnerHTML={{ __html: katex.renderToString(contentPreview.value, {displayMode:true,throwOnError:false,trust:false,maxExpand:300,maxSize:20,strict:'ignore'}).replace('class="katex-display"', 'class="katex-display" style="margin:0;text-align:left"').replace('class="katex"', 'class="katex" style="text-align:left"') }}/> : <span>{contentPreview.field === 'expression' ? 'y = ' : ''}{contentPreview.value}</span>}<span className="streaming-caret"/></div>}
 
-      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label>{objects.length > 0 && <select className="object-picker" aria-label="Choose board object" value={selected?.id || ''} onChange={event => { if (!event.target.value || !editor) return; editor.completeInteraction(); chooseTool('select'); editor.select(event.target.value); setInspectorOpen(true); setShowHistory(false) }}><option value="">Objects ({objects.length})</option>{objects.map(object => <option key={object.id} value={object.id}>{object.locked ? '🔒 ' : ''}{objectLabel(object)}</option>)}</select>}<button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void fetch('/api/status').then(r=>r.json()).then(setApi) }}><CircleHelp size={16}/></button></div>
+      {images.draft && <div className="image-placement-preview" style={localBounds(images.draft.bounds)} aria-label="Image placement preview"><span><ImagePlus size={16}/>{images.draft.phase === 'review' ? 'Image preview · awaiting confirmation' : ['submitting', 'generating'].includes(images.draft.phase) ? 'Generating image…' : 'Image request paused'}</span></div>}
+      <ImageGenerationPanel images={images} model={api?.models?.image}/>
+
+      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label>{objects.length > 0 && <select className="object-picker" aria-label="Choose board object" value={selected?.id || ''} onChange={event => { if (!event.target.value || !editor) return; editor.completeInteraction(); chooseTool('select'); editor.select(event.target.value); setInspectorOpen(true); setShowHistory(false) }}><option value="">Objects ({objects.length})</option>{objects.map(object => <option key={object.id} value={object.id}>{object.locked ? '🔒 ' : ''}{objectLabel(object)}</option>)}</select>}<button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void fetch('/api/status').then(r=>r.json()).then(setApi) }}><CircleHelp size={16}/></button></div>
       <nav className="tool-rail" aria-label="Drawing tools">
-        {([{ id: 'magic', label: 'Magic pen', key: 'M', icon: Sparkles }, { id: 'draw', label: 'Pencil', key: 'P', icon: Pencil }, { id: 'select', label: 'Select & move', key: 'V', icon: MousePointer2 }, { id: 'text', label: 'Text', key: 'T', icon: Type }, { id: 'math', label: 'Math', key: 'Q', icon: Sigma }, { id: 'eraser', label: 'Eraser', key: 'E', icon: Eraser }, { id: 'hand', label: 'Pan', key: 'H', icon: Hand }] as const).map(({ id, label, key, icon: Icon }) => <button key={id} aria-label={label} aria-pressed={tool === id} title={`${label} (${key})`} className={tool === id ? 'active' : ''} onClick={() => chooseTool(id)}><Icon size={21}/><span className="tool-tip">{label}<kbd>{key}</kbd></span></button>)}
+        {([{ id: 'magic', label: 'Magic pen', key: 'M', icon: Sparkles }, { id: 'draw', label: 'Pencil', key: 'P', icon: Pencil }, { id: 'select', label: 'Select & move', key: 'V', icon: MousePointer2 }, { id: 'text', label: 'Text', key: 'T', icon: Type }, { id: 'math', label: 'Math', key: 'Q', icon: Sigma }, { id: 'eraser', label: 'Eraser', key: 'E', icon: Eraser }, { id: 'hand', label: 'Pan', key: 'H', icon: Hand }] as const).map(({ id, label, key, icon: Icon }) => <button key={id} aria-label={label} aria-pressed={tool === id} title={`${label} (${key})`} className={tool === id ? 'active' : ''} onClick={() => chooseTool(id)}>{id === 'magic' && aiPaused ? <LoaderCircle className="spin" size={21}/> : <Icon size={21}/>}<span className="tool-tip">{label}<kbd>{key}</kbd></span></button>)}
         <div className="rail-divider"/>
         <div className="color-stack">{COLORS.map((c, i) => <button aria-label={`Ink color ${INK_COLORS[i]}`} key={c} className={color === c ? 'chosen' : ''} style={{ '--ink': c } as React.CSSProperties} onClick={() => { setColor(c); editor?.setStyleForNextShapes(DefaultColorStyle, INK_COLORS[i]); if (selectedRecord?.type === 'magic') execute([{ type: 'update_object', target: selected!.id, color: c }]); else editor?.setStyleForSelectedShapes(DefaultColorStyle, INK_COLORS[i]) }}/>)}</div>
         <div className="rail-divider"/><button title={`${inkSize === 's' ? 'Thin' : 'Medium'} ink · click to change`} aria-label="Change ink width" onClick={() => { const size = inkSize === 's' ? 'm' : 's'; setInkSize(size); editor?.setStyleForNextShapes(DefaultSizeStyle, size); notify(`${size === 's' ? 'Thin' : 'Medium'} ink selected.`) }}><span className="stroke-preview" style={{ height: inkSize === 's' ? 2 : 3 }}/></button>
@@ -1040,11 +1105,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {['math','text'].includes(tool) && <div className="tool-instruction">Tap anywhere to write {tool === 'math' ? 'an equation' : 'text'}.</div>}
       {!shapeCount && ready && !['text','math'].includes(tool) && <div className="empty-board"><h1>Blank notebook</h1><p>Write with the pencil, type a note, or circle an area and ask for something.</p><div className="example-actions"><button onClick={example}>Try an example</button><button onClick={() => void worksheetExample()} disabled={busy}>Try a homework page</button></div></div>}
 
-      {selected && selectedRecord && editor && !showHistory && inspectorOpen && <ObjectInspector key={selected.id} editor={editor} object={selected} shape={selectedRecord} editing={editingShapeId === selected.id} busy={busy} execute={executeManual}
+      {selected && selectedRecord && editor && !showHistory && inspectorOpen && !images.draft && <ObjectInspector key={selected.id} editor={editor} object={selected} shape={selectedRecord} editing={editingShapeId === selected.id} busy={busy} execute={executeManual}
         onCollapse={() => setInspectorOpen(false)} onDeselect={() => { flushSourceEdits(); editor.setEditingShape(null); editor.selectNone(); contentSelectionRef.current = undefined; setSelectedContent('') }}
         onEdit={() => beginEditing(selected.id)} onNaturalSize={resetGraphSize} onCleanInk={formalizeSelection}
         onPlotInk={() => void runPrompt('Read the function in the selected handwriting and plot it nearby. Keep the original handwriting. If unclear, ask me.')}/>}
-      {selected && !showHistory && !inspectorOpen && <button className="reopen-inspector" onClick={() => setInspectorOpen(true)}><Settings2 size={15}/>Object controls</button>}
+      {selected && !showHistory && !inspectorOpen && !images.draft && <button className="reopen-inspector" onClick={() => setInspectorOpen(true)}><Settings2 size={15}/>Object controls</button>}
       {showHistory && <aside className="history-panel"><div className="inspector-heading"><span>Conversation</span><button aria-label="Close conversation" onClick={() => setShowHistory(false)}><X size={16}/></button></div><div className="messages">{messages.length ? messages.map(m => <div className={`message ${m.role}`} key={m.id}><span>{m.role === 'user' ? 'You' : 'Assistant'}</span><p>{m.text}</p></div>) : <p className="quiet">Your instructions and replies will appear here.</p>}</div></aside>}
 
       {menu === 'paper' && <div className="popover paper-popover"><div className="popover-heading">Page settings<button aria-label="Close page settings" onClick={()=>setMenu(null)}><X size={16}/></button></div><span className="field-caption">Layout</span><div className="segmented"><button className={settings.mode === 'infinite' ? 'selected' : ''} onClick={() => changeMode('infinite')}>Infinite</button><button className={settings.mode === 'page' ? 'selected' : ''} onClick={() => changeMode('page')}>A4 page</button></div><span className="field-caption">Paper</span><div className="paper-swatches">{(['plain','dots', 'grid', 'ruled'] as const).map(p => <button aria-label={`${p} paper`} title={p} key={p} className={`swatch-${p} ${settings.paper === p ? 'selected' : ''}`} onClick={() => setSettings(s => ({ ...s, paper: p }))}/>)}</div><div className="paper-colors">{['#ffffff', '#f8f9fa', '#fffde7', '#eef5ff'].map(c => <button key={c} aria-label={`Paper color ${c}`} style={{ background: c }} className={settings.backgroundColor === c ? 'selected' : ''} onClick={() => setSettings(s => ({ ...s, backgroundColor: c }))}/>)}</div><button className="menu-row" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/>Set image background</button><button className="menu-row" onClick={() => { importAsBackground.current = false; imageInput.current?.click() }}><FileImage size={17}/>Insert movable image</button><button className="menu-row" onClick={() => projectInput.current?.click()}><FileUp size={17}/>Open notebook file</button><button className="menu-row" onClick={() => { save(); setMenu(null) }}><Save size={17}/>Save editable notebook</button>{editor?.getCurrentPageShapes().some(s => s.meta.marginaliaBackground === true) && <button className="menu-row" onClick={removeBackground}><Trash2 size={17}/>Remove background</button>}</div>}
@@ -1054,7 +1119,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         onInsertPage={index => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index }, `page ${book.labels?.[index] ?? index + 1}`)) }}
         onInsertCrop={(index, box) => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index, box }, 'part of a textbook page')) }}
         onInsertCandidate={c => { const book = bookFor(c.bookId) ?? openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: c.pageIndex, candidate: c }, c.description)) }}/>}
-      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}</p>}<small>Voice uses your API credit. Five-minute session limit. Typed instructions work without a microphone.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
+      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}<br/>Images: {api.models.image || 'gpt-image-2.5-flare'} · Low quality</p>}<small>Voice uses API credit while connected. Pause microphone closes the voice connection; turning spoken replies off only silences the assistant. Sessions renew automatically while active, with a {api?.limits?.voiceMinutesLimit ?? 180}-minute local allowance. Voice pauses after 90 seconds of inactivity.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
 
       {api?.pairingRequired && !api.authorized && <form className="pair-banner" onSubmit={e=>{e.preventDefault();void pair()}}><div><b>Connect your iPad to AI</b><span>On your laptop, open Help & iPad connection to find the code.</span></div><input aria-label="Pairing code" placeholder="6-digit code" value={pairCode} onChange={e => setPairCode(e.target.value)} inputMode="numeric" maxLength={6}/><button disabled={pairing}>{pairing?'Connecting…':'Connect'}</button></form>}
       <div className="canvas-footer"><span className="canvas-status">{settings.mode === 'page' ? 'A4 portrait' : 'Infinite canvas'}<span className="footer-separator">·</span>{shapeCount} {shapeCount === 1 ? 'object' : 'objects'}</span><div className="history-buttons"><button aria-label="Undo" title="Undo" onClick={() => execute([{type:'undo'}])}><Undo2 size={17}/></button><button aria-label="Redo" title="Redo" onClick={() => execute([{type:'redo'}])}><Redo2 size={17}/></button></div><div className="zoom-controls"><button aria-label="Zoom out" onClick={() => editor?.zoomOut()}><Minus size={15}/></button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => editor?.zoomIn()}><Plus size={15}/></button><button aria-label="Fit canvas" title="Fit canvas" onClick={() => settings.mode === 'page' ? editor?.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 }) : editor?.zoomToFit()}><Maximize size={15}/></button></div></div>
@@ -1063,12 +1128,15 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         {library.storageWarning && <div className="error-banner" role="alert">{library.storageWarning}</div>}
         {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}><X size={15}/></button></div>}
         {toast && !error && <div className="toast" role="status">{toast}</div>}
-        {following && <div className="live-status">Move your pointer. Tap to place.</div>}
+      {following && <div className="live-status">Move your pointer. Tap to place.</div>}
+        {aiPaused && <div className="recovery-status" role="status"><LoaderCircle className="spin" size={18}/><span>{recovery?.message || commandProgress}<small>{recovery ? 'Microphone paused while I recover. You can still use the pencil.' : 'Magic pen paused. You can still use the pencil.'}</small></span><button aria-label="Cancel pending request" onClick={() => { commandAbort.current?.abort(); if (recovery) voiceRef.current?.disconnect() }}>Cancel</button></div>}
         {voiceMode ? <div className="voice-panel">
-          <div className="voice-transcript" aria-live="polite">{liveTranscript || (voiceStatus === 'connecting' ? 'Connecting… Allow microphone access if your browser asks.' : voiceStatus === 'thinking' ? 'Working…' : voiceStatus === 'speaking' ? 'Speaking…' : voiceStatus !== 'idle' ? 'Listening. Point anywhere and speak.' : 'Tap the microphone to start.')}</div>
-          <div className="voice-controls"><button className="compact-control" aria-label="Show typing bar" title="Show typing bar" onClick={()=>setVoiceMode(false)}><Keyboard size={18}/></button><button ref={voiceOrbRef} className={`voice-orb ${voiceStatus !== 'idle' ? 'connected' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} onClick={()=>void toggleVoice()}><span className="voice-orb-halo"/>{voiceStatus === 'connecting' ? <LoaderCircle className="spin" size={25}/> : voiceStatus !== 'idle' ? <Mic size={25}/> : <MicOff size={25}/>}</button><button className="compact-control" aria-label={spokenReplies ? 'Mute assistant voice' : 'Enable assistant voice'} onClick={()=>{setSpokenReplies(v=>!v);voiceRef.current?.setSpokenReplies(!spokenReplies)}}>{spokenReplies?<Volume2 size={18}/>:<VolumeX size={18}/>}</button></div>
-          <div className="voice-mode-options"><select aria-label="Voice action" value={dictationMode} onChange={e=>changeDictation(e.target.value as typeof dictationMode)}><option value="assistant">Assistant</option><option value="math">Dictate math</option><option value="text">Dictate text</option></select><button onClick={()=>setShowHistory(!showHistory)}>Conversation</button></div>
-        </div> : <><form className={`command-bar ${voiceStatus !== 'idle' ? 'voice-active' : ''}`} onSubmit={e => { e.preventDefault(); void runPrompt() }}><input ref={inputRef} aria-label="Ask Magic Whiteboard" value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Give an idea a little space…" disabled={busy}/><button type="submit" className="send-command" aria-label="Send instruction" disabled={busy || !prompt.trim()}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowUp size={18}/>}</button><span className="command-divider"/><button type="button" className={`voice-button ${voiceStatus !== 'idle' ? 'recording' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} onClick={()=>void toggleVoice()}>{voiceStatus === 'connecting' ? <LoaderCircle className="spin" size={19}/> : <Mic size={19}/>}</button></form>
+          <div className="voice-transcript" aria-live="polite">{recovery?.message || liveTranscript || (voiceStatus === 'connecting' ? 'Connecting… Allow microphone access if your browser asks.' : voiceStatus === 'thinking' ? 'Working…' : voiceStatus === 'speaking' ? 'Speaking…' : voiceStatus !== 'idle' ? 'Listening. Point anywhere and speak.' : 'Tap the microphone to start.')}</div>
+          <div className="voice-controls"><button className="compact-control" aria-label="Show typing bar" title="Show typing bar" onClick={()=>setVoiceMode(false)}><Keyboard size={18}/></button><button ref={voiceOrbRef} className={`voice-orb ${voiceStatus !== 'idle' ? 'connected' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} onClick={()=>void toggleVoice()}><span className="voice-orb-halo"/>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={25}/> : voiceStatus !== 'idle' ? <Mic size={25}/> : <MicOff size={25}/>}</button><button className="compact-control" aria-label={spokenReplies ? 'Turn off spoken replies' : 'Enable spoken replies'} onClick={()=>{setSpokenReplies(v=>!v);voiceRef.current?.setSpokenReplies(!spokenReplies)}}>{spokenReplies?<Volume2 size={18}/>:<VolumeX size={18}/>}</button></div>
+          <button className="microphone-pause" onClick={() => void toggleVoice()}>{voiceStatus === 'idle' ? 'Resume microphone' : 'Pause microphone'}</button>
+          <div className="voice-output-label">Spoken replies {spokenReplies ? 'on' : 'off'} · microphone {recovery ? 'paused for recovery' : voiceStatus === 'idle' ? 'paused' : 'on'}</div>
+          <div className="voice-mode-options"><select disabled={!!recovery} aria-label="Voice action" value={dictationMode} onChange={e=>changeDictation(e.target.value as typeof dictationMode)}><option value="assistant">Assistant</option><option value="math">Dictate math</option><option value="text">Dictate text</option></select><button onClick={()=>setShowHistory(!showHistory)}>Conversation</button></div>
+        </div> : <><form className={`command-bar ${voiceStatus !== 'idle' ? 'voice-active' : ''}`} onSubmit={e => { e.preventDefault(); void runPrompt() }}><input ref={inputRef} aria-label="Ask Magic Whiteboard" value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Give an idea a little space…" disabled={busy || !!recovery || voiceStatus === 'connecting'}/><button type="submit" className="send-command" aria-label="Send instruction" disabled={busy || !!recovery || voiceStatus === 'connecting' || !prompt.trim()}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowUp size={18}/>}</button><span className="command-divider"/><button type="button" className={`voice-button ${voiceStatus !== 'idle' ? 'recording' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} onClick={()=>void toggleVoice()}>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={19}/> : <Mic size={19}/>}</button></form>
         <div className="command-caption"><span>{selectedContent ? `Selected: ${selectedContent.slice(0,35)}` : focus ? <><Scan size={12}/>{focus.kind === 'region' ? 'Region selected' : 'Point selected'}<button onClick={()=>setFocus(null)}>clear</button></> : 'Circle an area, then speak or type.'}</span><button onClick={()=>setShowHistory(!showHistory)}>Conversation{messages.length?` (${messages.length})`:''}</button></div></>}
       </div>
     </main>

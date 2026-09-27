@@ -377,7 +377,9 @@ export class BoardController {
         if (next.type === 'image' && operation.crop !== undefined) {
           const before = next.props.crop ?? { x: 0, y: 0, w: 1, h: 1 }, after = validateCrop(operation.crop)
           const fullWidth = next.props.w / before.w, fullHeight = next.props.h / before.h
-          const offsetX = (after.x - before.x) * fullWidth, offsetY = (after.y - before.y) * fullHeight
+          const scale = Array.isArray(next.props.excalidrawScale) ? next.props.excalidrawScale : [1, 1]
+          const offsetX = (scale[0] < 0 ? before.x + before.w - after.x - after.w : after.x - before.x) * fullWidth
+          const offsetY = (scale[1] < 0 ? before.y + before.h - after.y - after.h : after.y - before.y) * fullHeight
           next.x += Math.cos(next.rotation) * offsetX - Math.sin(next.rotation) * offsetY
           next.y += Math.sin(next.rotation) * offsetX + Math.cos(next.rotation) * offsetY
           next.props.w = fullWidth * after.w; next.props.h = fullHeight * after.h

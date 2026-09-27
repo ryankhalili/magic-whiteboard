@@ -42,10 +42,11 @@ export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | '
 /** A rendered raster for create_image; src is a data:image/(png|jpeg) base64 URL. */
 export type BoardImage = { src: string; w: number; h: number; mimeType: 'image/png' | 'image/jpeg'; name: string }
 export type BoardOperation = {
-  type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo'
+  type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'propose_image' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo'
     | 'insert_library' | 'library_action' | 'create_image';
   target?: string; ids?: string[]; placement?: 'focus' | 'pointer' | 'auto';
   expression?: string; latex?: string; text?: string; title?: string;
+  prompt?: string;
   geometry?: GeometryKind; vertices?: Point[]; angles?: number[]; sides?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
   showGrid?: boolean; showAxes?: boolean; crop?: ImageCrop;

@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { Box, type Editor, type TLShapeId } from '../canvas/editor'
 import { colorValue, getStrokeWidth, strokePoints } from '../canvas/geometry'
 import { inkOutlinePath } from '../canvas/ink'
+import { isDisconnectedInk } from '../canvas/disconnectedInk'
+import { nativeInkSvgPath } from '../canvas/nativeInkRenderer'
 import { legacyText, shapeOpacity } from '../canvas/content'
 import { ImageGraphic } from '../canvas/ImageGraphic'
 import type { ImageExportOptions, ImageExportResult, TLShape } from '../canvas/types'
@@ -18,6 +20,7 @@ async function graphic(editor: Editor, shape: TLShape): Promise<ReactNode> {
     return <ImageGraphic src={asset.props.src} props={shape.props}/>
   }
   if (shape.type === 'draw') {
+    if (!isDisconnectedInk(shape)) return <path fill={colorValue(shape.props.color)} d={nativeInkSvgPath(shape.props)}/>
     const segments = shape.props.segments?.length ? shape.props.segments.map(segment => segment.points) : [strokePoints(shape.props)]
     return <g fill={colorValue(shape.props.color)}>
       {segments.map((points, index) => <path key={index} d={inkOutlinePath(points, getStrokeWidth(shape.props))}/>) }

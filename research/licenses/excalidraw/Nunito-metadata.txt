@@ -1,0 +1,12 @@
+Excalidraw 0.18.1 bundled Nunito font metadata
+
+Source: node_modules/@excalidraw/excalidraw/dist/prod/fonts/Nunito/*.woff2
+
+Copyright:
+Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito)
+
+Version:
+Version 3.602
+
+License URL:
+https://scripts.sil.org/OFL

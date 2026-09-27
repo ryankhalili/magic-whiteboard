@@ -10,7 +10,7 @@ $previewUrl = $null
 for ($attempt = 0; $attempt -lt 40; $attempt++) {
   if ($previewProcess.HasExited) { throw ('Tunnel exited. Inspect ' + $previewLog) }
   if (Test-Path -LiteralPath $previewLog) {
-    $previewText = Get-Content -LiteralPath $previewLog -Raw
+    $previewText = [string](Get-Content -LiteralPath $previewLog -Raw)
     $previewMatch = [regex]::Match($previewText, 'https://[a-z0-9]+(?:-[a-z0-9]+)*\.trycloudflare\.com')
     if ($previewMatch.Success) { $previewUrl = [Uri]$previewMatch.Value; break }
   }
