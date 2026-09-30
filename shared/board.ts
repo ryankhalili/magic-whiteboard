@@ -57,7 +57,7 @@ export type BoardOperation = {
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
   showGrid?: boolean; showAxes?: boolean; crop?: ImageCrop;
   color?: string; xMin?: number; xMax?: number; yMin?: number; yMax?: number;
-  axisMode?: AxisMode; layer?: 'front' | 'back';
+  axisMode?: AxisMode; fitY?: boolean; layer?: 'front' | 'back';
   bounds?: Bounds; rotation?: number; rotateBy?: number; scale?: number;
   dx?: number; dy?: number; fitFocus?: boolean; fontSize?: number;
   followPointer?: boolean;

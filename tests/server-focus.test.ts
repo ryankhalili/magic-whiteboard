@@ -121,6 +121,13 @@ describe('assistant instructions for spatial intent', () => {
     expect(BOARD_INSTRUCTIONS).toContain('Never use uniform scale to fix x/y unit distortion.')
     expect(BOARD_INSTRUCTIONS).toContain("'Make this rectangle/graph wider' changes physical width instead")
   })
+  it('exposes a fit-curve command to voice and text without requiring guessed Y bounds', () => {
+    expect(commandSchema.parse({ operations: [{ type: 'update_object', target: 'shape:plot', fitY: true }], message: '' }).operations[0].fitY).toBe(true)
+    expect(commandSchema.safeParse({ operations: [{ type: 'update_object', fitY: 'yes' }], message: '' }).success).toBe(false)
+    expect((boardTools[0].parameters as any).properties.operations.items.properties.fitY.type).toBe('boolean')
+    expect(BOARD_INSTRUCTIONS).toContain('show the bottom/vertex')
+    expect(BOARD_INSTRUCTIONS).toContain('fitY:true')
+  })
   it('keeps an explicit equal-unit graph creation separate from a selected equation', () => {
     const parsed = requestSchema.parse({
       text: 'Plot y = x here with equal units.',

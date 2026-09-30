@@ -1337,7 +1337,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (selected?.kind !== 'plot') return
     const size = getPlacementBounds({ type: 'create_plot', placement: 'auto' }, { ...getContext(), focusMode: 'reference' }, 'plot')
     const bounds = { x: selected.bounds.x + (selected.bounds.w - size.w) / 2, y: selected.bounds.y + (selected.bounds.h - size.h) / 2, w: size.w, h: size.h }
-    executeManual([{ type: 'update_object', target: selected.id, bounds, axisMode: 'equal' }])
+    executeManual([{ type: 'update_object', target: selected.id, bounds }])
   }
 
   const origin = pageToLocal({ x: 0, y: 0 })

@@ -218,6 +218,7 @@ function libraryObject(meta: Record<string, unknown>, height: number): { kind: s
 
 function propsFromOperation(operation: BoardOperation, original: MagicShapeProps): MagicShapeProps {
   const p = { ...original }
+  if (operation.fitY && p.kind !== 'plot') throw new Error('Fit curve applies to graphs only.')
   for (const key of stringProps) {
     const value = operation[key]
     if (value !== undefined) {
@@ -253,9 +254,10 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
   }
   if (p.kind === 'plot') {
     p.expression = validateExpression(p.expression).expression
+    if (operation.fitY && validateExpression(p.expression).kind === 'implicit') throw new Error('Choose explicit X and Y limits for an implicit equation; Fit curve supports y = f(x).')
     validateDomain(p.xMin, p.xMax)
     const changedDomain = operation.expression !== undefined || operation.xMin !== undefined || operation.xMax !== undefined
-    if (changedDomain && operation.yMin === undefined && operation.yMax === undefined) [p.yMin, p.yMax] = autoYRange(p.expression, p.xMin, p.xMax)
+    if ((changedDomain || operation.fitY) && operation.yMin === undefined && operation.yMax === undefined) [p.yMin, p.yMax] = autoYRange(p.expression, p.xMin, p.xMax)
     validateDomain(p.xMin, p.xMax, p.yMin, p.yMax)
   }
   return p
@@ -341,6 +343,7 @@ export class BoardController {
         continue
       }
       if (operation.axisMode !== undefined && !['equal', 'auto'].includes(operation.axisMode)) throw new Error('Axis mode must be equal or auto.')
+      if (operation.fitY !== undefined && typeof operation.fitY !== 'boolean') throw new Error('Fit Y must be true or false.')
       if (operation.opacity !== undefined) validateOpacity(operation.opacity)
       if (operation.layer !== undefined && !['front', 'back'].includes(operation.layer)) throw new Error('Choose front or back for the object layer.')
       if (operation.crop !== undefined) validateCrop(operation.crop)
@@ -354,7 +357,7 @@ export class BoardController {
         const shape: TLCreateShapePartial<MagicShape> = { id, type: 'magic', opacity: operation.opacity ?? 1,
           x: b.x + b.w / 2 - Math.cos(rotation) * b.w / 2 + Math.sin(rotation) * b.h / 2,
           y: b.y + b.h / 2 - Math.sin(rotation) * b.w / 2 - Math.cos(rotation) * b.h / 2, rotation, props,
-          meta: { ...(kind === 'plot' ? { axisMode: operation.axisMode ?? 'equal' } : {}), ...(region ? { literalBounds: { ...region } } : {}) } }
+          meta: { ...(kind === 'plot' ? { axisMode: operation.fitY ? 'auto' : operation.axisMode ?? 'auto' } : {}), ...(region ? { literalBounds: { ...region } } : {}) } }
         requireInside(region, shapePageBounds(this.editor, shape as MagicShape))
         creates.set(id, shape)
         virtual.set(id, { ...shape, props, isLocked: false, parentId: this.editor.getCurrentPageId() } as MagicShape)
@@ -394,6 +397,7 @@ export class BoardController {
         }
         if (operation.type !== 'update_object' && operation.type !== 'edit_content' && operation.type !== 'transform_object') throw new Error('Undo or redo must be a separate action.')
         if (shape.type !== 'magic' && operation.type === 'edit_content') throw new Error('Character editing is supported for equations, graphs and text.')
+        if (shape.type !== 'magic' && operation.fitY) throw new Error('Fit curve applies to graphs only.')
         if (operation.crop !== undefined && shape.type !== 'image') throw new Error('Cropping applies to images only.')
         const next = { ...shape, props: { ...shape.props }, meta: { ...shape.meta } } as TLShape
         if (operation.opacity !== undefined) next.opacity = operation.opacity
@@ -416,10 +420,19 @@ export class BoardController {
         if (region) next.meta.literalBounds = { ...region }
         else delete next.meta.literalBounds
         if (next.type === 'magic') {
+          if (next.props.kind === 'plot' && operation.axisMode === undefined && ['xMin', 'xMax', 'yMin', 'yMax'].some(key => operation[key as keyof BoardOperation] !== undefined)) next.meta.axisMode = 'auto'
+          if (next.props.kind === 'plot' && (operation.yMin !== undefined || operation.yMax !== undefined) && operation.axisMode !== 'equal') {
+            // A one-sided limit edit must preserve the OTHER visible limit, not
+            // the hidden stored range of an old equal-unit plot.
+            const range = getPlotLayout(next.props, getAxisMode(shape.meta)).range
+            next.props.yMin = range.yMin; next.props.yMax = range.yMax
+            next.meta.axisMode = 'auto'
+          }
           if (operation.axisMode !== undefined) {
             if (next.props.kind !== 'plot') throw new Error('Axis mode applies to graphs only.')
             next.meta.axisMode = operation.axisMode
           }
+          if (operation.fitY) next.meta.axisMode = 'auto'
           if (operation.type === 'edit_content') {
             const expected = next.props.kind === 'math' ? 'latex' : next.props.kind === 'plot' ? 'expression' : 'text'
             if (operation.field !== expected) throw new Error(`This object uses its ${expected} field.`)
