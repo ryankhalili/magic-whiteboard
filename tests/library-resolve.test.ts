@@ -97,7 +97,8 @@ describe('matchLibrary', () => {
     const sent = JSON.parse(String(init.body))
     expect(sent.task).toBe('library')
     expect(sent.query).toBe('problem 3.2')
-    expect(sent.context).toBe(LIBRARY_CONTEXT)
+    expect(sent.context).toContain(LIBRARY_CONTEXT)
+    expect(sent.context).toContain('Book structure (source data)')
     expect(sent.items.every((item: { text: string }) => item.text.length <= 300)).toBe(true)
   })
 
@@ -129,7 +130,8 @@ describe('matchLibrary', () => {
     const there = await first(at(5))
     expect(there.confident).toBe(false)
     expect(there.ranked[0].pageIndex).toBe(5)
-    expect(sentBody(1).context).toBe(`${LIBRARY_CONTEXT} The teacher is currently working in chapter 3, on page 14. When the same number is in several chapters, the teacher means the one in chapter 3.`)
+    expect(sentBody(1).context).toContain('The teacher is currently working in chapter 3, on page 14. When the same number is in several chapters, the teacher means the one in chapter 3.')
+    expect(sentBody(1).context.length).toBeLessThanOrEqual(2000)
     expect((await first(at(3))).ranked[0].pageIndex).toBe(3)
     // near another book, or off the end of this one, changes nothing
     expect((await first({ bookId: 'sha256:other', pageIndex: 5 })).ranked[0].pageIndex).toBe(3)
@@ -148,9 +150,9 @@ describe('matchLibrary', () => {
   })
 
   it('tells the teacher when an item or topic is missing', async () => {
-    expect(await match('example 9.9')).toEqual({ error: 'Example 9.9 is not in Calculus Volume 1.' })
-    expect(await match('problem 9.9')).toEqual({ error: 'Problem 9.9 is not in Calculus Volume 1.' })
-    expect(await match('zebra stripes from the book')).toEqual({ error: 'Nothing in Calculus Volume 1 matches that.' })
+    expect(await match('example 9.9')).toEqual({ error: 'Example 9.9 was not found in the local index for Calculus Volume 1. Try its name or the printed page number.' })
+    expect(await match('problem 9.9')).toEqual({ error: 'Problem 9.9 was not found in the local index for Calculus Volume 1. Try its name or the printed page number.' })
+    expect(await match('zebra stripes from the book')).toEqual({ error: 'No matching passage was found in Calculus Volume 1. Try a distinctive phrase, its chapter, or a page number.' })
   })
 
   it('finds topics through the page text', async () => {

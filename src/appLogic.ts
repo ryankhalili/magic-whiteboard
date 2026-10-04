@@ -103,7 +103,7 @@ type ShelfBook = { title?: string; fileName?: string; pageCount: number; labels?
 export type PanelPage = { label: string | null; pageIndex: number }
 /** book titles and page counts only: the model never sees book text, and book ids tell it nothing */
 export type ModelLibrary = {
-  openBook: { title: string } | null
+  openBook: { title: string; guide?: string } | null
   books: { title: string; pages: number }[]
   pendingImport?: { name: string; pages: number } | null
   highlights?: string[]

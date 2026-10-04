@@ -39,6 +39,8 @@ describe('spoken mathematical draft rendering', () => {
     ['plus three', '+3'],
     ['equals zero', '= 0'],
     ['this now equals negative cosine of x bar from pi to 2pi', String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}`],
+    ['This now equals negative cosine of x, bar from pi to 2 pi.', String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}`],
+    ['integral of sine x, from two to five, dx', String.raw`\int_{2}^{5} \sin x\,\mathrm{d}x`],
     ['it is equal to negative cosine of x bar from pi to two pi', String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}`],
     ['now equals negative cosine of x bar from pi to two pi', String.raw`= \left.-\cos x\right|_{\pi}^{2 \pi}`],
     ['y equals negative cosine of x bar from zero to pi', String.raw`y = \left.-\cos x\right|_{0}^{\pi}`],
@@ -81,7 +83,7 @@ describe('spoken mathematical draft rendering', () => {
   it.each(['delete x', 'move the integral', 'solve x equals two', 'plot y equals x', 'undo', 'rotate x', 'actually replace two with three',
     'make it plus three instead', 'integrate x', 'what is sine x', 'x plus some number', 'x over there', 'one two',
     'integral from two five of x', 'x plus times two', 'x )', 'sine of pi over two', 'square root of x over y',
-    'this now equals what', 'move this now equals two', 'bar from pi to two pi', 'x bar pi to two pi',
+    'this now equals what', 'move this now equals two', 'bar from pi to two pi', 'x bar pi to two pi', '2,5', 'x, y',
     'x bar from pi to two pi plus one', 'x bar from pi delete x', String.raw`\href{https://example.com}{x}`, 'x; alert(1)', '', 'the'])('rejects unsupported or command speech: %s', transcript => {
     expect(preview(transcript)).toBeNull()
   })

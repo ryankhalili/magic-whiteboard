@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { visualizationSchema } from './visualization'
 
 const number = z.number().finite().min(-1_000_000).max(1_000_000)
 const bounds = z.object({ x: number, y: number, w: z.number().positive().max(100_000), h: z.number().positive().max(100_000) })
@@ -33,6 +34,7 @@ export const operationSchema = z.object({
   crop: crop.describe('Images only: reversible viewport over source image, normalized x,y,width,height. x+w and y+h must not exceed1. Full image is {x:0,y:0,w:1,h:1}.').optional(),
   color: z.string().max(40).optional(), xMin: number.optional(), xMax: number.optional(),
   yMin: number.optional(), yMax: number.optional(),
+  visualization: visualizationSchema.describe('On create_plot or update_object: surface plots z=expression(x,y); revolution rotates radius=expression(x) around axis; phase plots dx/dt=expression, dy/dt=secondaryExpression. Provide X/Y domains. These are sampled graphics, not arbitrary PDE solvers.').optional(),
   fitY: z.boolean().describe('Plots only: fit the Y window to y=f(x) over its current or requested X domain. Use update_object with fitY:true for fit curve, show the bottom/vertex, or normalize the window; no physical resize. Switches to independent axes. Explicit yMin/yMax take precedence. For implicit equations choose explicit axis ranges instead.').optional(),
   axisMode: z.enum(['equal', 'auto']).describe('For plots: equal makes one x unit and one y unit the same physical size (square units, even scaling, undistorted graph); auto fits axes independently. On a fresh graph request, include this property on create_plot; it does not turn creation into an edit. Use update_object only when changing an existing plot, never uniform object scale. Omit for new plots unless the user explicitly requests an axis mode; the board supplies its default.').optional(),
   bounds: operationBounds.describe('Physical canvas rectangle in BOARD PIXELS, never normalized 0..1 vertices or mathematical graph coordinates. Example {x:100,y:100,w:440,h:320}. Width and height must each be 16..10000. Use for a user-requested dimension/coordinate change or spatial arrangement such as side by side. For an explicit arrangement give each object distinct, nonoverlapping bounds with readable dimensions. OMIT for ordinary creation near a reference cue; use placement:focus and let the board choose natural dimensions. Do not copy bounds from a reference gesture. Literal focus mode still enforces the region.').optional(),

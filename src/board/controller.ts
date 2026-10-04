@@ -2,6 +2,7 @@ import { createAssetId, createShapeId, type AssetRecord, type Editor, type TLIma
 import type { BoardContext, BoardImage, BoardObject, BoardOperation, BoardResult, Bounds, PlacementOption } from '../../shared/board'
 import { DEFAULT_MAGIC_PROPS, type MagicShape, type MagicShapeProps } from './MagicShape'
 import { autoYRange, validateDomain, validateExpression } from './expression'
+import { validateScientific } from '../math/scientific'
 import { applyContentEdit, applyLatexContentEdit } from './contentEdit'
 import { getAxisMode, getPlotLayout } from './plotLayout'
 import { containsBounds, shapePageBounds } from './spatial'
@@ -218,6 +219,14 @@ function libraryObject(meta: Record<string, unknown>, height: number): { kind: s
 
 function propsFromOperation(operation: BoardOperation, original: MagicShapeProps): MagicShapeProps {
   const p = { ...original }
+  if (operation.visualization !== undefined) {
+    if (p.kind !== 'plot') throw new Error('Scientific visualization settings apply to plots only.')
+    p.visualization = { ...(original.visualization?.type === operation.visualization.type ? original.visualization : {}), ...operation.visualization }
+    if (!original.visualization) {
+      if (operation.strokeWidth === undefined) p.strokeWidth = operation.visualization.type === 'phase' ? 1.8 : .6
+      if (operation.fontSize === undefined) p.fontSize = 16
+    }
+  }
   if (operation.fitY && p.kind !== 'plot') throw new Error('Fit curve applies to graphs only.')
   for (const key of stringProps) {
     const value = operation[key]
@@ -253,6 +262,13 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
     p.sides = geometry.geometry === 'polygon' ? geometry.vertices?.length : undefined
   }
   if (p.kind === 'plot') {
+    if (p.visualization) {
+      const checked = validateScientific(p.expression, p.visualization)
+      p.expression = checked.expression; p.visualization = checked.spec
+      if (operation.fitY) throw new Error('Set the domain bounds directly for a scientific visualization.')
+      validateDomain(p.xMin, p.xMax, p.yMin, p.yMax)
+      return p
+    }
     p.expression = validateExpression(p.expression).expression
     if (operation.fitY && validateExpression(p.expression).kind === 'implicit') throw new Error('Choose explicit X and Y limits for an implicit equation; Fit curve supports y = f(x).')
     validateDomain(p.xMin, p.xMax)
@@ -286,9 +302,10 @@ export class BoardController {
         object.color = shape.props.color; object.title = shape.props.title; object.fontSize = shape.props.fontSize
         for (const key of ['fill', 'fillOpacity', 'strokeWidth', 'showGrid', 'showAxes', 'vertices', 'angles', 'sides'] as const) Object.assign(object, { [key]: shape.props[key] })
         if (shape.props.kind === 'plot') {
+          object.visualization = shape.props.visualization
           for (const key of ['expression', 'xMin', 'xMax', 'yMin', 'yMax'] as const) Object.assign(object, { [key]: shape.props[key] })
           object.axisMode = getAxisMode(shape.meta)
-          object.displayedRange = getPlotLayout(shape.props, object.axisMode).range
+          object.displayedRange = getPlotLayout(shape.props, shape.props.visualization ? 'auto' : object.axisMode).range
         } else if (shape.props.kind === 'math') object.latex = shape.props.latex
         else if (shape.props.kind === 'text') object.text = shape.props.text
         else { object.geometry = shape.props.geometry; object.text = shape.props.text }
@@ -398,6 +415,7 @@ export class BoardController {
         if (operation.type !== 'update_object' && operation.type !== 'edit_content' && operation.type !== 'transform_object') throw new Error('Undo or redo must be a separate action.')
         if (shape.type !== 'magic' && operation.type === 'edit_content') throw new Error('Character editing is supported for equations, graphs and text.')
         if (shape.type !== 'magic' && operation.fitY) throw new Error('Fit curve applies to graphs only.')
+        if (shape.type !== 'magic' && operation.visualization !== undefined) throw new Error('Scientific visualization settings apply to plots only.')
         if (operation.crop !== undefined && shape.type !== 'image') throw new Error('Cropping applies to images only.')
         const next = { ...shape, props: { ...shape.props }, meta: { ...shape.meta } } as TLShape
         if (operation.opacity !== undefined) next.opacity = operation.opacity

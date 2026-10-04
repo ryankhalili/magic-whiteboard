@@ -41,7 +41,7 @@ export function normalizeNotebookSettings(value: unknown): AppSettings {
   const input = object(value) ? value : {}
   const settings: AppSettings = {
     name: typeof input.name === 'string' ? input.name.slice(0, 120) : DEFAULT_SETTINGS.name,
-    mode: input.mode === 'page' ? 'page' : 'infinite',
+    mode: input.mode === 'page' ? 'page' : input.mode === 'document' ? 'document' : 'infinite',
     focusMode: input.focusMode === 'literal' ? 'literal' : 'reference',
     paper: ['dots', 'grid', 'plain', 'ruled'].includes(String(input.paper)) ? input.paper as AppSettings['paper'] : DEFAULT_SETTINGS.paper,
     backgroundColor: typeof input.backgroundColor === 'string' && /^#[\da-f]{6}$/i.test(input.backgroundColor)

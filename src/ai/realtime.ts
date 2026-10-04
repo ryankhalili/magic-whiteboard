@@ -29,6 +29,9 @@ export type RealtimeOptions = {
   onAudioLevel?: (level: number) => void;
   onContentPreview?: (preview: ContentPreview | null) => void;
   spokenReplies?: boolean;
+  /** Connect silently for hold-to-talk. Recovery never overrides this choice. */
+  initiallyEnabled?: boolean;
+  onMicrophoneEnabled?: (enabled: boolean) => void;
 }
 type WireEvent = { type: string; [key: string]: any }
 type VoiceTurn = {
@@ -116,6 +119,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
   let responseActive = false
   let pendingResponse = false
   let spokenReplies = options.spokenReplies ?? true
+  let microphoneEnabled = options.initiallyEnabled ?? true
   let assistantText = ''
   let assistantAsked = false
   let activeResponseId: string | null = null
@@ -211,7 +215,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
   }
   function setRecovery(state: VoiceRecoveryState) {
     recoveryState = state
-    for (const track of microphone?.getAudioTracks() ?? []) track.enabled = !state
+    syncMicrophone()
     if (audio) audio.muted = !spokenReplies || !!state
     if (state) { clearTimeout(idleTimer); clearTimeout(responseTimer); speechActive = false; clearPreview(); options.onAudioLevel?.(0) }
     send({ type: 'input_audio_buffer.clear' })
@@ -300,6 +304,19 @@ export function createRealtimeClient(options: RealtimeOptions) {
     }
     snapshot.contextBudget.omittedObjectCount = objects.length - snapshot.objects.length
     return snapshot
+  }
+  function syncMicrophone() {
+    const enabled = microphoneEnabled && !recoveryState
+    for (const track of microphone?.getAudioTracks() ?? []) track.enabled = enabled
+    options.onMicrophoneEnabled?.(enabled && !!microphone)
+    if (!enabled) options.onAudioLevel?.(0)
+  }
+  function setMicrophoneEnabled(enabled: boolean) {
+    microphoneEnabled = enabled
+    syncMicrophone()
+    // Disabled tracks transmit silence, allowing server VAD to finish the captured
+    // phrase. Clearing/committing here races the server and can lose its final word.
+    if (enabled && channel?.readyState === 'open') { resetIdle(); sendContext(true) }
   }
   function sendContext(force = false) {
     if (channel?.readyState !== 'open') return false
@@ -1086,10 +1103,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
     reconnectTimes = []; contextRenewals = 0; setStatus('connecting')
     window.addEventListener?.('pagehide', stopOnPageHide)
     try {
-      meter = createAudioMeter(options.onAudioLevel)
+      meter = createAudioMeter(options.onAudioLevel ? level => options.onAudioLevel?.(microphoneEnabled && !recoveryState ? level : 0) : undefined)
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
       if (thisGeneration !== generation) { stream.getTracks().forEach(track => track.stop()); return }
-      microphone = stream; meter.attach(stream)
+      microphone = stream; syncMicrophone(); meter.attach(stream)
       await openTransport()
       if (thisGeneration !== generation) return
       setStatus('listening'); resetIdle()
@@ -1137,7 +1154,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
     if (audio) audio.muted = !enabled || !!recoveryState
     send({ type: 'session.update', session: { type: 'realtime', output_modalities: enabled ? ['audio'] : ['text'] } })
   }
-  return { connect, disconnect, sendText, updateContext, setSpokenReplies, isConnected: () => channel?.readyState === 'open',
+  return { connect, disconnect, sendText, updateContext, setSpokenReplies, setMicrophoneEnabled,
+    isMicrophoneEnabled: () => microphoneEnabled && !recoveryState && !!microphone,
+    isWorking: () => speechActive || responseActive || finishingResponse || pendingResponse || textDictation.isPending() || !!recoveryState,
+    isConnected: () => channel?.readyState === 'open',
     getDiagnostics: () => ({ generation, recovering: recoveryState?.phase ?? null, executions: executions.size, responses: responseOwners.size, streams: argumentStreams.size, streamCharacters: [...argumentStreams.values()].reduce((sum, stream) => sum + stream.text.length, 0), transcripts: transcripts.size, rememberedCalls: completedCalls.size, rememberedResponses: closedResponses.size, inputTurns: inputTurns.size }) }
 }
 

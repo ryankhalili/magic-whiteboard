@@ -1,5 +1,6 @@
 import { validateLatex } from './latex'
 import { validateExpression } from './expression'
+import { validateScientific } from '../math/scientific'
 import type { MagicShape, MagicShapeProps } from './MagicShape'
 import type { Editor } from '../canvas/editor'
 
@@ -24,7 +25,7 @@ export function sourceField(shape: MagicShape): 'latex' | 'expression' | 'text' 
 export function sourceUpdate(shape: MagicShape, value: string): Partial<MagicShapeProps> {
   if (value.length > 6000) throw new Error('Keep this object under 6,000 characters.')
   const field = sourceField(shape)
-  if (field === 'expression') return { expression: validateExpression(value).expression }
+  if (field === 'expression') return { expression: shape.props.visualization ? validateScientific(value, shape.props.visualization).expression : validateExpression(value).expression }
   if (field === 'latex') {
     try { validateLatex(value) }
     catch (error) { throw new Error(`Finish the LaTeX expression to update the board. ${error instanceof Error ? error.message : ''} The last valid equation is still visible.`) }

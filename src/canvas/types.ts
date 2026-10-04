@@ -1,4 +1,5 @@
 import type { Bounds, Point, GeometryKind, ImageCrop } from '../../shared/board'
+import type { VisualizationSpec } from '../../shared/visualization'
 
 export type TLShapeId = string
 export type TLAssetId = string
@@ -6,6 +7,7 @@ export type MagicShapeProps = {
   w: number; h: number; kind: 'plot' | 'math' | 'text' | 'geometry'; expression: string; latex: string;
   text: string; title: string; color: string; xMin: number; xMax: number; yMin: number; yMax: number;
   geometry: GeometryKind; fontSize: number;
+  visualization?: VisualizationSpec;
   vertices?: Point[]; angles?: number[]; sides?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; showGrid?: boolean; showAxes?: boolean
 }

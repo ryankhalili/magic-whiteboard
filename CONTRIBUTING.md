@@ -1,6 +1,6 @@
-# Contributing to Chalkpal
+# Contributing to MagiBoard
 
-This is a private, proprietary application. Coordinate changes with the repository owner and preserve the original-code license plus all third-party notices.
+This repository contains proprietary application code, even when the repository is publicly visible. Coordinate changes with the repository owner and preserve the original-code license plus all third-party notices.
 
 ## Branches and review
 
@@ -50,6 +50,6 @@ Use `OPENAI_API_KEY` or the ignored local `api.txt` file for the server. Never c
 
 The application defaults to `gpt-6-luna` with low reasoning effort for typed commands, `gpt-realtime-mini` for voice, and `gpt-4o-mini-transcribe` for visible input transcription. Luna does not replace the Realtime audio model. Server environment variables can override the first two; Luna-specific reasoning settings are applied only to that model. Check the existing API allowance before running paid integration tests; unit tests should not require network access or spend credits. Local request/minute limits are not a guaranteed dollar cap.
 
-Codex's ChatGPT sign-in can provide subscription access for development, while API-key access is usage-based. Chalkpal's general OpenAI API requests still use its Platform key and separate API billing. See [official Codex authentication documentation](https://developers.openai.com/codex/auth/). Do not reuse Codex login tokens as application API credentials.
+Codex's ChatGPT sign-in can provide subscription access for development, while API-key access is usage-based. MagiBoard's general OpenAI API requests still use its Platform key and separate API billing. See [official Codex authentication documentation](https://developers.openai.com/codex/auth/). Do not reuse Codex login tokens as application API credentials.
 
 There is no autonomous background agent in the product. Voice processing currently follows recognized speech turns and can stream model output before committing a complete edit. True per-word math compilation while the user continues speaking remains future work. Keep these distinctions in documentation, demos, and release notes.

@@ -3,13 +3,14 @@ import { bodyFontSize, detectAnchors, type OpenItem } from './anchors'
 import { assignPrintedLabels } from './labels'
 import { closePdf, hasPdfHeader, openPdf, pageLines } from './pdfjs'
 import { thumbFromPage } from './render'
+import { buildBookGuide } from './guide'
 import { bookIdFor, getAnchors, getBook, getBookBytes, putAnchors, putBookBytes, putPages, putThumb, removeAnchors, removeBook, replaceBook, requestPersistentStorage, saveBook, touchBook } from './store'
 import type { Anchor, BookRecord, ImportProgress, PageRecord } from './types'
 
 export const MAX_BOOK_BYTES = 400 * 1024 * 1024
 const BATCH = 25
 /** bumped whenever finding items changes, so books indexed before are read again */
-export const INDEX_VERSION = 3
+export const INDEX_VERSION = 4
 
 /** True when a book never finished indexing or was indexed by an older item finder. */
 export function needsReindex(book: BookRecord): boolean {
@@ -211,6 +212,7 @@ async function readNewBook(id: string, bytes: Uint8Array, file: File, existing: 
     await writeBook(read, report)
     const cover = await coverOf(id, doc, book.cover)
     const done: BookRecord = { ...book, labels: read.labels, outline: read.outline, cover, indexed: true, textPages: read.textPages, indexVersion: INDEX_VERSION }
+    done.guide = buildBookGuide(done, read.pages, read.anchors)
     await putBookBytes(id, bytes)
     await finish(done)
     report('saving', count, count)
@@ -257,6 +259,7 @@ async function reindex(bookId: string, report: Report): Promise<BookRecord> {
     await writeBook(read, report)
     const cover = book.cover ?? await coverOf(bookId, doc, null)
     const done: BookRecord = { ...base, cover, indexed: true, indexVersion: INDEX_VERSION }
+    done.guide = buildBookGuide(done, read.pages, read.anchors)
     await finish(done)
     report('saving', count, count)
     return done
