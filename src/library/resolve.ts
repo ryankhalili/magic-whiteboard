@@ -2,7 +2,8 @@ import { needsReindex } from './indexer'
 import { findPageIndexes } from './labels'
 import { rankItems } from './rank'
 import { renderAnchor, renderPage } from './render'
-import { buildCandidates, certainItem, isHerePage, kindName, pageCandidate, pageSections, pickBook, subjectBooks, titleMatch } from './search'
+import { buildCandidates, certainItem, certainTopic, isHerePage, kindName, pageCandidate, pageSections, pickBook, subjectBooks, titleMatch } from './search'
+import { getBookGuideContext, guidePageScopes } from './guide'
 import { getAnchors, getPage, getPages, listBooks } from './store'
 import type { Anchor, BookRecord, Candidate, LibraryMatch, LibraryQuery, PageRecord, RankedCandidate, RenderedImage } from './types'
 
@@ -72,25 +73,29 @@ function itemName(query: Extract<LibraryQuery, { kind: 'item' }>) {
 function scopeMiss(query: LibraryQuery, book: BookRecord, anchors: Anchor[], candidates: Candidate[]): string | null {
   if (query.kind !== 'item' || !(query.section || query.chapter)) return null
   if (candidates.some(candidate => candidate.features.inSection === 1)) return null
-  const sections = pageSections(anchors, book.pageCount)
+  const guideScopes = guidePageScopes(book, book.pageCount)
+  const sections = pageSections(anchors, book.pageCount).map((section, index) => guideScopes.sections[index]
+    ?? (guideScopes.chapters[index] !== null && section && Number(section.split('.')[0]) !== guideScopes.chapters[index] ? null : section))
   // the last exercises of a section can sit on the page where the next section starts
   const inScope = (section: string | null | undefined) => !!section && (query.section ? section === query.section : Number(section.split('.')[0]) === Number(query.chapter))
   if (candidates.some(candidate => candidate.features.exactLabel === 1 && inScope(sections[candidate.pageIndex - 1]))) return null
-  const known = query.section ? sections.includes(query.section) : sections.some(section => section !== null && Number(section.split('.')[0]) === Number(query.chapter))
+  const known = query.section ? sections.includes(query.section) : sections.some(section => section !== null && Number(section.split('.')[0]) === Number(query.chapter)) || guideScopes.chapters.includes(Number(query.chapter))
   if (!known) return null
   return `No ${itemName(query).toLowerCase()} in ${query.section ? `section ${query.section}` : `chapter ${query.chapter}`}.`
 }
 
 /** The ranker's context: what the teacher is doing and where in the book they are. */
 function rankContext(book: BookRecord, anchors: Anchor[], near: number | null): string {
-  if (near === null) return LIBRARY_CONTEXT
+  const guide = getBookGuideContext(book, near).slice(0, 1200)
+  const context = `${LIBRARY_CONTEXT}\nBook structure (source data):\n${guide}`
+  if (near === null) return context
   const section = pageSections(anchors, Math.max(book.pageCount, near + 1))[near]
   const label = book.labels?.[near]
   const page = label ? `page ${label}` : `file page ${near + 1}`
-  if (!section) return `${LIBRARY_CONTEXT} The teacher is currently working on ${page}.`
+  if (!section) return `${context}\nThe teacher is currently working on ${page}.`
   // naming only the chapter works best: with the section too, the ranker looks for that section and answers none
   const chapter = section.split('.')[0]
-  return `${LIBRARY_CONTEXT} The teacher is currently working in chapter ${chapter}, on ${page}. When the same number is in several chapters, the teacher means the one in chapter ${chapter}.`
+  return `${context}\nThe teacher is currently working in chapter ${chapter}, on ${page}. When the same number is in several chapters, the teacher means the one in chapter ${chapter}.`
 }
 
 /**
@@ -140,9 +145,12 @@ export async function matchLibrary(query: LibraryQuery, opts: { openBookId?: str
     const missing = scopeMiss(query, book, anchors, candidates)
     if (missing) return { error: missing }
     if (!candidates.length) {
-      return { error: query.kind === 'item' ? `${itemName(query)} is not in ${book.title}.` : `Nothing in ${book.title} matches that.` }
+      const partial = book.textPages < book.pageCount * .8
+      return { error: partial
+        ? `The searchable text does not identify that item. ${book.pageCount - book.textPages} pages have little or no text. Open the book, use its contents or a page number, and crop the item visually; OCR is not enabled.`
+        : query.kind === 'item' ? `${itemName(query)} was not found in the local index for ${book.title}. Try its name or the printed page number.` : `No matching passage was found in ${book.title}. Try a distinctive phrase, its chapter, or a page number.` }
     }
-    const sure = certainItem(query, candidates)
+    const sure = certainItem(query, candidates) ?? certainTopic(query, candidates)
     if (sure) return { query, book, ranked: [{ ...sure, p: 1 }], confident: true, source: 'exact' }
     const result = await rankItems({
       task: 'library', query: query.raw, context: rankContext(book, anchors, at),

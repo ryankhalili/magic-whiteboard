@@ -50,7 +50,7 @@ export function NotebookSwitcher({ library, beforeChange }: { library: NotebookL
             if (notebook.id === library.activeNotebook.id) { setOpen(false); return }
             void changeNotebook(() => library.selectNotebook(notebook.id))
           }}>
-            <BookOpen size={17}/><span><strong>{notebook.settings.name.trim() || 'Untitled notebook'}</strong><small>{notebook.settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}</small></span>{notebook.id === library.activeNotebook.id && <Check size={15}/>}
+            <BookOpen size={17}/><span><strong>{notebook.settings.name.trim() || 'Untitled notebook'}</strong><small>{notebook.settings.mode === 'page' ? 'A4 page' : notebook.settings.mode === 'document' ? 'Homework pages' : 'Infinite canvas'}</small></span>{notebook.id === library.activeNotebook.id && <Check size={15}/>}
           </button>
         </li>)}
       </ul>

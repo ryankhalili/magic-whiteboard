@@ -143,7 +143,11 @@ export function autoYRange(expression: string, xMin: number, xMax: number): [num
   let lo = values[Math.floor(values.length * .025)], hi = values[Math.min(values.length - 1, Math.ceil(values.length * .975))]
   if (hi - lo < .001) { lo -= 1; hi += 1 }
   const pad = Math.max((hi - lo) * .13, .15)
-  return [Math.max(-1e12, lo - pad), Math.min(1e12, hi + pad)]
+  // Round outwards to readable limits instead of exposing sampling decimals.
+  const rough = (hi - lo + 2 * pad) / 8, magnitude = 10 ** Math.floor(Math.log10(rough))
+  const ratio = rough / magnitude, step = (ratio <= 1 ? 1 : ratio <= 2 ? 2 : ratio <= 5 ? 5 : 10) * magnitude
+  const lower = Math.floor((lo - pad) / step) * step, upper = Math.ceil((hi + pad) / step) * step
+  return [Math.max(-1e12, Number(lower.toPrecision(12))), Math.min(1e12, Number(upper.toPrecision(12)))]
 }
 
 export function niceTicks(min: number, max: number, desired = 6): number[] {

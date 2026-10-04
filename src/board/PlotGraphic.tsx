@@ -2,6 +2,7 @@ import type { MagicShape } from './MagicShape'
 import { useMemo } from 'react'
 import { niceTicks, samplePlot } from './expression'
 import { getAxisMode, getPlotLayout } from './plotLayout'
+import { ScientificGraphic } from '../math/ScientificGraphic'
 
 function tickLabel(value: number) {
   if (value === 0) return '0'
@@ -15,6 +16,10 @@ export function prettyExpression(expression: string) {
 }
 
 export function PlotGraphic({ shape, hideExpression = false }: { shape: MagicShape; hideExpression?: boolean }) {
+  return shape.props.visualization ? <ScientificGraphic shape={shape} hideExpression={hideExpression}/> : <CartesianGraphic shape={shape} hideExpression={hideExpression}/>
+}
+
+function CartesianGraphic({ shape, hideExpression = false }: { shape: MagicShape; hideExpression?: boolean }) {
   const p = shape.props
   const showGrid = p.showGrid !== false, showAxes = p.showAxes !== false
   const { pad, width: pw, height: ph, X, Y, range } = getPlotLayout(p, getAxisMode(shape.meta))

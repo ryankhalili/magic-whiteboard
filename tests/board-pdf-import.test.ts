@@ -141,7 +141,7 @@ describe('board PDF import', () => {
     const result = await importPdfFile(editor, pdfFile(bytes), { mode: 'infinite', onProgress: (page, pages) => progress.push([page, pages]) })
     const sha = createHash('sha256').update(bytes).digest('hex')
     expect(progress).toEqual([[1, 2], [2, 2]])
-    expect(result).toMatchObject({ pages: 2, source: `sha256:${sha}`, keptSource: false, hasText: true, switchToInfinite: false })
+    expect(result).toMatchObject({ pages: 2, source: `sha256:${sha}`, keptSource: true, hasText: true, switchToInfinite: false })
     expect(result.layout[0]).toEqual({ x: 0, y: 0, w: 816, h: 1056 })
     expect(result.layout[1].y).toBe(1056 + PAGE_GAP)
     const shapes = result.ids.map(id => editor.getShape<TLImageShape>(id)!)
@@ -170,8 +170,8 @@ describe('board PDF import', () => {
     expect(editor.getSelectedShapeIds()).toEqual([])
     // the snapshot reloads, so every page asset passed the same checks as normalizeSnapshot
     expect(() => new Editor().loadSnapshot(editor.getSnapshot())).not.toThrow()
-    // nothing reads the original, so its bytes are not kept on the device
-    expect(await getPdfSource(`sha256:${sha}`)).toBeNull()
+    // Original vector/text content is retained once for page-preserving exports.
+    expect(await getPdfSource(`sha256:${sha}`)).toEqual(bytes)
 
     // the same file again reuses its page images and goes to the right of the first copy
     const again = await importPdfFile(editor, pdfFile(bytes), { mode: 'infinite', zoom: false })

@@ -1,6 +1,6 @@
 async (page) => {
   // Run with @Browser browser_run_code_unsafe and this file's path. The current
-  // page must already show Chalkpal in a desktop-sized viewport.
+  // page must already show MagiBoard in a desktop-sized viewport.
   // All observations below read rendered DOM; all changes use ordinary UI input.
   const report = []
   const notebookName = `Excalidraw smoke ${Date.now()}`

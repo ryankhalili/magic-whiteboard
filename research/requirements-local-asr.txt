@@ -1,0 +1,5 @@
+# Optional experiment only; install into .local/asr-venv, never the app runtime.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+# PyAV 19 removed metadata_errors from av.open; faster-whisper 1.2.1 still uses it.
+av==16.1.0

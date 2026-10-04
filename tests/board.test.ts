@@ -183,11 +183,11 @@ describe('board actions', () => {
     expect(controller.applyOperations([{ type: 'transform_object', fitFocus: true }]).ok).toBe(true)
     expect(controller.getObjects()[0].bounds).toEqual(context.focus.bounds)
   })
-  it('creates equal-axis plots but preserves the auto-axis appearance of legacy plots', () => {
+  it('fits new plots independently and preserves the auto-axis appearance of legacy plots', () => {
     const { controller, shapes } = fixture()
     const { ids } = controller.applyOperations([{ type: 'create_plot', expression: 'x', xMin: 0, xMax: 10 }])
     const before = controller.getObjects()[0]
-    expect(before.axisMode).toBe('equal')
+    expect(before.axisMode).toBe('auto')
     expect(before.displayedRange).toMatchObject({ xMin: 0, xMax: 10 })
     const shape = shapes.get(ids[0])!
     shape.meta = {}
@@ -237,6 +237,65 @@ describe('board actions', () => {
     context.focusMode = 'reference'
     expect(controller.applyOperations([{ type: 'update_object', latex: 'y' }]).ok).toBe(true)
     expect(shapes.get(ids[0])!.meta.literalBounds).toBeUndefined()
+  })
+})
+
+describe('graph window regression', () => {
+  it('shows the bottom of a new parabola and honors the supplied Y window', () => {
+    const { controller } = fixture()
+    expect(controller.applyOperations([{ type: 'create_plot', expression: 'x^2', xMin: -20, xMax: 20, yMin: -50, yMax: 440 }]).ok).toBe(true)
+    expect(controller.getObjects()[0].displayedRange).toEqual({ xMin: -20, xMax: 20, yMin: -50, yMax: 440 })
+  })
+  it('fits a saved equal-unit parabola without moving, resizing, or replacing it', () => {
+    const { controller } = fixture()
+    controller.applyOperations([{ type: 'create_plot', expression: 'x^2', xMin: -20, xMax: 20, yMin: -50, yMax: 440, axisMode: 'equal' }])
+    const before = controller.getObjects()[0]
+    expect(before.displayedRange!.yMin).toBeGreaterThan(100)
+    expect(controller.applyOperations([{ type: 'update_object', target: before.id, fitY: true }]).ok).toBe(true)
+    const after = controller.getObjects()[0]
+    expect(after).toMatchObject({ id: before.id, bounds: before.bounds, expression: before.expression, axisMode: 'auto' })
+    expect(after.displayedRange!.yMin).toBeLessThan(0)
+    expect(after.displayedRange!.yMax).toBeGreaterThan(400)
+    expect(after.displayedRange!.yMin).toBe(after.yMin)
+    expect(after.displayedRange!.yMax).toBe(after.yMax)
+  })
+  it('honors spoken X limits and refits Y instead of retaining a hidden equal-unit window', () => {
+    const { controller } = fixture()
+    controller.applyOperations([{ type: 'create_plot', expression: 'x^2', yMin: -50, yMax: 440, axisMode: 'equal' }])
+    expect(controller.applyOperations([{ type: 'update_object', xMin: -10, xMax: 10 }]).ok).toBe(true)
+    const plot = controller.getObjects()[0]
+    expect(plot.axisMode).toBe('auto')
+    expect(plot.displayedRange).toEqual({ xMin: -10, xMax: 10, yMin: -20, yMax: 120 })
+  })
+  it('honors explicit Y limits without requiring the model to also set axisMode', () => {
+    const { controller } = fixture()
+    controller.applyOperations([{ type: 'create_plot', expression: 'x^2', axisMode: 'equal' }])
+    expect(controller.applyOperations([{ type: 'update_object', yMin: -10, yMax: 10 }]).ok).toBe(true)
+    expect(controller.getObjects()[0].displayedRange).toMatchObject({ yMin: -10, yMax: 10 })
+  })
+  it('preserves the other displayed limit for a one-sided Y edit', () => {
+    const { controller } = fixture()
+    controller.applyOperations([{ type: 'create_plot', expression: 'x^2', axisMode: 'equal' }])
+    const previous = controller.getObjects()[0].displayedRange!
+    expect(controller.applyOperations([{ type: 'update_object', yMin: -100 }]).ok).toBe(true)
+    expect(controller.getObjects()[0].displayedRange).toEqual({ ...previous, yMin: -100 })
+  })
+  it('lets explicit Y limits take precedence over fit and preserves explicitly requested equal units', () => {
+    const { controller } = fixture()
+    controller.applyOperations([{ type: 'create_plot', expression: 'x^2' }])
+    expect(controller.applyOperations([{ type: 'update_object', fitY: true, yMin: -5, yMax: 5 }]).ok).toBe(true)
+    expect(controller.getObjects()[0].displayedRange).toMatchObject({ yMin: -5, yMax: 5 })
+    expect(controller.applyOperations([{ type: 'update_object', xMin: -10, xMax: 10, axisMode: 'equal' }]).ok).toBe(true)
+    expect(controller.getObjects()[0].axisMode).toBe('equal')
+  })
+  it('rejects fitting a non-graph or implicit equation without changing it', () => {
+    const { controller } = fixture()
+    controller.applyOperations([{ type: 'create_text', text: 'Keep me' }])
+    expect(controller.applyOperations([{ type: 'update_object', fitY: true }]).ok).toBe(false)
+    controller.applyOperations([{ type: 'create_plot', expression: 'x=1' }])
+    const before = controller.getObjects()
+    expect(controller.applyOperations([{ type: 'update_object', fitY: true }]).ok).toBe(false)
+    expect(controller.getObjects()).toEqual(before)
   })
 })
 

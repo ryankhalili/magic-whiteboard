@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Box, type Editor, type TLShapeId } from '../canvas/editor'
-import { colorValue, getStrokeWidth, strokePoints } from '../canvas/geometry'
+import { colorValue, getStrokeWidth, strokePoints, type Matrix2d } from '../canvas/geometry'
+import type { Bounds } from '../../shared/board'
 import { inkOutlinePath } from '../canvas/ink'
 import { isDisconnectedInk } from '../canvas/disconnectedInk'
 import { nativeInkSvgPath } from '../canvas/nativeInkRenderer'
@@ -42,7 +43,8 @@ async function graphic(editor: Editor, shape: TLShape): Promise<ReactNode> {
 }
 
 /** Build self-contained SVG using our document model, including locked images and parent transforms. */
-export async function renderShapesToSvg(editor: Editor, ids: TLShapeId[], options: ImageExportOptions = {}): Promise<{ svg: string; bounds: Box; width: number; height: number }> {
+export type SceneExportOptions = ImageExportOptions & { sceneTransform?: Matrix2d; clip?: Bounds }
+export async function renderShapesToSvg(editor: Editor, ids: TLShapeId[], options: SceneExportOptions = {}): Promise<{ svg: string; bounds: Box; width: number; height: number }> {
   const selected = new Set(ids)
   const shapes = editor.getCurrentPageShapesSorted().filter(shape => {
     if (selected.has(shape.id)) return true
@@ -65,12 +67,13 @@ export async function renderShapesToSvg(editor: Editor, ids: TLShapeId[], option
   }))
   const svg = renderToStaticMarkup(<svg xmlns="http://www.w3.org/2000/svg" width={width} height={height} viewBox={`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`}>
     {options.background && <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} fill="#ffffff"/>}
-    {graphics}
+    {options.clip && <defs><clipPath id="worksheet-page-clip"><rect x={options.clip.x} y={options.clip.y} width={options.clip.w} height={options.clip.h}/></clipPath></defs>}
+    <g clipPath={options.clip ? 'url(#worksheet-page-clip)' : undefined}><g transform={options.sceneTransform?.toCssString()}>{graphics}</g></g>
   </svg>)
   return { svg, bounds, width, height }
 }
 
-export async function renderShapesToImage(editor: Editor, ids: TLShapeId[], options: ImageExportOptions = {}): Promise<ImageExportResult> {
+export async function renderShapesToImage(editor: Editor, ids: TLShapeId[], options: SceneExportOptions = {}): Promise<ImageExportResult> {
   const { svg, width, height } = await exportTimeout(renderShapesToSvg(editor, ids, options), 'preparing math and fonts')
   const image = await exportTimeout(new Promise<HTMLImageElement>((resolve, reject) => {
     const result = new Image()
@@ -83,7 +86,12 @@ export async function renderShapesToImage(editor: Editor, ids: TLShapeId[], opti
   canvas.width = width; canvas.height = height
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Image export is unavailable in this browser.')
-  context.drawImage(image, 0, 0, width, height)
-  const blob = await exportTimeout(new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('The board image could not be saved.')), 'image/png')), 'saving the board image')
-  return { blob, width, height }
+  try {
+    context.drawImage(image, 0, 0, width, height)
+    const blob = await exportTimeout(new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('The board image could not be saved.')), 'image/png')), 'saving the board image')
+    return { blob, width, height }
+  } finally {
+    // Long worksheet exports should not retain a large canvas backing store for every page.
+    canvas.width = 0; canvas.height = 0
+  }
 }

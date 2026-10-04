@@ -48,12 +48,12 @@ const STOPPERS = /^(Rule:|Problem-Solving Strategy|MEDIA$|STUDENT PROJECT|Learni
 const INSTRUCTION = /^(\[T\]\s*)?((For|In)\s+(each of\s+)?the\s+(following|next)\b|[A-Z][a-z]+ the following\b|The following (graphs?|tables?|figures?|questions|problems|exercises|data)\b|True or False\b)/
 const KEYWORDS: Array<[RegExp, AnchorKind]> = [
   [/^(EXAMPLE|Example)\s+(\d+(?:\.\d+)*)/, 'example'],
-  [/^(THEOREM|Theorem)\s+(\d+(?:\.\d+)*)/, 'theorem'],
+  [/^(THEOREM|Theorem|theorem|Thm\.)\s*(\d+(?:\.\d+)*)/, 'theorem'],
   [/^(DEFINITION|Definition)\b\s*(\d+(?:\.\d+)*)?/, 'definition'],
   [/^(PROBLEM|Problem)\s+(\d+(?:\.\d+)*)/, 'problem'],
   [/^(EXERCISE|Exercise)\s+(\d+(?:\.\d+)*)/, 'exercise'],
   [/^(QUESTION|Question)\s+(\d+)/, 'question'],
-  [/^(Figure|FIGURE)\s+(\d+(?:\.\d+)*)/, 'figure'],
+  [/^(Figure|FIGURE|Fig\.)\s+(\d+(?:\.\d+)*)/, 'figure'],
   [/^(Table|TABLE)\s+(\d+(?:\.\d+)*)/, 'table'],
 ]
 
@@ -66,6 +66,17 @@ function continues(previous: string) {
 }
 
 function matchLine(text: string, ratio: number, exerciseMode: boolean, previous: string): { kind: AnchorKind; label: string } | null {
+  text = text.normalize('NFKC').replace(/\u00ad/g, '')
+  // Named results commonly have no number, e.g. "Mean Value Theorem". Require
+  // heading typography or title case, and exclude prose references to the result.
+  if (text.length <= 120 && !/[.!?;]$/.test(text)
+    && /^[\p{L}][\p{L}'’\s(),-]*$/u.test(text) && /\b(?:theorem|lemma|corollary|proposition)\b/i.test(text)
+    && (ratio >= 1.1 || (text.split(/\s+/).every(word => /^(?:of|the|and|for|in|on|[A-Z\d])/.test(word)) && !continues(previous)))) {
+    return { kind: 'theorem', label: '' }
+  }
+  // Some publishers put the number first: "2.4.1 Theorem (Mean Value)".
+  const reversed = /^(\d+(?:\.\d+)*)(?:\.)?\s+(Theorem|THEOREM|Lemma|Corollary|Proposition)\b/.exec(text)
+  if (reversed && (ratio >= 1.05 || !continues(previous))) return { kind: 'theorem', label: reversed[1] }
   for (const [pattern, kind] of KEYWORDS) {
     const match = pattern.exec(text)
     if (!match) continue

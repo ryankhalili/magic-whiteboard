@@ -124,7 +124,7 @@ describe('Excalidraw and application workflows', () => {
     editor.select(id)
     expect(controller.applyOperations([{ type: 'update_object', target: 'selected', expression: 'cos(x)', xMin: 0, xMax: 8 }]).ok).toBe(true)
     const edited = editor.getShape<TLShape<'magic'>>(id)!
-    expect(edited).toMatchObject({ id, props: { expression: 'cos(x)', w: 600, h: 260 }, meta: { axisMode: 'equal' } })
+    expect(edited).toMatchObject({ id, props: { expression: 'cos(x)', w: 600, h: 260 }, meta: { axisMode: 'auto' } })
     expect(edited.x).toBeCloseTo(moved.x, 10)
     expect(edited.y).toBeCloseTo(moved.y, 10)
     expect(edited.rotation).toBeCloseTo(moved.rotation, 10)
@@ -134,7 +134,7 @@ describe('Excalidraw and application workflows', () => {
     editor.redo()
 
     const reloaded = workspace(new Editor(editor.getSnapshot()))
-    expect(reloaded.controller.getObjects()[0]).toMatchObject({ id, expression: 'cos(x)', xMin: 0, xMax: 8, axisMode: 'equal' })
+    expect(reloaded.controller.getObjects()[0]).toMatchObject({ id, expression: 'cos(x)', xMin: 0, xMax: 8, axisMode: 'auto' })
     expectPose(pose(editorToExcalidrawScene(reloaded.editor).elements[0]), beforeAI)
     expect(reloaded.controller.applyOperations([{ type: 'edit_content', target: id, field: 'expression', find: 'cos', replace: 'sin' }]).ok).toBe(true)
     expect(reloaded.editor.getShape<TLShape<'magic'>>(id)!.props.expression).toBe('sin(x)')

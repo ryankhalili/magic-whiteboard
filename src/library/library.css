@@ -84,6 +84,18 @@
 .ref-crop-actions button{display:flex;align-items:center;gap:5px;height:30px;padding:0 10px;border-radius:5px;border:1px solid #d1d5db;background:#fff;font-size:11px;color:#4b5563;box-shadow:0 2px 8px #0000001a;white-space:nowrap}
 .ref-crop-actions .ref-crop-insert{border-color:var(--accent);background:var(--accent);color:#fff}.ref-crop-actions .ref-crop-insert:hover:not(:disabled){background:var(--deep)}
 .reference-resize{position:absolute;right:0;bottom:0;z-index:3;width:20px;height:20px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 52%,#b8bdc6 52%,#b8bdc6 58%,transparent 58%,transparent 70%,#b8bdc6 70%,#b8bdc6 76%,transparent 76%)}
+.reference-panel.is-pinned .reference-header{cursor:default}.reference-grip{display:flex;padding:4px;border-radius:4px;touch-action:none}
+.reference-grip:focus-visible,.reference-resize:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.reference-header button[aria-pressed=true]{color:var(--accent);background:var(--tint)}
+.reference-reader-tools{display:flex;align-items:center;gap:2px;padding:5px 8px;border-bottom:1px solid var(--line);flex-shrink:0}
+.reference-reader-tools button{display:flex;align-items:center;justify-content:center;min-width:27px;min-height:30px;padding:3px;border-radius:4px;color:#4b5563;flex-shrink:0}
+.reference-reader-tools button:hover:not(:disabled){background:#f3f4f6}.reference-reader-tools button:disabled{opacity:.35}
+.reference-reader-tools form{display:flex;align-items:center;gap:2px;color:#6b7280;font-size:11px}.reference-reader-tools input{width:34px;padding:4px 2px;text-align:center;border:1px solid #d1d5db;border-radius:3px;font-size:11px;color:#202124;background:#fff}
+.reader-toolbar-space{flex:1}.reference-reader-tools .reader-zoom-value{font-size:11px;min-width:40px}
+.reference-contents{padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--line)}.reference-contents>div{display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-bottom:6px}
+.reference-contents>div button{display:flex;align-items:center;gap:4px;padding:3px 5px;color:var(--accent);font-size:11px}
+.reference-contents nav{max-height:130px;overflow:auto}.reference-contents nav button{display:flex;justify-content:space-between;gap:8px;width:100%;padding:6px 4px;text-align:left;font-size:11px;border-radius:3px}
+.reference-contents nav button:hover{background:#f3f4f6}.reference-contents nav small{white-space:nowrap;color:#6b7280}.reference-contents p{font-size:11px;color:#6b7280;line-height:1.5}
 
 @keyframes library-fade{from{opacity:0}}
 @keyframes library-rise{from{opacity:0;transform:translateY(6px) scale(.985)}}

@@ -3,6 +3,16 @@ import type { Bounds } from '../../shared/board'
 /** A rectangle on a book page as fractions of the page width and height (0..1, origin top left). */
 export type PageBox = { x: number; y: number; w: number; h: number }
 
+/** A small, locally generated map of the book. Never inferred facts or model instructions. */
+export type BookGuide = {
+  version: 1
+  sections: { title: string; pageIndex: number; depth: number; source: 'outline' | 'contents' | 'heading' }[]
+  itemCounts: Partial<Record<AnchorKind, number>>
+  exercisePages: number[]
+  unreadablePages: number[]
+  notes: string[]
+}
+
 export type BookRecord = {
   /** 'sha256:<64 hex>' of the original PDF bytes */
   id: string
@@ -26,6 +36,8 @@ export type BookRecord = {
   textPages: number
   /** version of the item finder that indexed this book, missing means 1 */
   indexVersion?: number
+  /** Durable book structure, derived from the PDF bookmarks, contents and indexed headings. */
+  guide?: BookGuide
 }
 
 /** One visual line of text on a page. size is the font height as a fraction of the page height. */

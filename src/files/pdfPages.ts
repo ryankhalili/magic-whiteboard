@@ -43,10 +43,11 @@ export function pdfPageInfo(shape: TLShape | undefined): PdfPageInfo | null {
   const value = shape?.type === 'image' ? shape.meta.pdf : undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const info = value as Record<string, unknown>
-  if (typeof info.doc !== 'string' || !Number.isInteger(info.page) || !Number.isInteger(info.pages)) return null
+  if (typeof info.doc !== 'string' || !info.doc || !Number.isInteger(info.page) || !Number.isInteger(info.pages) ||
+      (info.page as number) < 1 || (info.pages as number) < (info.page as number) || (info.pages as number) > MAX_PDF_PAGES) return null
   return {
     doc: info.doc, name: typeof info.name === 'string' ? info.name : 'Worksheet',
-    page: info.page as number, pages: info.pages as number, at: typeof info.at === 'number' ? info.at : 0,
+    page: info.page as number, pages: info.pages as number, at: typeof info.at === 'number' && Number.isFinite(info.at) ? info.at : 0,
     source: typeof info.source === 'string' ? info.source : null,
     width: positive(info.width) ? info.width : 0, height: positive(info.height) ? info.height : 0,
     text: typeof info.text === 'string' ? info.text : '',

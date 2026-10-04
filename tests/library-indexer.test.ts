@@ -312,7 +312,7 @@ describe('worksheets and removed books', () => {
 describe('reindexing', () => {
   it('knows which books need reading again', () => {
     const base = { indexed: true, indexVersion: INDEX_VERSION } as BookRecord
-    expect(INDEX_VERSION).toBe(3)
+    expect(INDEX_VERSION).toBe(4)
     expect(needsReindex(base)).toBe(false)
     expect(needsReindex({ ...base, indexVersion: undefined })).toBe(true)
     expect(needsReindex({ ...base, indexVersion: 1 })).toBe(true)
