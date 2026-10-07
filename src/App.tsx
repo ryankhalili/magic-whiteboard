@@ -32,6 +32,7 @@ import { candidateTitle, panelHits, ReferencePanel } from './library/ReferencePa
 import { ensureIndexed, importBook, inspectPdf, needsReindex } from './library/indexer'
 import { createBoundsFor, createInsertLock, easeInOut, FLOATING_UI, INSPECTOR_UI, inspectorZone, manualOverride, matchWithReindex, revealShift, type ScreenRect } from './library/insertLayout'
 import { detectLibraryIntent, type LibraryIntent } from './library/intent'
+import { completeLibraryRetrieval } from './library/retrievalIntent'
 import { rankItems } from './library/rank'
 import { renderCrop, renderPage } from './library/render'
 import { forgetBookData, matchLibrary, problemImage } from './library/resolve'
@@ -715,6 +716,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       const placementCandidates = wantsPlacement(text, before) ? typedCandidates(text) : undefined
       sent = true
       const result = await sendBoardCommand(text, { ...before, placementOptions: undefined }, messages.filter(m => m.role !== 'event').slice(-8).map(m => ({ role: m.role as 'user' | 'assistant', text: m.text })), visual || undefined, abort.signal, placementCandidates)
+      result.operations = completeLibraryRetrieval(result.operations, text)
       if (abort.signal.aborted) return
       flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
       if (boardBefore !== boardKey()) { notify('The board changed while I was working, so I left this response unapplied. Give the instruction again when ready.'); return }

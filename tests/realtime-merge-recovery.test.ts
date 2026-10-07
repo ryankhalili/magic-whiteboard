@@ -64,6 +64,35 @@ describe('merged voice context and instruction ownership', () => {
     const client = createRealtimeClient({ ...callbacks, ...overrides }); clients.push(client); await client.connect()
     return { client, callbacks, channel: Peer.latest.channel }
   }
+  it('finishes a spoken question retrieval when the model only opens the book and suppresses duplicate continuation', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'question', 'Pull question 2 from chapter 6, please.')
+    await done(channel, 'retrieve', [command([{ type: 'library_action', action: 'open_book', book: 'Sakuri QM' }]),
+      command([{ type: 'insert_library', item: 'question 6.2' }])])
+    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([
+      { type: 'insert_library', query: 'Pull question 2 from chapter 6, please.', book: 'Sakuri QM' },
+    ], expect.any(Function))
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('waits for late final transcription before treating open-book as completed retrieval', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'late-question')
+    await done(channel, 'late-open', [command([{ type: 'library_action', action: 'open_book' }])])
+    expect(callbacks.applyOperations).not.toHaveBeenCalled()
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'late-question', transcript: 'pull question 2 from chapter 6' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([
+      { type: 'insert_library', query: 'pull question 2 from chapter 6', book: undefined },
+    ], expect.any(Function))
+  })
+  it('does not apply a pending open-only call after a new speech turn replaces it', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'old-question')
+    await done(channel, 'old-open', [command([{ type: 'library_action', action: 'open_book' }])])
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'new-question' })
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(callbacks.applyOperations).not.toHaveBeenCalled()
+  })
   it('keeps the microphone active through a preview revision and a later spoken confirmation', async () => {
     board.pendingMath = { id: 'math-preview:test', revision: 1, objectIds: ['draft:a'] }
     board.objects = [{ ...object('draft:a', ''), kind: 'plot', expression: 'x*y', visualization: { type: 'surface' } }]

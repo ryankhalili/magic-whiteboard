@@ -11,7 +11,7 @@ export type LibraryIntent =
 
 export type IntentState = { importPending: boolean; hasBooks: boolean; bookTitles?: string[]; highlightCount?: number }
 
-const POLITE = /^(?:(?:ok(?:ay)?|um+|uh+|so|now|and|hey|please|can you|could you|would you|let'?s|go ahead and|just)\s+)*/
+const POLITE = /^(?:(?:ok(?:ay)?|um+|uh+|so|now|and|hi|hey|please|can you|can we|could you|could we|would you|let'?s|go ahead and|just)\s+)*/
 const TO_LIBRARY = [
   /^(?:store|save|keep|file|add)(?: (?:it|this|that|the (?:pdf|book|file|document)))?(?: (?:in|to|into) (?:the |my )?library)?$/,
   /^(?:put|send|move)(?: (?:it|this|that|the (?:pdf|book|file)))? (?:in|to|into) (?:the |my )?library$/,
@@ -61,7 +61,10 @@ export function detectLibraryIntent(text: string, state: IntentState): LibraryIn
   const index = pickIndex(clean, state.highlightCount ?? 0)
   if (index !== null) return { action: 'pick', index }
   if (!state.hasBooks) return null
-  const { query, leftovers } = analyzeLibraryText(text)
+  // Preserve original casing for "page I have open" versus Roman page i;
+  // only discard conversational prefixes when checking leftover words.
+  const { query } = analyzeLibraryText(text)
+  const { leftovers } = analyzeLibraryText(clean)
   if (query && (query.kind === 'page' || query.kind === 'item') && !leftovers.length) return { action: 'insert', query }
   if (query) return null
   const open = OPEN.exec(clean)

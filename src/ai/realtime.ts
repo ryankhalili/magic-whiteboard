@@ -7,6 +7,7 @@ import { extractContentPreviews, type ContentPreview } from './content-preview'
 import { generateMathTranscriptPreview } from './spoken-math-preview'
 import { classifyRealtimeRateLimit, updateRealtimeRateLimits, type RealtimeRateLimitSnapshot } from './realtime-rate-limit'
 import { createTextDictationSession } from './text-dictation-session'
+import { completeLibraryRetrieval } from '../library/retrievalIntent'
 import { boardState, failureMessage, pinBoardRepair, prepareBoardRepair, repairInstructions, validateRepairContext, type BoardRepair } from './board-repair'
 import { contextFingerprint, isFatalVoiceError, isTransientVoiceError, pinRecoveredCommand, remember, voiceApiRequest, type VoiceRecoveryState, type VoiceRepair, type VoiceRepairRequest } from './voice-recovery'
 export type { ContentPreview } from './content-preview'
@@ -42,6 +43,7 @@ type VoiceTurn = {
   carriedFrom?: VoiceTurn; repairInstructionSource?: VoiceTurn; carriedAmbiguous?: boolean;
   modelPreview?: boolean; mathPreviewContext?: BoardContext; mathPreviewBlocked?: boolean;
   receiveTranscript?: (text: string) => void
+  libraryRetrievalCompleted?: boolean
 }
 type ResponseOwner = { turn: VoiceTurn; mode: 'normal' | 'repair' | 'confirmation'; requestId?: string; omittedSources?: Set<string> }
 type ToolCall = { call_id: string; name?: string; arguments: string; metadataError?: string }
@@ -616,6 +618,9 @@ export function createRealtimeClient(options: RealtimeOptions) {
       let refreshContext = false
       try {
         if (turn.phase === 'stopped') { output = { ok: false, message: 'Automatic editing has stopped for this instruction.' }; needsContinuation = false }
+        else if (turn.libraryRetrievalCompleted && call.name === 'apply_board_operations') {
+          output = { ok: true, message: 'The requested library lookup is already complete. Do not repeat it.' }; needsContinuation = false
+        }
         else if (call.metadataError || !['get_board_context', 'inspect_board', 'apply_board_operations'].includes(call.name ?? '')) {
           const message = call.metadataError || (call.name
             ? `The voice assistant requested an unsupported whiteboard tool: ${call.name.slice(0, 100)}.`
@@ -647,6 +652,23 @@ export function createRealtimeClient(options: RealtimeOptions) {
             if (!send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(output) } })) stopTurn(turn, SEND_FAILED)
             return false
           }
+          // Final ASR can trail the tool call. For an open-only response, briefly
+          // wait for the user's words before deciding whether retrieval is missing.
+          if (operations.length === 1 && operations[0].type === 'library_action' && operations[0].action === 'open_book'
+            && !turn.instruction && turn.inputItem && !turn.transcriptionFailed) {
+            let timer: ReturnType<typeof setTimeout> | undefined
+            const previousReceiver = turn.receiveTranscript
+            try {
+              await new Promise<void>(resolve => {
+                turn.receiveTranscript = text => { previousReceiver?.(text); resolve() }
+                timer = setTimeout(resolve, 2500)
+              })
+            } finally { clearTimeout(timer); turn.receiveTranscript = previousReceiver }
+            if (!isCurrent()) return false
+          }
+          const completedOperations = completeLibraryRetrieval(operations, turn.instruction)
+          const completingRetrieval = completedOperations !== operations
+          operations = completedOperations
           // Flush pending manual edits before checking the source snapshot. The
           // application callback and applyOperations must keep this step synchronous.
           options.beforeApplyOperations?.()
@@ -683,6 +705,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
             // success needs no board copy: the context item is refreshed right after this output
             output = success ? { results: brief(results) } : { results: brief(results), context: compactContext() }
             if (success) {
+              if (completingRetrieval) turn.libraryRetrievalCompleted = true
               turn.applied = true; refreshContext = true
               if (repairing) turn.phase = 'repaired'
               if (repairing && recoveryState?.phase === 'repairing') setRecovery(null)
