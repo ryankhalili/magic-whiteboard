@@ -1,6 +1,6 @@
 import type { AxisRange } from '../../shared/board'
 import { visualizationSchema, type VisualizationSpec } from '../../shared/visualization'
-import { normalizeExpression, validateDomain, validateExpression } from '../board/expression'
+import { niceTicks, normalizeExpression, validateDomain, validateExpression } from '../board/expression'
 
 export type Vec3 = { x: number; y: number; z: number }
 export type Mesh = { faces: Vec3[][]; bounds: { min: Vec3; max: Vec3 } }
@@ -74,15 +74,32 @@ export function scientificMesh(expression: string, spec: VisualizationSpec, rang
   return { faces, bounds: { min, max } }
 }
 
+// Existing stored camera angles retain their meaning; this default looks from +X,
+// with +Y to the right and +Z up. Pitch is negative above the XY plane.
+export const DEFAULT_VIEW_YAW = -110
+export const DEFAULT_VIEW_PITCH = -28
+
+export function meshViewBounds(mesh: Mesh) {
+  const min = { ...mesh.bounds.min }, max = { ...mesh.bounds.max }
+  for (const axis of ['x', 'y', 'z'] as const) {
+    if (min[axis] === max[axis]) { const padding = Math.max(1, Math.abs(min[axis]) * .1); min[axis] -= padding; max[axis] += padding }
+    const step = 10 ** Math.floor(Math.log10((max[axis] - min[axis]) / 2))
+    min[axis] = Math.floor(min[axis] / step) * step
+    max[axis] = Math.ceil(max[axis] / step) * step
+  }
+  return { min, max }
+}
+
 export function meshProjection(mesh: Mesh, spec: VisualizationSpec, w: number, h: number) {
-  const yaw = (spec.yaw ?? -35) * Math.PI / 180, pitch = (spec.pitch ?? 28) * Math.PI / 180
-  const center = { x: (mesh.bounds.min.x + mesh.bounds.max.x) / 2, y: (mesh.bounds.min.y + mesh.bounds.max.y) / 2, z: (mesh.bounds.min.z + mesh.bounds.max.z) / 2 }
+  const yaw = (spec.yaw ?? DEFAULT_VIEW_YAW) * Math.PI / 180, pitch = (spec.pitch ?? DEFAULT_VIEW_PITCH) * Math.PI / 180
+  const bounds = meshViewBounds(mesh)
+  const center = { x: (bounds.min.x + bounds.max.x) / 2, y: (bounds.min.y + bounds.max.y) / 2, z: (bounds.min.z + bounds.max.z) / 2 }
   const rotate = (p: Vec3) => {
     const x = p.x - center.x, y = p.y - center.y, z = p.z - center.z
     const u = x * Math.cos(yaw) - y * Math.sin(yaw), v = x * Math.sin(yaw) + y * Math.cos(yaw)
-    return { x: u, y: v * Math.sin(pitch) - z * Math.cos(pitch), depth: v * Math.cos(pitch) + z * Math.sin(pitch) }
+    return { x: u, y: v * Math.sin(pitch) - z * Math.cos(pitch), depth: -v * Math.cos(pitch) - z * Math.sin(pitch) }
   }
-  const corners = [mesh.bounds.min.x, mesh.bounds.max.x].flatMap(x => [mesh.bounds.min.y, mesh.bounds.max.y].flatMap(y => [mesh.bounds.min.z, mesh.bounds.max.z].map(z => rotate({ x, y, z }))))
+  const corners = [bounds.min.x, bounds.max.x].flatMap(x => [bounds.min.y, bounds.max.y].flatMap(y => [bounds.min.z, bounds.max.z].map(z => rotate({ x, y, z }))))
   const lowX = Math.min(...corners.map(p => p.x)), highX = Math.max(...corners.map(p => p.x))
   const lowY = Math.min(...corners.map(p => p.y)), highY = Math.max(...corners.map(p => p.y))
   // Fit the rotated box, using one shared scale to preserve geometric proportions.
@@ -91,6 +108,40 @@ export function meshProjection(mesh: Mesh, spec: VisualizationSpec, w: number, h
     const v = rotate(p)
     return { x: w / 2 + v.x * scale, y: (h + 15) / 2 + v.y * scale, depth: v.depth }
   }
+}
+
+/** Readable ticks, bounded even for flat surfaces and near edge-on views. */
+export function meshAxes(mesh: Mesh, project: ReturnType<typeof meshProjection>) {
+  const { min, max } = meshViewBounds(mesh)
+  // Label the front edges of the coordinate box, rather than laying numbers
+  // over the surface. The ticks still show actual coordinates, not distances.
+  const origin = { x: max.x, y: min.y, z: min.z }
+  return (['z', 'x', 'y'] as const).map(axis => {
+    const start = project({ ...origin, [axis]: min[axis] }), end = project({ ...origin, [axis]: max[axis] })
+    const length = Math.hypot(end.x - start.x, end.y - start.y)
+    const values = niceTicks(min[axis], max[axis], Math.max(2, Math.min(8, Math.floor(length / 42))))
+    // Avoid dropping all labels when the interval contains no nice multiple.
+    const ticks: { value: number; point: ReturnType<typeof project> }[] = []
+    for (const value of values.length ? values : [min[axis], max[axis]]) {
+      const point = project({ ...origin, [axis]: value }), last = ticks.at(-1)
+      if (!last || Math.hypot(point.x - last.point.x, point.y - last.point.y) >= 20) ticks.push({ value, point })
+    }
+    return { axis, start, end, ticks }
+  })
+}
+
+/** Two-sided diffuse lighting; independent of mesh, grid and axis visibility. */
+export function faceLight(face: Vec3[], project: ReturnType<typeof meshProjection>) {
+  const a = face[0], b = face[1], c = face[2]
+  if (!a || !b || !c) return .5
+  const u = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z }, v = { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z }
+  const n = { x: u.y * v.z - u.z * v.y, y: u.z * v.x - u.x * v.z, z: u.x * v.y - u.y * v.x }
+  const length = Math.hypot(n.x, n.y, n.z)
+  if (length < 1e-20) return .5
+  const facing = project({ x: a.x + n.x / length, y: a.y + n.y / length, z: a.z + n.z / length }).depth - project(a).depth
+  const direction = facing >= 0 ? 1 : -1
+  const diffuse = Math.max(0, direction * (n.x * .35 - n.y * .45 + n.z) / (length * Math.hypot(.35, -.45, 1)))
+  return .28 + .6 * diffuse
 }
 
 export type PhaseField = { arrows: { x: number; y: number; dx: number; dy: number }[]; paths: { x: number; y: number }[][] }

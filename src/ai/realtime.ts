@@ -263,7 +263,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
   function compactContext(budget = CONTEXT_BYTES) {
     budget -= 64 // reserve space for final omission counts
     const context = options.getContext()
-    const important = new Set([...context.selectedIds, ...context.lastCreatedIds, ...(context.focus?.targetIds ?? []), ...(context.contentSelection ? [context.contentSelection.shapeId] : [])])
+    const important = new Set([...(context.pendingMath?.objectIds ?? []), ...context.selectedIds, ...context.lastCreatedIds, ...(context.focus?.targetIds ?? []), ...(context.contentSelection ? [context.contentSelection.shapeId] : [])])
     const objects = [...context.objects.filter(o => important.has(o.id)), ...context.objects.filter(o => !important.has(o.id))]
     const { selectedIds, lastCreatedIds, focus } = context
     type CompactObject = BoardContext['objects'][number] & { sourceOmitted?: string[] }
@@ -573,7 +573,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
         context.lastCreatedIds = [id]; selectionUnknown = false
         continue
       }
-      if (['insert_library', 'library_action', 'propose_image', 'undo', 'redo'].includes(operation.type)) {
+      if (['insert_library', 'library_action', 'propose_image', 'confirm_math', 'cancel_math', 'undo', 'redo'].includes(operation.type)) {
         selectionUnknown = true; continue
       }
       const explicit = Boolean(operation.ids?.length || operation.target && !['selected', 'selection', 'focus', 'last'].includes(operation.target))
@@ -664,6 +664,12 @@ export function createRealtimeClient(options: RealtimeOptions) {
               const pinned = turn.repair && pinBoardRepair(turn.repair, operations, before)
               if (!pinned || !pinned.ok) throw new Error(pinned && !pinned.ok ? pinned.reason : 'The original edit is no longer available to correct.')
               operations = pinned.value; turn.phase = 'repair-attempted'
+            }
+            for (const operation of operations) {
+              if (operation.type === 'confirm_math' && (operation.target !== turn.context.pendingMath?.id
+                || operation.previewRevision !== turn.context.pendingMath?.revision)) {
+                throw new Error('Review the updated preview, then say “add it” in a new instruction. Nothing was inserted.')
+              }
             }
             assertSourceAvailable(operations, owner?.omittedSources ?? omittedSources)
             const results = await options.applyOperations(operations, isCurrent)

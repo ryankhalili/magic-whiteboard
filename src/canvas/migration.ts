@@ -100,7 +100,7 @@ function magicProps(props: Record<string, unknown>): MagicShapeProps {
   if (props.fill !== undefined) result.fill = validateColor(props.fill as string)
   if (props.fillOpacity !== undefined) result.fillOpacity = validateOpacity(props.fillOpacity as number)
   if (props.strokeWidth !== undefined) result.strokeWidth = validateStrokeWidth(props.strokeWidth as number)
-  for (const key of ['showGrid', 'showAxes'] as const) if (props[key] !== undefined) {
+  for (const key of ['showGrid', 'showAxes', 'showNumbers'] as const) if (props[key] !== undefined) {
     if (typeof props[key] !== 'boolean') throw new Error('This project has an invalid plot display option.')
     result[key] = props[key]
   }

@@ -16,7 +16,8 @@ const crop = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1)
 export const optionId = z.enum(['A', 'B', 'C'])
 // create_image is made by the app from a resolved insert_library and is never accepted from the model
 export const operationSchema = z.object({
-  type: z.enum(['create_plot', 'create_math', 'create_text', 'create_geometry', 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo', 'propose_image', 'insert_library', 'library_action']),
+  type: z.enum(['create_plot', 'create_math', 'create_text', 'create_geometry', 'update_object', 'edit_content', 'transform_object', 'delete_objects', 'undo', 'redo', 'propose_image', 'insert_library', 'library_action', 'confirm_math', 'cancel_math']),
+  previewRevision: z.number().int().positive().optional().describe('For confirm_math: current pendingMath.revision; target must be pendingMath.id. Never confirm until the user approves the latest preview.'),
   prompt: z.string().trim().min(1).max(4000).describe('For propose_image only: describe the requested image for user review before generation. This operation never generates or purchases an image.').optional(),
   target: id.describe('Existing object ID for an edit or transform, not for creation. A retained selected ID does not turn a new plot/content request at an empty focus into an edit; omit target on create operations.').optional(), ids: z.array(id).max(2000).optional(),
   placement: z.enum(['focus', 'pointer', 'auto']).describe('focus places content near the reference cue with readable natural dimensions; literal focus mode confines content to its region. Reference mode does not copy the gesture rectangle.').optional(),
@@ -30,7 +31,7 @@ export const operationSchema = z.object({
   fillOpacity: z.number().min(0).max(1).optional(), strokeWidth: z.number().min(.25).max(24).optional(),
   opacity: z.number().min(0).max(1).describe('Whole-object opacity.').optional(),
   layer: z.enum(['front', 'back']).describe('Use update_object with an explicit target to bring that object to front or send it to back. Keep content, dimensions, and locked objects unchanged.').optional(),
-  showGrid: z.boolean().optional(), showAxes: z.boolean().optional(),
+  showGrid: z.boolean().optional(), showAxes: z.boolean().optional(), showNumbers: z.boolean().optional(),
   crop: crop.describe('Images only: reversible viewport over source image, normalized x,y,width,height. x+w and y+h must not exceed1. Full image is {x:0,y:0,w:1,h:1}.').optional(),
   color: z.string().max(40).optional(), xMin: number.optional(), xMax: number.optional(),
   yMin: number.optional(), yMax: number.optional(),

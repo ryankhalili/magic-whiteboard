@@ -64,6 +64,38 @@ describe('merged voice context and instruction ownership', () => {
     const client = createRealtimeClient({ ...callbacks, ...overrides }); clients.push(client); await client.connect()
     return { client, callbacks, channel: Peer.latest.channel }
   }
+  it('keeps the microphone active through a preview revision and a later spoken confirmation', async () => {
+    board.pendingMath = { id: 'math-preview:test', revision: 1, objectIds: ['draft:a'] }
+    board.objects = [{ ...object('draft:a', ''), kind: 'plot', expression: 'x*y', visualization: { type: 'surface' } }]
+    const apply = vi.fn((ops: BoardOperation[]) => {
+      if (ops[0].type === 'update_object') { board.pendingMath!.revision++; board.objects[0].expression = 'x^2+y^2' }
+      if (ops[0].type === 'confirm_math') delete board.pendingMath
+      return { ok: true, message: 'Updated.', ids: [] }
+    })
+    const { channel, callbacks } = await start({ applyOperations: apply })
+    await speak(channel, 'correction', 'make it x squared plus y squared')
+    await done(channel, 'correct-draft', [command([{ type: 'update_object', target: 'draft:a', expression: 'x^2+y^2' }])])
+    expect(track.enabled).toBe(true)
+    expect(contextOf(contexts(channel).at(-1)).pendingMath.revision).toBe(2)
+    await speak(channel, 'approval', 'add it')
+    await done(channel, 'approve-draft', [command([{ type: 'confirm_math', target: 'math-preview:test', previewRevision: 2 }])])
+    expect(apply).toHaveBeenCalledTimes(2)
+    expect(board.pendingMath).toBeUndefined()
+    expect(track.enabled).toBe(true)
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('prevents a model from confirming a revision created within the same speech turn', async () => {
+    board.pendingMath = { id: 'math-preview:test', revision: 1, objectIds: ['draft:a'] }
+    const apply = vi.fn(() => { board.pendingMath!.revision++; return { ok: true, message: 'Revised.', ids: [] } })
+    const { channel, callbacks } = await start({ applyOperations: apply })
+    await speak(channel, 'correction', 'make it blue')
+    await done(channel, 'self-approval', [
+      command([{ type: 'update_object', target: 'draft:a', color: 'blue' }]),
+      command([{ type: 'confirm_math', target: 'math-preview:test', previewRevision: 2 }]),
+    ])
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.stringContaining('new instruction'))
+  })
   it('bounds large PDF boards by UTF-8 bytes while keeping the full selected equation first', async () => {
     const latex = String.raw`\int_0^1 x^2\,dx = \frac13`
     board = { ...base, selectedIds: ['math:chosen'], objects: [

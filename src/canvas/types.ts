@@ -9,7 +9,7 @@ export type MagicShapeProps = {
   geometry: GeometryKind; fontSize: number;
   visualization?: VisualizationSpec;
   vertices?: Point[]; angles?: number[]; sides?: number;
-  fill?: string; fillOpacity?: number; strokeWidth?: number; showGrid?: boolean; showAxes?: boolean
+  fill?: string; fillOpacity?: number; strokeWidth?: number; showGrid?: boolean; showAxes?: boolean; showNumbers?: boolean
 }
 export type StrokePoint = Point & { z?: number; pressure?: number }
 export type DrawProps = {

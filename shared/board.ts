@@ -21,7 +21,7 @@ export type BoardObject = {
   visualization?: VisualizationSpec;
   color?: string; geometry?: string; locked?: boolean; fontSize?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
-  showGrid?: boolean; showAxes?: boolean; vertices?: Point[]; angles?: number[]; sides?: number; crop?: ImageCrop
+  showGrid?: boolean; showAxes?: boolean; showNumbers?: boolean; vertices?: Point[]; angles?: number[]; sides?: number; crop?: ImageCrop
   /** board units kept free under an inserted textbook problem for the teacher's work */
   workBelow?: number
 }
@@ -45,19 +45,21 @@ export type BoardContext = {
   gesture?: { active: boolean; bounds: Bounds; start: Point; current: Point } | null;
   contentSelection?: ContentSelection | null; dictationMode?: DictationMode; focusMode?: FocusMode
   library?: LibraryContext; placementOptions?: PlacementOption[]
+  pendingMath?: { id: string; revision: number; objectIds: string[] }
 }
 export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import' | 'pick'
 /** A rendered raster for create_image; src is a data:image/(png|jpeg) base64 URL. */
 export type BoardImage = { src: string; w: number; h: number; mimeType: 'image/png' | 'image/jpeg'; name: string }
 export type BoardOperation = {
   type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'propose_image' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo'
-    | 'insert_library' | 'library_action' | 'create_image';
+    | 'insert_library' | 'library_action' | 'create_image' | 'confirm_math' | 'cancel_math';
+  previewRevision?: number;
   target?: string; ids?: string[]; placement?: 'focus' | 'pointer' | 'auto';
   expression?: string; latex?: string; text?: string; title?: string;
   prompt?: string;
   geometry?: GeometryKind; vertices?: Point[]; angles?: number[]; sides?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
-  showGrid?: boolean; showAxes?: boolean; crop?: ImageCrop;
+  showGrid?: boolean; showAxes?: boolean; showNumbers?: boolean; crop?: ImageCrop;
   color?: string; xMin?: number; xMax?: number; yMin?: number; yMax?: number;
   axisMode?: AxisMode; fitY?: boolean; layer?: 'front' | 'back';
   visualization?: VisualizationSpec;

@@ -42,6 +42,9 @@ function scopeFailure(message: string): never { throw new CommandRecoveryError(m
 export function constrainRepairCommand(command: BoardCommand, request: BoardRepairRequest): BoardCommand {
   const context = request.context as BoardContext
   if (!command.operations.length) return command
+  if (command.operations.some(op => op.type === 'confirm_math' || op.type === 'cancel_math')) {
+    return scopeFailure('Please confirm or discard the current preview again. Automatic repair cannot supply your approval.')
+  }
   if (request.failure.kind === 'operation_rejected') {
     if (!request.failedOperations?.length) return scopeFailure('The failed edit could not be identified. Please give the instruction again.')
     const prepared = prepareBoardRepair(request.failedOperations as BoardOperation[], context, context, { ok: false, message: request.failure.message, ids: [] })
@@ -62,7 +65,7 @@ export function constrainRepairCommand(command: BoardCommand, request: BoardRepa
     }
     if (known.length !== command.operations.length || known.some((operation, index) => operation.type !== command.operations[index].type)) return scopeFailure('The correction changed the requested actions. Please give the instruction again.')
   }
-  const allowedIds = new Set([...context.selectedIds, ...(context.focus?.targetIds ?? []), ...context.lastCreatedIds,
+  const allowedIds = new Set([...(context.pendingMath?.objectIds ?? []), ...context.selectedIds, ...(context.focus?.targetIds ?? []), ...context.lastCreatedIds,
     ...known.flatMap(operation => targetIds(operation, context))])
   const operations = command.operations.map((operation, index) => {
     if (['delete_objects', 'undo', 'redo'].includes(operation.type)) {

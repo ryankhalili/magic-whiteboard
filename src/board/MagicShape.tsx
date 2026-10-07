@@ -139,7 +139,7 @@ async function getExportCss(): Promise<string> {
 
 export async function magicShapeToSvg(shape: MagicShape) {
     if (shape.props.kind === 'plot' || shape.props.kind === 'geometry') {
-      const graphic = shape.props.kind === 'plot' ? <PlotGraphic shape={shape}/> : <GeometryGraphic shape={shape}/>
+      const graphic = shape.props.kind === 'plot' ? <g><style>{await getExportCss()}</style><PlotGraphic shape={shape}/></g> : <GeometryGraphic shape={shape}/>
       if (shape.meta?.literalBounds) return <svg width={shape.props.w} height={shape.props.h} overflow="hidden">{graphic}</svg>
       return graphic
     }

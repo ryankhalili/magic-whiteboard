@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { visualizationSchema } from '../shared/visualization'
-import { meshProjection, phaseField, scalarField, scientificMesh, validateScientific } from '../src/math/scientific'
+import { faceLight, meshAxes, meshViewBounds, meshProjection, phaseField, scalarField, scientificMesh, validateScientific } from '../src/math/scientific'
 import { Editor } from '../src/canvas/editor'
 import { createBoardController } from '../src/board/controller'
 import { magicShapeToSvg, type MagicShape } from '../src/board/MagicShape'
@@ -213,7 +213,7 @@ describe('scientific objects through command, backup and export paths', () => {
     const { editor, controller } = workspace()
     const made = controller.applyOperations([{ type: 'create_plot', expression: 'y', visualization: { type: 'phase', secondaryExpression: '-x' }, ...range, showGrid: false, showAxes: false }])
     const exported = await renderShapesToSvg(editor, made.ids as MagicShape['id'][])
-    expect(exported.svg).toContain('dx/dt')
+    expect(exported.svg).toContain('\\frac{dx}{dt}')
     expect(exported.svg).not.toContain('#e5e7eb')
     expect(exported.svg).not.toContain('stroke="#6b7280"')
     expect(exported.svg).toContain('marker-end=')
@@ -224,7 +224,7 @@ describe('scientific objects through command, backup and export paths', () => {
     const made = controller.applyOperations([{ type: 'create_plot', expression: 'x*y', visualization: { type: 'surface' }, ...range, strokeWidth: 4.5 }])
     const shape = editor.getShape<MagicShape>(made.ids[0] as MagicShape['id'])!
     const markup = renderToStaticMarkup(createElement('svg', null, createElement(PlotGraphic, { shape })))
-    const polygon = markup.match(/<polygon[^>]+>/)?.[0]
+    const polygon = markup.match(/<polygon[^>]+stroke-width=[^>]+>/)?.[0]
     expect(polygon).toContain('stroke-width="4.5"')
   })
 
@@ -236,12 +236,94 @@ describe('scientific objects through command, backup and export paths', () => {
     const shape = editor.getShape<MagicShape>(made.ids[0] as MagicShape['id'])!
     const live = renderToStaticMarkup(createElement(PlotGraphic, { shape }))
     const exported = renderToStaticMarkup(await magicShapeToSvg(shape))
-    expect(exported).toBe(live)
+    expect(exported).toContain(live)
+    expect(exported).toContain('<style>')
     expect(exported).not.toMatch(/NaN|Infinity|Unable to draw/)
-    expect(exported).toContain(type === 'phase' ? 'dx/dt' : 'Sampled surface')
+    expect(exported).toContain(type === 'phase' ? '\\frac{dx}{dt}' : 'data-plot-axis=')
+    expect(exported).not.toContain('Sampled surface')
     if (type !== 'phase') expect(exported).toContain('<polygon')
     const fullExport = await renderShapesToSvg(editor, [shape.id])
     expect(fullExport.svg).toContain(exported)
     expect(fullExport.svg).toContain('viewBox=')
+  })
+})
+
+
+describe('readable scientific axes and independent display settings', () => {
+  it('projects positive X toward the viewer, positive Y right and positive Z up by default', () => {
+    const mesh = scientificMesh('x*y', { type: 'surface' }, range)
+    const project = meshProjection(mesh, { type: 'surface' }, 480, 360)
+    const o = project({ x: 0, y: 0, z: 0 }), x = project({ x: 1, y: 0, z: 0 }), y = project({ x: 0, y: 1, z: 0 }), z = project({ x: 0, y: 0, z: 1 })
+    expect(x.depth).toBeGreaterThan(o.depth)
+    expect(x.y).toBeGreaterThan(o.y)
+    expect(y.x).toBeGreaterThan(o.x)
+    expect(z.y).toBeLessThan(o.y)
+  })
+
+  it.each(['0', '2', 'sin(sqrt(x^2+y^2))', '1000000+x'])('keeps bounded, finite, separated ticks for %s', expression => {
+    const mesh = scientificMesh(expression, { type: 'surface' }, range)
+    const project = meshProjection(mesh, { type: 'surface' }, 480, 360)
+    const bounds = meshViewBounds(mesh)
+    for (const { axis, ticks } of meshAxes(mesh, project)) {
+      expect(bounds.min[axis]).toBeLessThan(bounds.max[axis])
+      expect(ticks.length).toBeGreaterThan(0)
+      expect(ticks.length).toBeLessThanOrEqual(10)
+      for (const [i, tick] of ticks.entries()) {
+        expect(Number.isFinite(tick.value)).toBe(true)
+        expect(Object.values(tick.point).every(Number.isFinite)).toBe(true)
+        if (i) expect(Math.hypot(tick.point.x - ticks[i - 1].point.x, tick.point.y - ticks[i - 1].point.y)).toBeGreaterThanOrEqual(20)
+      }
+    }
+  })
+
+  it('preserves grid, number and mesh settings through commands, context, undo and file restore', async () => {
+    const { editor, controller } = workspace()
+    const made = controller.applyOperations([{ type: 'create_plot', expression: 'x*y', visualization: { type: 'surface' }, ...range }])
+    const id = made.ids[0] as MagicShape['id']
+    expect(controller.applyOperations([{ type: 'update_object', target: id, showAxes: false, showNumbers: true, showGrid: false, visualization: { type: 'surface', showWireframe: false } }]).ok).toBe(true)
+    expect(controller.getObjects()[0]).toMatchObject({ showAxes: false, showNumbers: true, showGrid: false, visualization: { showWireframe: false } })
+    const exported = await renderShapesToSvg(editor, [id])
+    expect(exported.svg).toContain('data-plot-layer="number"')
+    expect(exported.svg).not.toContain('data-plot-layer="grid"')
+    expect(exported.svg).not.toContain('data-plot-layer="axis"')
+    expect(exported.svg.match(/<polygon[^>]+>/)?.[0]).toContain('stroke="none"')
+    expect(exported.svg).not.toContain('Sampled surface')
+    const project = parseProjectFile(await projectFileBlob(editor, DEFAULT_SETTINGS).text())
+    expect(new Editor(project.snapshot).getShape<MagicShape>(id)?.props).toEqual(editor.getShape<MagicShape>(id)?.props)
+    editor.undo()
+    expect(editor.getShape<MagicShape>(id)?.props.showNumbers).toBeUndefined()
+  })
+
+  it('hides numeric ticks without removing 3D axes or the grid', () => {
+    const { editor, controller } = workspace()
+    const made = controller.applyOperations([{ type: 'create_plot', expression: 'x*y', visualization: { type: 'surface' }, ...range, showNumbers: false }])
+    const shape = editor.getShape<MagicShape>(made.ids[0] as MagicShape['id'])!
+    const svg = renderToStaticMarkup(createElement(PlotGraphic, { shape }))
+    expect(svg).not.toContain('data-plot-layer="number"')
+    expect(svg).toContain('data-plot-layer="axis"')
+    expect(svg).toContain('data-plot-layer="grid"')
+  })
+
+  it('rejects corrupt display settings during notebook restore', () => {
+    const { editor, controller } = workspace()
+    const made = controller.applyOperations([{ type: 'create_plot', expression: 'x*y', visualization: { type: 'surface' }, ...range }])
+    const snapshot = editor.getSnapshot(), broken = structuredClone(snapshot)
+    const record = broken.document.store[made.ids[0]] as MagicShape
+    Object.assign(record.props, { showNumbers: 'yes' })
+    expect(() => editor.loadSnapshot(broken)).toThrow(/display option/)
+    expect(editor.getSnapshot()).toEqual(snapshot)
+  })
+})
+
+
+describe('surface lighting', () => {
+  it('shades different normals, is winding-independent, and stays finite on degenerate faces', () => {
+    const mesh = scientificMesh('x*x+y*y', { type: 'surface' }, range)
+    const project = meshProjection(mesh, { type: 'surface' }, 480, 360)
+    const lights = mesh.faces.map(face => faceLight(face, project))
+    expect(Math.max(...lights) - Math.min(...lights)).toBeGreaterThan(.2)
+    expect(lights.every(value => Number.isFinite(value) && value >= .28 && value <= .88)).toBe(true)
+    expect(faceLight(mesh.faces[80], project)).toBeCloseTo(faceLight([...mesh.faces[80]].reverse(), project), 2)
+    expect(faceLight(Array(4).fill({ x: 0, y: 0, z: 0 }), project)).toBe(.5)
   })
 })

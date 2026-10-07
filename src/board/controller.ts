@@ -245,7 +245,7 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
   if (p.fill !== undefined) validateColor(p.fill)
   if (p.fillOpacity !== undefined) validateOpacity(p.fillOpacity)
   if (p.strokeWidth !== undefined) validateStrokeWidth(p.strokeWidth)
-  for (const key of ['showGrid', 'showAxes'] as const) if (operation[key] !== undefined) {
+  for (const key of ['showGrid', 'showAxes', 'showNumbers'] as const) if (operation[key] !== undefined) {
     if (typeof operation[key] !== 'boolean') throw new Error(`${key} must be true or false.`)
     p[key] = operation[key]
   }
@@ -300,7 +300,7 @@ export class BoardController {
       }
       if (shape.type === 'magic') {
         object.color = shape.props.color; object.title = shape.props.title; object.fontSize = shape.props.fontSize
-        for (const key of ['fill', 'fillOpacity', 'strokeWidth', 'showGrid', 'showAxes', 'vertices', 'angles', 'sides'] as const) Object.assign(object, { [key]: shape.props[key] })
+        for (const key of ['fill', 'fillOpacity', 'strokeWidth', 'showGrid', 'showAxes', 'showNumbers', 'vertices', 'angles', 'sides'] as const) Object.assign(object, { [key]: shape.props[key] })
         if (shape.props.kind === 'plot') {
           object.visualization = shape.props.visualization
           for (const key of ['expression', 'xMin', 'xMax', 'yMin', 'yMax'] as const) Object.assign(object, { [key]: shape.props[key] })

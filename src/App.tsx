@@ -8,6 +8,8 @@ import { focusImageBounds, libraryAssetId, libraryImageSize, libraryItemKey, lib
 import { guessContentSize, NATURAL_SIZES } from './board/placementSpots'
 import { finishPointerFollow, focusFromGesture, movePointerFollow, startPointerFollow, type PointerFollow } from './board/interactions'
 import { createHoldToTalk } from './ai/hold-to-talk'
+import { MathProposal, needsMathPreview } from './math/MathProposal'
+import { MathProposalPanel } from './math/MathProposalPanel'
 import { MathStudio } from './math/MathStudio'
 import { placeStudioOperation } from './math/studioPlacement'
 import { DocumentNavigator, DocumentPageMask } from './documents/DocumentNavigator'
@@ -146,6 +148,13 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false)
   const [holdingTalk, setHoldingTalk] = useState(false)
   const [mathStudio, setMathStudio] = useState(false)
+  const mathProposalRef = useRef<MathProposal | null>(null)
+  const [mathProposal, setMathProposal] = useState<{ draft: MathProposal; revision: number } | null>(null)
+  const publishMathProposal = useCallback((draft: MathProposal | null) => {
+    mathProposalRef.current = draft
+    setMathProposal(draft ? { draft, revision: draft.revision } : null)
+    queueMicrotask(() => voiceRef.current?.updateContext())
+  }, [])
   const [documentPageId, setDocumentPageId] = useState<string | null>(null)
   const [voiceMode, setVoiceMode] = useState(false)
   const [voiceControlsHidden, setVoiceControlsHidden] = useState(false)
@@ -217,7 +226,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       selectedIds,
       lastCreatedIds: controller.current?.lastCreatedIds || [],
       viewport: vp ? { x: vp.x, y: vp.y, w: vp.w, h: vp.h } : { x: 0, y: 0, w: 1200, h: 800 },
-      objects: relevantObjects, gesture: gestureRef.current,
+      objects: [...(mathProposalRef.current?.objects ?? []), ...relevantObjects].slice(0, 120),
+      ...(mathProposalRef.current ? { pendingMath: mathProposalRef.current.summary } : {}), gesture: gestureRef.current,
       dictationMode: dictationRef.current,
       contentSelection: contentSelectionRef.current && selectedIds.includes(contentSelectionRef.current.shapeId) ? contentSelectionRef.current : undefined,
       ...(library ? { library } : {}),
@@ -247,6 +257,45 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   // reveal: new objects that are off screen or under a panel glide into view
   const execute = useCallback((ops: BoardOperation[], reportFailure = true, reveal = true): BoardResult => {
     if (!controller.current) return { ok: false, message: 'The board is still loading.', ids: [] }
+    try {
+      const draft = mathProposalRef.current
+      if (ops.some(op => op.type === 'confirm_math' || op.type === 'cancel_math')) {
+        if (ops.length !== 1 || !draft || ops[0].target !== draft.id) throw new Error('That math preview is no longer available. Nothing was inserted.')
+        if (ops[0].type === 'cancel_math') { publishMathProposal(null); return { ok: true, message: 'Math preview discarded. The board is unchanged.', ids: [] } }
+        const approved = draft.operations(ops[0].target, ops[0].previewRevision)
+        const ed = editorRef.current!
+        flushSourceEdits(); ed.completeInteraction(); stopFollowing()
+        const previous = contextOverride.current, existing = ed.getCurrentPageShapeIds()
+        // Confirmation uses the reviewed placement, even if the pointer has moved.
+        contextOverride.current = { ...previous, focus: draft.context.focus, focusMode: draft.context.focusMode, selectedIds: [], lastCreatedIds: [] }
+        let result: BoardResult
+        try { result = controller.current.applyOperations(approved) } finally { contextOverride.current = previous }
+        if (result.ok) {
+          publishMathProposal(null); setError(''); notify(result.message)
+          const added = addedBounds(ed, existing, result.ids)
+          if (added) revealRef.current(added, true)
+        } else if (reportFailure) setError(result.message)
+        return result
+      }
+      if (draft?.targets(ops)) {
+        const result = draft.revise(ops)
+        if (result.ok) { publishMathProposal(draft); setError(''); notify(result.message) }
+        else if (reportFailure) setError(result.message)
+        return result
+      }
+      if (needsMathPreview(ops)) {
+        if (draft) return draft.result('A math preview is already open. Adjust or confirm it, or discard it before starting another.')
+        flushSourceEdits(); editorRef.current!.completeInteraction(); stopFollowing()
+        const proposal = new MathProposal(editorRef.current!, getContext(), ops)
+        publishMathProposal(proposal); setInspectorOpen(false); setError('')
+        notify('Preview ready. Keep talking to adjust it, or say “add it”.')
+        return proposal.result()
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The math preview could not be updated.'
+      if (reportFailure) setError(message)
+      return { ok: false, message, ids: [] }
+    }
     if (ops.some(operation => operation.type === 'propose_image')) {
       try {
         if (ops.length !== 1) throw new Error('Propose one image at a time, separately from other board changes.')
@@ -283,7 +332,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       }
     } else if (reportFailure) setError(result.message)
     return result
-  }, [notify, stopFollowing, getContext, images.propose])
+  }, [notify, stopFollowing, getContext, images.propose, publishMathProposal])
   const executeManual = useCallback((ops: BoardOperation[]): BoardResult => {
     const ed = editorRef.current
     if (!ed) return { ok: false, message: 'The board is still loading.', ids: [] }
@@ -691,7 +740,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         if (applied && !applied.ok) setError(`I couldn’t safely finish that edit after checking it. ${applied.message} You can keep working or give a new instruction.`)
       }
       // the board, not the model, knows whether a book lookup inserted something or is waiting for a tap
-      addMessage('assistant', applied && (!applied.ok || result.operations.some(op => op.type === 'propose_image' || isLibraryOp(op))) ? applied.message : result.message || applied?.message || 'Done.')
+      addMessage('assistant', applied && (!applied.ok || !!mathProposalRef.current || result.operations.some(op => ['propose_image', 'confirm_math', 'cancel_math'].includes(op.type) || isLibraryOp(op))) ? applied.message : result.message || applied?.message || 'Done.')
     } catch (e) { if (!abort.signal.aborted) { setError(e instanceof Error ? e.message : String(e)); recoverPairing(e) } }
     finally {
       clearTimeout(progressTimer); if (commandAbort.current === abort) commandAbort.current = null; setBusy(false); setCommandProgress('')
@@ -1495,6 +1544,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
       {images.draft && <div className="image-placement-preview" style={localBounds(images.draft.bounds)} aria-label="Image placement preview"><span><ImagePlus size={16}/>{images.draft.phase === 'review' ? 'Image preview · awaiting confirmation' : ['submitting', 'generating'].includes(images.draft.phase) ? 'Generating image…' : 'Image request paused'}</span></div>}
       <ImageGenerationPanel images={images} model={api?.models?.image}/>
+      {mathProposal && <MathProposalPanel draft={mathProposal.draft}
+        onConfirm={() => execute([{ type: 'confirm_math', target: mathProposal.draft.id, previewRevision: mathProposal.revision }])}
+        onDismiss={() => execute([{ type: 'cancel_math', target: mathProposal.draft.id }])}/> }
 
       <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : settings.mode === 'document' ? 'Homework pages' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label><button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void refreshStatus().catch(() => {}) }}><CircleHelp size={16}/></button></div>
       <nav className="tool-rail" aria-label="Drawing tools">
