@@ -39,6 +39,7 @@ const EXERCISES_ON = [
   /^SECTION\s+\d+(\.\d+)*\s+(EXERCISES|PROBLEMS)$/i,
   /^(EXERCISES|PROBLEMS|PRACTICE PROBLEMS|PRACTICE EXERCISES|REVIEW EXERCISES|CHAPTER REVIEW EXERCISES|REVIEW PROBLEMS|PROBLEM SET|HOMEWORK PROBLEMS)$/i,
   /^(EXERCISES|PROBLEMS)\s+(FOR\s+)?(SECTION\s+)?\d+(\.\d+)*$/i,
+  /^(REVIEW\s+)?QUESTIONS$/i,
 ]
 const EXERCISES_OFF = /^(chapter review|key terms|key equations|key concepts|summary|chapter summary|glossary|references|further reading|index)$/i
 const SECTION_HEADING = /^Section\s+\d+(\.\d+)*\b/i
@@ -47,12 +48,13 @@ const STOPPERS = /^(Rule:|Problem-Solving Strategy|MEDIA$|STUDENT PROJECT|Learni
 // the instruction for the next group of exercises: "For the following exercises, find ..."
 const INSTRUCTION = /^(\[T\]\s*)?((For|In)\s+(each of\s+)?the\s+(following|next)\b|[A-Z][a-z]+ the following\b|The following (graphs?|tables?|figures?|questions|problems|exercises|data)\b|True or False\b)/
 const KEYWORDS: Array<[RegExp, AnchorKind]> = [
+  [/^(CHECKPOINT|Checkpoint)\s+(\d+(?:\.\d+)*)/, 'checkpoint'],
   [/^(EXAMPLE|Example)\s+(\d+(?:\.\d+)*)/, 'example'],
   [/^(THEOREM|Theorem|theorem|Thm\.)\s*(\d+(?:\.\d+)*)/, 'theorem'],
   [/^(DEFINITION|Definition)\b\s*(\d+(?:\.\d+)*)?/, 'definition'],
   [/^(PROBLEM|Problem)\s+(\d+(?:\.\d+)*)/, 'problem'],
   [/^(EXERCISE|Exercise)\s+(\d+(?:\.\d+)*)/, 'exercise'],
-  [/^(QUESTION|Question)\s+(\d+)/, 'question'],
+  [/^(QUESTION|Question)\s+(\d+(?:\.\d+)*)/, 'question'],
   [/^(Figure|FIGURE|Fig\.)\s+(\d+(?:\.\d+)*)/, 'figure'],
   [/^(Table|TABLE)\s+(\d+(?:\.\d+)*)/, 'table'],
 ]
@@ -65,7 +67,7 @@ function continues(previous: string) {
   return !!previous && (REFERENCE_END.test(previous) || /[A-Za-z,]$/.test(previous))
 }
 
-function matchLine(text: string, ratio: number, exerciseMode: boolean, previous: string): { kind: AnchorKind; label: string } | null {
+function matchLine(text: string, ratio: number, exerciseMode: boolean, previous: string, exerciseKind: 'exercise' | 'problem' | 'question'): { kind: AnchorKind; label: string } | null {
   text = text.normalize('NFKC').replace(/\u00ad/g, '')
   // Named results commonly have no number, e.g. "Mean Value Theorem". Require
   // heading typography or title case, and exclude prose references to the result.
@@ -87,16 +89,18 @@ function matchLine(text: string, ratio: number, exerciseMode: boolean, previous:
     if (kind === 'definition' && !match[2] && rest && !/^[.:(]/.test(rest) && !upper) return null
     return { kind, label: match[2] ?? '' }
   }
-  const numbered = /^(\d{1,3}\.\d{1,3})\s+(\S.*)$/.exec(text)
+  const numbered = /^(\d{1,3}(?:\.\d{1,3})+)\s+(\S.*)$/.exec(text)
   // "Table" at the end of the line above makes "1.8 shows the ..." a wrapped reference
   if (numbered && !numbered[1].startsWith('0.') && /[A-Za-z]{2}/.test(numbered[2])) {
     if (ratio >= 1.25) return { kind: 'section', label: numbered[1] }
-    if (ratio <= 1.1 && !continues(previous) && !CONTINUATION.test(numbered[2])) return { kind: 'checkpoint', label: numbered[1] }
+    if (exerciseMode && ratio <= 1.1 && !continues(previous)) return { kind: exerciseKind, label: numbered[1] }
+    const prompt = /^(?:For|Find|Show|Prove|Consider|Calculate|Determine|Explain|Evaluate|Use|Sketch|Solve|Estimate|Let|Compute|Derive|Verify|What|How|Why|Which)\b/.test(numbered[2])
+    if (ratio <= 1.1 && prompt && !continues(previous) && !CONTINUATION.test(numbered[2])) return { kind: 'checkpoint', label: numbered[1] }
     return null
   }
   // "12. Find" or "12) Find" is an exercise only inside an exercise set, otherwise it is a step of a worked solution
   const exercise = exerciseMode ? /^(\d{1,3})\s?[.)](?:\s|$)/.exec(text) : null
-  if (exercise && ratio < 1.25 && Number(exercise[1]) >= 1) return { kind: 'exercise', label: String(Number(exercise[1])) }
+  if (exercise && ratio < 1.25 && Number(exercise[1]) >= 1) return { kind: exerciseKind, label: String(Number(exercise[1])) }
   return null
 }
 
@@ -135,7 +139,8 @@ function edgeLines(lines: TextLine[], body: number, lineH: number): Set<TextLine
   const edges = new Set<TextLine>()
   const marginal = (text: string) => /access for free at|^page \d+\b/i.test(text)
   const running = (line: TextLine, text: string) => !KEYWORDS.some(([pattern]) => pattern.test(text)) && !/^\d{1,3}\s?[.)](\s|$)/.test(text)
-    && (line.size < body * 0.93 || printedNumberCandidates([text]).length > 0)
+    && (line.size < body * 0.93 || printedNumberCandidates([text]).length > 0
+      || lines.some(other => other !== line && Math.abs(other.box.y - line.box.y) < .4 * lineH && /^(?:\d{1,4}|[ivxlcdm]+)$/i.test(other.text.trim())))
   for (const fromTop of [true, false]) {
     const order = fromTop ? lines : [...lines].sort((p, q) => (q.box.y + q.box.h) - (p.box.y + p.box.h))
     let inner: number | null = null, count = 0, apart = true
@@ -173,9 +178,9 @@ const exerciseLike = (kind: AnchorKind) => kind === 'exercise' || kind === 'prob
  */
 export function detectAnchors(
   bookId: string,
-  page: { index: number; lines: TextLine[]; exerciseMode: boolean; answers?: number; exerciseSize?: number; carry?: OpenItem[]; allExercises?: boolean },
+  page: { index: number; lines: TextLine[]; exerciseMode: boolean; exerciseKind?: 'exercise' | 'problem' | 'question'; answers?: number; exerciseSize?: number; carry?: OpenItem[]; allExercises?: boolean },
   bodySize: number,
-): { anchors: Anchor[]; exerciseMode: boolean; answers: number; exerciseSize: number; open: OpenItem[]; continued: Continued[] } {
+): { anchors: Anchor[]; exerciseMode: boolean; exerciseKind: 'exercise' | 'problem' | 'question'; answers: number; exerciseSize: number; open: OpenItem[]; continued: Continued[] } {
   const all = [...(page.lines ?? [])].filter(line => line && typeof line.text === 'string' && line.box && Number.isFinite(line.size))
     .sort((p, q) => p.box.y - q.box.y || p.box.x - q.box.x)
   const body = bodySize > 0 ? bodySize : bodyFontSize(all)
@@ -183,6 +188,7 @@ export function detectAnchors(
   const lines = all.filter(line => !edges.has(line))
   const always = !!page.allExercises
   let exerciseMode = !!page.exerciseMode || always, answers = page.answers && page.answers > 0 ? page.answers : 0
+  let exerciseKind = page.exerciseKind ?? 'exercise'
   let exerciseSize = exerciseMode && page.exerciseSize && page.exerciseSize > 0 ? page.exerciseSize : 0
   const lineH = median(lines.map(line => line.box.h), body * 1.2)
 
@@ -228,12 +234,22 @@ export function detectAnchors(
     }
     if (EXERCISES_ON.some(pattern => pattern.test(text)) && (ratio >= 1.1 || text === text.toUpperCase())) {
       exerciseMode = true; exerciseSize = isHeading(line, body) ? line.size : 0
+      exerciseKind = /problems?/i.test(text) ? 'problem' : /questions?/i.test(text) ? 'question' : 'exercise'
       return
     }
     // a new section ends an exercise set: a big or numbered heading, "Section 2.3", or any heading as big as the one that started it
     if (exerciseMode && !always && (ratio >= 1.6 || (ratio >= 1.25 && /^\d{1,3}\.\d{1,3}\s+\S/.test(text)) || (ratio >= 1.15 && EXERCISES_OFF.test(text))
       || (isHeading(line, body) && (SECTION_HEADING.test(text) || (exerciseSize > 0 && line.size >= exerciseSize * 0.97))))) { exerciseMode = false; exerciseSize = 0 }
-    const match = matchLine(text, ratio, exerciseMode, sentenceBefore(lines, order, body, column))
+    const match = matchLine(text, ratio, exerciseMode, sentenceBefore(lines, order, body, column), exerciseKind)
+    if (match && (match.kind === 'checkpoint' || match.kind === 'section') && listed.has(line)) return
+    // An unlabelled prompt is not automatically a publisher's "Checkpoint".
+    // Keep that convention only for an immediate companion to a worked example.
+    if (match?.kind === 'checkpoint' && !/^checkpoint\b/i.test(text)
+      && !found.some(item => item.kind === 'example' && item.label === match.label)) match.kind = 'question'
+    // A lone "2 ." inside a displayed formula is not question 2. In a
+    // chapter-numbered problem set the labels share the left problem margin.
+    if (match && exerciseLike(match.kind) && /^\d+$/.test(match.label)
+      && found.some(item => exerciseLike(item.kind) && item.label.includes('.') && columnLeft(item.line) === columnLeft(line) && line.box.x > item.line.box.x + .025)) return
     if (match && !((match.kind === 'checkpoint' || match.kind === 'section') && listed.has(line))) found.push({ ...match, line, order })
   })
 
@@ -441,7 +457,7 @@ export function detectAnchors(
       open.push({ id: anchor.id, kind: item.kind, dx: left - from, boxDx: box.x - from, w: box.w, top: lines[0].box.y, hanging })
     }
   }
-  return { anchors, exerciseMode, answers, exerciseSize, open, continued }
+  return { anchors, exerciseMode, exerciseKind, answers, exerciseSize, open, continued }
 }
 
 /** Lines grouped into visual rows, left to right. */

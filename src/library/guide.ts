@@ -1,4 +1,5 @@
 import type { Anchor, BookGuide, BookRecord, PageRecord } from './types'
+import { contentsRows, isContentsPage } from './structure'
 
 const clean = (text: string) => text.normalize('NFKC').replace(/\u00ad/g, '').replace(/\s+/g, ' ').trim()
 const sectionNumber = (title: string) => /^(?:section\s+)?(\d+\.\d+(?:\.\d+)*)\b/i.exec(title)?.[1]
@@ -21,9 +22,8 @@ export function buildBookGuide(book: Pick<BookRecord, 'pageCount' | 'labels' | '
   // A printed TOC is useful even when the PDF has no bookmarks. Resolve printed labels,
   // never assume the number after a dotted leader is a zero-based file page.
   for (const page of pages.slice(0, Math.min(40, Math.ceil(book.pageCount / 4) + 4))) {
-    const lines = page.text.split('\n').map(clean)
-    const toc = /\b(?:table of contents|contents)\b/i.test(lines.slice(0, 8).join(' '))
-      || lines.filter(hasContentsLeader).length >= 3
+    const lines = page.lines.length ? contentsRows(page.lines) : page.text.split('\n').map(clean)
+    const toc = isContentsPage(page)
     if (!toc) continue
     contentsPages.add(page.index)
     for (const line of lines) {
