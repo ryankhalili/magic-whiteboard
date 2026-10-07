@@ -305,12 +305,26 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
 
   if (query.kind === 'item') {
     const label = query.label
+    // Spoken local numbering ("question 2 in chapter 6") can be printed
+    // as either "2" or "6.2". Keep both candidates; do not rewrite the
+    // query or guess a chapter from the currently open page.
+    const prefix = query.section ?? query.chapter
+    const qualified = prefix && /^\d+$/.test(label) && (!query.itemKind || PRACTICE.has(query.itemKind)) ? `${prefix}.${label}` : null
+    const labels = qualified ? [label, qualified] : [label]
     const labelChapter = /^\d+\.\d/.test(label) ? Number(label.split('.')[0]) : null
     const words = tokenize(query.raw.replace(new RegExp(escape(label), 'g'), ' '))
       .filter(word => !(word in KIND_WORDS) && !FILLER_WORDS.has(word) && !/^\d+$/.test(word) && !/^(chapter|chap|ch)$/.test(word) && !(query.book ?? '').includes(word))
     const sameChapter = (index: number) => labelChapter !== null && chapterOf[index] !== null ? (chapterOf[index] === labelChapter ? 1 : 0) : 0
     const kindMatch = (kind: AnchorKind) => query.itemKind ? (query.itemKind === kind ? 1 : 0) : (PRACTICE.has(kind) ? 1 : 0)
-    const labelled = anchors.filter(anchor => anchor.label === label)
+    const labelled = anchors.filter(anchor => labels.includes(anchor.label))
+    const itemPlace = (index: number, printedLabel: string) => {
+      const features = place(index)
+      // A qualified printed identifier supplies scope when headings/bookmarks
+      // are absent. It never overrides a contradictory known chapter/section.
+      if (prefix && printedLabel.startsWith(`${prefix}.`) && (!query.itemKind || PRACTICE.has(query.itemKind)) && (chapterOf[index] === null || chapterOf[index] === askedChapter)
+        && (!query.section || sectionOf[index] === null || sectionOf[index] === query.section)) features.inSection = 1
+      return features
+    }
     // "problem 3.2", "exercise 48", "question 5" and "3.2" mean practice items; a bare number falls back to anything with it
     let pool = !query.itemKind || PRACTICE.has(query.itemKind) ? labelled.filter(anchor => PRACTICE.has(anchor.kind)) : labelled
     if (!pool.length && !query.itemKind && !GENERAL_WORD.test(query.raw.toLowerCase())) pool = labelled
@@ -319,7 +333,7 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
       out.push(anchorCandidate(book, anchor, {
         exactLabel: 1, kindMatch: kindMatch(anchor.kind), kindPrior: PRIOR[anchor.kind] ?? 0.2,
         textMatch: overlap(words, `${anchor.heading} ${anchor.snippet}`), early: early(anchor.pageIndex), sameChapter: sameChapter(anchor.pageIndex),
-        ...place(anchor.pageIndex),
+        ...itemPlace(anchor.pageIndex, anchor.label),
       }, sectionOf[anchor.pageIndex]))
     }
     // pages that name the item in their text, for books where it was not detected; once items were found,
@@ -328,18 +342,19 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
     if (!detected || (query.itemKind && !out.some(candidate => candidate.features.kindMatch === 1))) {
       const kinds = query.itemKind && (detected || !PRACTICE.has(query.itemKind)) ? escape(query.itemKind) : 'problem|exercise|example|question|checkpoint'
       const aliases = query.itemKind === 'theorem' ? 'theorem|thm\\.?|lemma|corollary|proposition' : query.itemKind === 'figure' ? 'figure|fig\\.?' : kinds
-      const named = new RegExp(`\\b(${aliases})s?\\s*${escape(label)}(?![\\d]|\\.\\d)`, 'i')
-      const leading = new RegExp(`(^|\\n)\\s*${escape(label)}\\s*[.)]?\\s+\\S`)
+      const alternatives = labels.map(escape).join('|')
+      const named = new RegExp(`\\b(${aliases})s?\\s*(${alternatives})(?![\\d]|\\.\\d)`, 'i')
+      const leading = new RegExp(`(^|\\n)\\s*(${alternatives})(?![\\d]|\\.\\d)\\s*[.)]?\\s+\\S`)
       const extra: Candidate[] = []
       for (const page of pages) {
         if (found.has(page.index)) continue
         const normalized = page.text.normalize('NFKC').replace(/\u00ad/g, '')
-        const match = named.exec(normalized), lead = !detected && leading.test(normalized)
+        const match = named.exec(normalized), lead = !detected ? leading.exec(normalized) : null
         if (!match && !lead) continue
         const kind = match ? (KIND_WORDS[match[1].toLowerCase()] ?? null) : null
         extra.push(pageCandidate(book, page.index, page, {
           exactLabel: 0, kindMatch: kind && query.itemKind === kind ? 1 : 0, kindPrior: PRIOR.page,
-          textMatch: lead ? 1 : 0.5, early: early(page.index), sameChapter: sameChapter(page.index), ...place(page.index),
+          textMatch: lead ? 1 : 0.5, early: early(page.index), sameChapter: sameChapter(page.index), ...itemPlace(page.index, match?.[2] ?? lead?.[2] ?? label),
         }))
       }
       out.push(...extra.sort((p, q) => localScore(q.features) - localScore(p.features)).slice(0, 5))
@@ -412,6 +427,9 @@ export function certainItem(query: LibraryQuery, candidates: Candidate[]): Candi
   if (query.kind !== 'item') return null
   const scoped = !!(query.section || query.chapter)
   const fits = candidates.filter(c => c.kind === 'item' && !!c.anchor && c.features.exactLabel === 1 && (!scoped || c.features.inSection === 1))
+  // A book can contain both locally numbered questions and chapter-numbered
+  // problems. Different printed identifiers need a choice, not a silent guess.
+  if (new Set(fits.map(c => c.anchor!.label)).size > 1) return null
   // "problem 1.2" names the kind in books that print "Problem 1.2"
   const kind = query.itemKind ?? (/\bprob(?:lem)?s?\b/i.test(query.raw) ? 'problem' : undefined)
   const named = kind ? fits.filter(c => c.anchor!.kind === kind) : []

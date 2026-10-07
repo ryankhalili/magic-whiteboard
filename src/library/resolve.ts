@@ -81,7 +81,7 @@ function scopeMiss(query: LibraryQuery, book: BookRecord, anchors: Anchor[], can
   if (candidates.some(candidate => candidate.features.exactLabel === 1 && inScope(sections[candidate.pageIndex - 1]))) return null
   const known = query.section ? sections.includes(query.section) : sections.some(section => section !== null && Number(section.split('.')[0]) === Number(query.chapter)) || guideScopes.chapters.includes(Number(query.chapter))
   if (!known) return null
-  return `No ${itemName(query).toLowerCase()} in ${query.section ? `section ${query.section}` : `chapter ${query.chapter}`}.`
+  return `The local index did not identify ${itemName(query).toLowerCase()} in ${query.section ? `section ${query.section}` : `chapter ${query.chapter}`}. Try its printed number or page, or open the chapter and crop it visually.`
 }
 
 /** The ranker's context: what the teacher is doing and where in the book they are. */

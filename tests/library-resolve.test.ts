@@ -252,12 +252,43 @@ describe('matchLibrary', () => {
   })
 
   it('says when a section the book has holds no such item instead of offering other sections', async () => {
-    expect(await match('exercise 48 in section 3.3')).toEqual({ error: 'No exercise 48 in section 3.3.' })
-    expect(await match('problem 49 in section 3.2')).toEqual({ error: 'No problem 49 in section 3.2.' })
+    expect(await match('exercise 48 in section 3.3')).toEqual({ error: 'The local index did not identify exercise 48 in section 3.3. Try its printed number or page, or open the chapter and crop it visually.' })
+    expect(await match('problem 49 in section 3.2')).toEqual({ error: 'The local index did not identify problem 49 in section 3.2. Try its printed number or page, or open the chapter and crop it visually.' })
     expect(await match('exercise 48 in chapter 3')).toMatchObject({ book: { id: calc.id } })
     // a section or chapter the book does not show still offers what it has
     expect(await match('exercise 48 in section 3.9')).toMatchObject({ confident: false })
     expect(await match('exercise 48 in chapter 4')).toMatchObject({ confident: false })
+  })
+
+  it('imports chapter-end decimal problems and resolves spoken local numbers to the correct crop', async () => {
+    const pdf = await PDFDocument.create()
+    pdf.setTitle('Scattering Reference Fixture')
+    const font = await pdf.embedFont(StandardFonts.Helvetica)
+    const content: Text[][] = [
+      [['Chapter 6 Scattering', 72, 70, 18], ['6.1 Foundations', 72, 110, 16], ['A synthetic chapter for testing numbered problems.', 72, 150]],
+      [['Problems', 250, 60, 14], ['6.1 Consider a one-dimensional model.', 72, 120], ['Find its boundary conditions.', 90, 145]],
+      [['Problems', 250, 60, 14], ['6.2 Prove', 72, 110], ['A = B + C', 200, 160], ['in each of the following ways.', 90, 210],
+        ['a. By integrating the supplied expression.', 90, 235], ['b. By applying the stated identity.', 90, 260],
+        ['6.3 Estimate the radius of the sample.', 72, 380]],
+      [['Chapter 7 Applications', 72, 70, 18], ['7.1 Foundations', 72, 110, 16], ['7.2 Prove a different identity.', 72, 200]],
+    ]
+    for (const lines of content) {
+      const page = pdf.addPage([612, 792])
+      for (const [text, x, top, size = 10] of lines) page.drawText(text, { x, y: 792 - top - size * .8, size, font })
+    }
+    const book = await importBook(file(await pdf.save(), 'scattering-fixture.pdf'))
+    try {
+      for (const phrase of ['question 2 in chapter 6', 'problem 6.2', 'chapter 6 exercise 2']) {
+        const found = await match(phrase, book.id) as LibraryMatch
+        expect(found).toMatchObject({ confident: true, source: 'exact' })
+        expect(found.ranked[0].anchor).toMatchObject({ label: '6.2', pageIndex: 2 })
+        const crop = found.ranked[0].anchor!.box
+        expect(crop.y).toBeLessThan(110 / 792)
+        expect(crop.y + crop.h).toBeGreaterThan(260 / 792)
+        expect(crop.y + crop.h).toBeLessThan(380 / 792)
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally { await removeBook(book.id); forgetBookData(book.id); await touchBook(calc.id) }
   })
 
   it('finds the last exercises of a section on the page where the next section starts', async () => {
@@ -280,7 +311,7 @@ describe('matchLibrary', () => {
       expect(found).toMatchObject({ book: { id: book.id } })
       expect((found as LibraryMatch).ranked[0]).toMatchObject({ pageIndex: 3, anchor: { label: '58' } })
       expect(await matchLibrary(parseLibraryQuery('exercise 58 in chapter 1')!, { openBookId: book.id, near: null })).toMatchObject({ book: { id: book.id } })
-      expect(await matchLibrary(parseLibraryQuery('exercise 60 in section 1.1')!, { openBookId: book.id, near: null })).toEqual({ error: 'No exercise 60 in section 1.1.' })
+      expect(await matchLibrary(parseLibraryQuery('exercise 60 in section 1.1')!, { openBookId: book.id, near: null })).toEqual({ error: 'The local index did not identify exercise 60 in section 1.1. Try its printed number or page, or open the chapter and crop it visually.' })
     } finally {
       await removeBook(book.id); forgetBookData(book.id); await touchBook(calc.id)
     }
