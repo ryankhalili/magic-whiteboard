@@ -24,6 +24,9 @@ function tokenize(transcript: string): string[] | null {
   if (!transcript.trim() || transcript.length > MAX_TRANSCRIPT) return null
   let source = transcript.toLowerCase().trim()
     .replace(/[,.!?]+$/, '')
+    // ASR inserts pause punctuation in ordinary dictated clauses. Preserve
+    // ambiguous decimal/coordinate commas instead of silently changing meaning.
+    .replace(/,\s+(?=(?:bar|from|to|of|plus|minus|equals|equal|d [a-z]|d[a-z])\b)/g, ' ')
     .replace(/^(?:(?:this|that|it)(?: now)?|now) (?:equals|is equal to)\b/, '=')
     .replace(/\b(?:the|an) integral\b/g, 'integral')
     .replace(/\b(?:raised )?to the (?:power(?: of)?|(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?=\b))/g,

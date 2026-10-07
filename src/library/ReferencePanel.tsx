@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { CornerDownLeft, Crop, GripHorizontal, LoaderCircle, Plus, Search, X } from 'lucide-react'
+import { BookOpen, ChevronLeft, ChevronRight, CornerDownLeft, Crop, Download, GripHorizontal, LoaderCircle, Minus, Pin, PinOff, Plus, Search, X } from 'lucide-react'
 import { getAnchors, getPages } from './store'
 import { renderPage } from './render'
 import type { Anchor, AnchorKind, BookRecord, PageBox, PageRecord, RankedCandidate, RenderedImage } from './types'
 import './library.css'
+import { bookGuideText } from './guide'
 
 type Props = {
   book: BookRecord; highlight: RankedCandidate[] | null
@@ -28,6 +29,7 @@ export const PANEL_DEFAULT = { w: 380, h: 560 }
 export const PANEL_MIN = { w: 300, h: 320 }
 export const DEFAULT_ASPECT = 11 / 8.5
 const PANEL_KEY = 'magic-whiteboard-reference-panel-v1'
+const VIEW_KEY = 'magic-whiteboard-reference-view-v1'
 const EDGE = 8, SIDE = 12, GAP = 14, RENDER_TIMEOUT = 20_000, FULL: PageBox = { x: 0, y: 0, w: 1, h: 1 }
 const KIND_NAMES: Record<AnchorKind, string> = { example: 'Example', exercise: 'Exercise', problem: 'Problem', checkpoint: 'Checkpoint', section: 'Section', theorem: 'Theorem', definition: 'Definition', question: 'Question', figure: 'Figure', table: 'Table' }
 
@@ -177,19 +179,9 @@ function panelArea(): PanelArea {
   const top = bottom > 0 && bottom < window.innerHeight / 2 ? bottom : 0
   return { left: 0, top, width: window.innerWidth, height: window.innerHeight - top }
 }
-// the typing bar (or voice controls) and the caption under it
-const DOCK = '.command-dock .command-bar, .command-dock .command-caption, .command-dock .voice-panel'
-function dockRect(): KeepOut | null {
-  if (typeof document === 'undefined') return null
-  let out: KeepOut | null = null
-  for (const element of document.querySelectorAll(DOCK)) {
-    const r = element.getBoundingClientRect()
-    if (!(r.width > 0 && r.height > 0)) continue
-    out = out ? { left: Math.min(out.left, r.left), top: Math.min(out.top, r.top), right: Math.max(out.right, r.right), bottom: Math.max(out.bottom, r.bottom) } : { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
-  }
-  return out
-}
-const fitPanel = (rect: Partial<PanelRect>) => clampPanel(rect, panelArea(), PANEL_MIN, dockRect())
+// A floating reader can be placed over any part of the board. The typing dock must
+// not force it to jump or shrink each time voice controls grow.
+const fitPanel = (rect: Partial<PanelRect>) => clampPanel(rect, panelArea(), PANEL_MIN)
 const samePanel = (a: PanelRect, b: PanelRect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h
 function savedRect(): Partial<PanelRect> | null {
   if (typeof window === 'undefined') return null
@@ -203,6 +195,13 @@ function initialRect(): PanelRect {
   return fitPanel(saved ?? defaultPanelRect(area))
 }
 function saveRect(rect: PanelRect) { try { window.localStorage.setItem(PANEL_KEY, JSON.stringify(rect)) } catch { /* storage can be blocked */ } }
+export function readerPreferences(value: unknown): { zoom: number; pinned: boolean } {
+  const record = value && typeof value === 'object' ? value as { zoom?: unknown; pinned?: unknown } : {}
+  return { zoom: clamp(finite(record.zoom, 1), .5, 3), pinned: record.pinned === true }
+}
+function savedPreferences() {
+  try { return readerPreferences(JSON.parse(window.localStorage.getItem(VIEW_KEY) || 'null')) } catch { return readerPreferences(null) }
+}
 const media = (query: string) => { try { return typeof window !== 'undefined' && window.matchMedia(query).matches } catch { return false } }
 const boxStyle = (box: PageBox): React.CSSProperties => ({ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` })
 const fractionOf = (event: React.PointerEvent<HTMLElement>): Point => {
@@ -213,6 +212,10 @@ const fractionOf = (event: React.PointerEvent<HTMLElement>): Point => {
 export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, onInsertCandidate, onSearch, onClose, busy, message, lookup = 0, onDismiss, onPageChange }: Props) {
   const [rect, setRect] = useState<PanelRect>(initialRect)
   const [dragging, setDragging] = useState<'move' | 'resize' | null>(null)
+  const [preferences, setPreferences] = useState(savedPreferences)
+  const { zoom, pinned } = preferences
+  const [contentsOpen, setContentsOpen] = useState(false)
+  const [pageInput, setPageInput] = useState('')
   const [coarse, setCoarse] = useState(false)
   const [aspects, setAspects] = useState<number[] | null>(null)
   const [anchors, setAnchors] = useState<Map<number, Anchor[]>>(() => new Map())
@@ -237,7 +240,7 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
 
   const count = Math.max(0, Math.floor(finite(book.pageCount, 0)))
   const bar = coarse ? 52 : 38
-  const sheetWidth = Math.max(120, view.w - SIDE * 2)
+  const sheetWidth = Math.max(120, Math.round((view.w - SIDE * 2) * zoom))
   const [renderWidth, setRenderWidth] = useState(sheetWidth)
   const layout = useMemo(() => layoutPages(aspects ?? new Array<number>(count).fill(DEFAULT_ASPECT), sheetWidth, bar), [aspects, count, sheetWidth, bar])
   const layoutRef = useRef(layout); layoutRef.current = layout
@@ -247,16 +250,14 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   const shownHits = hitKey && hitKey === dismissed ? [] : hits
 
   useEffect(() => { alive.current = true; setCoarse(media('(pointer: coarse)')); return () => { alive.current = false; cancelAnimationFrame(scrollFrame.current); clearTimeout(pumpTimer.current) } }, [])
+  useEffect(() => { try { window.localStorage.setItem(VIEW_KEY, JSON.stringify(preferences)) } catch { /* storage can be blocked */ } }, [preferences])
   useEffect(() => { const t = setTimeout(() => setRenderWidth(sheetWidth), 220); return () => clearTimeout(t) }, [sheetWidth])
   useEffect(() => {
     const resize = () => setRect(current => { const next = fitPanel(current); return samePanel(next, current) ? current : next })
     // the header may not have been measurable on the first render
     setRect(initialRect())
     window.addEventListener('resize', resize)
-    // the typing bar grows in voice mode; stay above it
-    const dock = document.querySelector('.command-dock'), observer = dock && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null
-    if (dock) observer?.observe(dock)
-    return () => { window.removeEventListener('resize', resize); observer?.disconnect() }
+    return () => { window.removeEventListener('resize', resize) }
   }, [])
   useLayoutEffect(() => {
     const element = list.current
@@ -393,6 +394,7 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   }
 
   const startDrag = (kind: 'move' | 'resize') => (event: React.PointerEvent<HTMLElement>) => {
+    if (pinned) return
     if (kind === 'move' && (event.target as HTMLElement).closest('button,input,a')) return
     if (event.pointerType === 'mouse' && event.button !== 0) return
     event.preventDefault()
@@ -403,9 +405,9 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   const dragged = (event: React.PointerEvent<HTMLElement>): PanelRect | null => {
     const d = drag.current
     if (!d || d.id !== event.pointerId) return null
-    const dx = event.clientX - d.x, dy = event.clientY - d.y, area = panelArea(), dock = dockRect()
-    if (d.kind === 'move') return clampPanel({ ...d.rect, x: d.rect.x + dx, y: d.rect.y + dy }, area, PANEL_MIN, dock)
-    return clampPanel({ ...d.rect, w: Math.min(d.rect.w + dx, area.left + area.width - EDGE - d.rect.x), h: Math.min(d.rect.h + dy, area.top + area.height - EDGE - d.rect.y) }, area, PANEL_MIN, dock)
+    const dx = event.clientX - d.x, dy = event.clientY - d.y, area = panelArea()
+    if (d.kind === 'move') return clampPanel({ ...d.rect, x: d.rect.x + dx, y: d.rect.y + dy }, area)
+    return clampPanel({ ...d.rect, w: Math.min(d.rect.w + dx, area.left + area.width - EDGE - d.rect.x), h: Math.min(d.rect.h + dy, area.top + area.height - EDGE - d.rect.y) }, area)
   }
   const moveDrag = (event: React.PointerEvent<HTMLElement>) => { const next = dragged(event); if (next) setRect(next) }
   const endDrag = (event: React.PointerEvent<HTMLElement>) => {
@@ -414,6 +416,16 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
     drag.current = null; setDragging(null); setRect(next); saveRect(next)
   }
   const dragHandlers = (kind: 'move' | 'resize') => ({ onPointerDown: startDrag(kind), onPointerMove: moveDrag, onPointerUp: endDrag, onPointerCancel: endDrag })
+  const keyboardMove = (kind: 'move' | 'resize', event: React.KeyboardEvent<HTMLElement>) => {
+    if (pinned || !/^Arrow(Up|Down|Left|Right)$/.test(event.key)) return
+    event.preventDefault(); event.stopPropagation()
+    const amount = event.shiftKey ? 40 : 10, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0
+    const dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0
+    setRect(current => {
+      const next = fitPanel(kind === 'move' ? { ...current, x: current.x + dx, y: current.y + dy } : { ...current, w: current.w + dx, h: current.h + dy })
+      saveRect(next); return next
+    })
+  }
 
   const submit = () => {
     const text = query.trim()
@@ -448,7 +460,7 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
     const pageHits = shownHits.map((c, n) => ({ c, n: n + 1 })).filter(({ c }) => c.pageIndex === index)
     const box = cropping && crop && !crop.start ? crop.box : null
     const below = box ? box.y + box.h < .86 : true
-    return <section key={index} className={`ref-page ${cropping ? 'is-cropping' : ''}`} style={{ top: layout.tops[index], height: layout.heights[index] }} aria-label={label ? `Page ${label}` : `File page ${index + 1}`}>
+    return <section key={index} className={`ref-page ${cropping ? 'is-cropping' : ''}`} style={{ top: layout.tops[index], height: layout.heights[index], width: sheetWidth, right: 'auto', left: Math.max(SIDE, (view.w - sheetWidth) / 2) }} aria-label={label ? `Page ${label}` : `File page ${index + 1}`}>
       <div className="ref-page-bar" style={{ height: bar }}>
         <span className={`ref-folio ${label ? '' : 'is-file'}`}>{folio}</span>
         <span className="ref-page-actions">
@@ -472,26 +484,50 @@ export function ReferencePanel({ book, highlight, onInsertPage, onInsertCrop, on
   }
   const pages: React.ReactNode[] = []
   for (let index = first; index <= last; index++) pages.push(page(index))
+  const currentPage = Math.max(0, pageAt(layout, scrollTop + Math.min(30, view.h / 2)))
+  const goPage = (index: number) => { if (index >= 0 && index < count) scrollToY(layout.tops[index]) }
+  const downloadGuide = () => {
+    const url = URL.createObjectURL(new Blob([bookGuideText(book)], { type: 'text/plain;charset=utf-8' }))
+    const link = document.createElement('a'); link.href = url; link.download = `${book.fileName.replace(/\.pdf$/i, '')}-guide.txt`; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const contents = book.guide?.sections ?? book.outline
 
-  return <aside className={`reference-panel ${dragging ? `is-${dragging === 'move' ? 'moving' : 'resizing'}` : ''}`} aria-label={`Reference: ${book.title}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }} onKeyDown={event => { if (NAV_KEYS.has(event.code) && !(event.target as HTMLElement).closest('input,textarea')) event.stopPropagation() }}>
+  return <aside className={`reference-panel ${pinned ? 'is-pinned' : ''} ${dragging ? `is-${dragging === 'move' ? 'moving' : 'resizing'}` : ''}`} aria-label={`Reference: ${book.title}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }} onKeyDown={event => { if (NAV_KEYS.has(event.code) && !(event.target as HTMLElement).closest('input,textarea')) event.stopPropagation() }}>
     <div className="reference-header" {...dragHandlers('move')}>
-      <GripHorizontal className="reference-grip" size={16} aria-hidden="true"/>
+      <span className="reference-grip" role="button" tabIndex={pinned ? -1 : 0} aria-label="Move book panel" aria-disabled={pinned} title={pinned ? 'Unpin to move' : 'Drag to move; arrow keys also move the panel'} onKeyDown={event => keyboardMove('move', event)}><GripHorizontal size={16}/></span>
       <span className="reference-title"><strong title={book.title}>{book.title}</strong><small>{`${count} ${count === 1 ? 'page' : 'pages'}${book.indexed ? '' : ' · still indexing'}`}</small></span>
+      <button type="button" aria-label={pinned ? 'Unpin book panel' : 'Pin book panel'} title={pinned ? 'Unpin to move and resize' : 'Keep this position'} aria-pressed={pinned} onClick={() => setPreferences(current => ({ ...current, pinned: !current.pinned }))}>{pinned ? <PinOff size={16}/> : <Pin size={16}/>}</button>
       <button type="button" aria-label="Close book" title="Close book" onClick={onClose}><X size={16}/></button>
     </div>
+    <div className="reference-reader-tools">
+      <button type="button" aria-label="Previous page" disabled={!count || currentPage <= 0} onClick={() => goPage(currentPage - 1)}><ChevronLeft size={16}/></button>
+      <form onSubmit={event => { event.preventDefault(); const next = Number(pageInput); if (Number.isInteger(next) && next >= 1 && next <= count) { goPage(next - 1); setPageInput('') } }}><input type="text" inputMode="numeric" aria-label="File page number" placeholder={String(currentPage + 1)} value={pageInput} onChange={event => setPageInput(event.target.value)}/><span>/{count}</span></form>
+      <button type="button" aria-label="Next page" disabled={!count || currentPage >= count - 1} onClick={() => goPage(currentPage + 1)}><ChevronRight size={16}/></button>
+      <span className="reader-toolbar-space"/>
+      <button type="button" aria-label="Zoom out book" disabled={zoom <= .5} onClick={() => setPreferences(current => ({ ...current, zoom: Math.max(.5, Math.round((current.zoom - .25) * 100) / 100) }))}><Minus size={15}/></button>
+      <button type="button" className="reader-zoom-value" aria-label="Fit book to width" title="Fit to width" onClick={() => setPreferences(current => ({ ...current, zoom: 1 }))}>{Math.round(zoom * 100)}%</button>
+      <button type="button" aria-label="Zoom in book" disabled={zoom >= 3} onClick={() => setPreferences(current => ({ ...current, zoom: Math.min(3, Math.round((current.zoom + .25) * 100) / 100) }))}><Plus size={15}/></button>
+      <button type="button" aria-label="Book contents" aria-expanded={contentsOpen} onClick={() => setContentsOpen(open => !open)}><BookOpen size={16}/></button>
+    </div>
+    {contentsOpen && <div className="reference-contents">
+      <div><strong>Contents & book guide</strong><button type="button" onClick={downloadGuide} title="Download the local book structure as text"><Download size={14}/>Guide</button></div>
+      {contents.length ? <nav aria-label="Book chapters">{contents.map((entry, i) => <button type="button" key={`${entry.pageIndex}:${i}`} style={{ paddingLeft: 8 + Math.min(entry.depth, 4) * 10 }} onClick={() => { goPage(entry.pageIndex); setContentsOpen(false) }}><span>{entry.title}</span><small>{pageLabelText(book.labels, entry.pageIndex)}</small></button>)}</nav> : <p>No reliable contents were found. Search for a phrase or use the page number.</p>}
+    </div>}
     <form className="reference-search" role="search" onSubmit={event => { event.preventDefault(); submit() }}>
       <Search size={14} aria-hidden="true"/>
       <input aria-label="Search this book" value={query} onChange={event => setQuery(event.target.value)} placeholder="page 22, problem 3.2, chain rule" enterKeyHint="search" autoComplete="off" spellCheck={false}/>
       <button type="submit" aria-label="Search" disabled={busy || !query.trim()}>{busy ? <LoaderCircle className="spin" size={15}/> : <CornerDownLeft size={15}/>}</button>
     </form>
     {message && <p className="reference-status" role="status">{message}</p>}
+    {book.indexed && book.textPages < count * .8 && <p className="reference-status">Some pages have no searchable text. Browse or crop them visually; OCR is not enabled.</p>}
     {shownHits.length > 0 && <div className="reference-legend">
       <div className="reference-legend-top"><b>Tap the one you meant</b><button type="button" aria-label="Hide matches" onClick={() => { setDismissed(hitKey); onDismiss?.() }}><X size={13}/></button></div>
       <div className="reference-legend-list">{shownHits.map((c, n) => <button type="button" key={c.id} title={c.description} onClick={() => scrollToHit(c)}><i>{n + 1}</i><span>{candidateTitle(c, book.labels)}</span></button>)}</div>
     </div>}
     <div ref={list} className="reference-pages" onScroll={scrolled} tabIndex={0}>
-      {count ? <div className="reference-spacer" style={{ height: layout.total }}>{pages}</div> : <p className="reference-empty">This book has no pages.</p>}
+      {count ? <div className="reference-spacer" style={{ height: layout.total, minWidth: sheetWidth + SIDE * 2 }}>{pages}</div> : <p className="reference-empty">This book has no pages.</p>}
     </div>
-    <div className="reference-resize" aria-hidden="true" {...dragHandlers('resize')}/>
+    {!pinned && <div className="reference-resize" role="button" tabIndex={0} aria-label="Resize book panel" title="Drag to resize; arrow keys also resize the panel" onKeyDown={event => keyboardMove('resize', event)} {...dragHandlers('resize')}/>}
   </aside>
 }

@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Chalkpal",
-  "short_name": "Chalkpal",
+  "name": "MagiBoard",
+  "short_name": "MagiBoard",
   "description": "An editable whiteboard for writing, speaking, graphs, and equations.",
   "start_url": "/",
   "scope": "/",

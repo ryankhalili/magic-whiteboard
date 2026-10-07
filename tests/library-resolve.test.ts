@@ -97,7 +97,8 @@ describe('matchLibrary', () => {
     const sent = JSON.parse(String(init.body))
     expect(sent.task).toBe('library')
     expect(sent.query).toBe('problem 3.2')
-    expect(sent.context).toBe(LIBRARY_CONTEXT)
+    expect(sent.context).toContain(LIBRARY_CONTEXT)
+    expect(sent.context).toContain('Book structure (source data)')
     expect(sent.items.every((item: { text: string }) => item.text.length <= 300)).toBe(true)
   })
 
@@ -129,7 +130,8 @@ describe('matchLibrary', () => {
     const there = await first(at(5))
     expect(there.confident).toBe(false)
     expect(there.ranked[0].pageIndex).toBe(5)
-    expect(sentBody(1).context).toBe(`${LIBRARY_CONTEXT} The teacher is currently working in chapter 3, on page 14. When the same number is in several chapters, the teacher means the one in chapter 3.`)
+    expect(sentBody(1).context).toContain('The teacher is currently working in chapter 3, on page 14. When the same number is in several chapters, the teacher means the one in chapter 3.')
+    expect(sentBody(1).context.length).toBeLessThanOrEqual(2000)
     expect((await first(at(3))).ranked[0].pageIndex).toBe(3)
     // near another book, or off the end of this one, changes nothing
     expect((await first({ bookId: 'sha256:other', pageIndex: 5 })).ranked[0].pageIndex).toBe(3)
@@ -148,9 +150,9 @@ describe('matchLibrary', () => {
   })
 
   it('tells the teacher when an item or topic is missing', async () => {
-    expect(await match('example 9.9')).toEqual({ error: 'Example 9.9 is not in Calculus Volume 1.' })
-    expect(await match('problem 9.9')).toEqual({ error: 'Problem 9.9 is not in Calculus Volume 1.' })
-    expect(await match('zebra stripes from the book')).toEqual({ error: 'Nothing in Calculus Volume 1 matches that.' })
+    expect(await match('example 9.9')).toEqual({ error: 'Example 9.9 was not found in the local index for Calculus Volume 1. Try its name or the printed page number.' })
+    expect(await match('problem 9.9')).toEqual({ error: 'Problem 9.9 was not found in the local index for Calculus Volume 1. Try its name or the printed page number.' })
+    expect(await match('zebra stripes from the book')).toEqual({ error: 'No matching passage was found in Calculus Volume 1. Try a distinctive phrase, its chapter, or a page number.' })
   })
 
   it('finds topics through the page text', async () => {
@@ -158,25 +160,34 @@ describe('matchLibrary', () => {
     expect(result.ranked[0].anchor?.label).toBe('3.12')
   })
 
+  it('uses chapter structure, not matching problem numbers, for opening pages', async () => {
+    await saveBook({ ...calc, guide: { version: 1, sections: [{ title: 'Chapter 3 Derivatives', pageIndex: 1, depth: 0, source: 'outline' }], itemCounts: {}, exercisePages: [], unreadablePages: [], notes: [] } })
+    forgetBookData(calc.id)
+    try {
+      const result = await match('pull the first page of chapter 3', calc.id) as LibraryMatch
+      expect(result).toMatchObject({ confident: true, source: 'exact' })
+      expect(result.ranked[0]).toMatchObject({ kind: 'page', pageIndex: 1 })
+    } finally { await saveBook(calc); forgetBookData(calc.id) }
+  })
   it('never swaps a named book that is not in the library for another one', async () => {
     const result = await match('page 12 from the chemistry book') as { error: string; books: BookRecord[] }
-    expect(result.error).toBe('No book called "chemistry" in your library.')
+    expect(result.error).toBe('Which textbook do you mean by "chemistry"? Choose one below.')
     expect(result.books.map(book => book.id)).toEqual([calc.id])
-    expect(await match('problem 3.2 in physics', calc.id)).toMatchObject({ error: 'No book called "physics" in your library.' })
+    expect(await match('problem 3.2 in physics', calc.id)).toMatchObject({ error: 'Which textbook do you mean by "physics"? Choose one below.' })
     // words that are not book names still work
     expect(await match('page 12 in the new book')).toMatchObject({ confident: true, book: { id: calc.id } })
     expect(await match('example 3.12 in pencil')).toMatchObject({ confident: true, source: 'exact' })
   })
 
-  it('picks the recent book, asks when unsure, and follows the open or named book', async () => {
+  it('asks rather than guessing from recency, and follows an unambiguous open or named book', async () => {
     const physics = await importBook(file(await fixtureBook('University Physics', [['Physics only line', 72, 400]]), 'physics.pdf'))
     try {
-      // no open book and no title: the book opened most recently wins
-      expect((await match('page 12') as LibraryMatch).book.id).toBe(physics.id)
+      // Recency alone must not select the wrong textbook.
+      expect(await match('page 12')).toMatchObject({ error: 'Which textbook do you mean? Choose one below.' })
       await saveBook({ ...physics, openedAt: calc.openedAt })
       await saveBook(calc)
       const unsure = await match('page 12') as { error: string; books: BookRecord[] }
-      expect(unsure.error).toBe('Which book? Say its title or open it from the Library.')
+      expect(unsure.error).toBe('Which textbook do you mean? Choose one below.')
       expect(unsure.books.map(book => book.id).sort()).toEqual([calc.id, physics.id].sort())
       expect((await match('page 12', physics.id) as LibraryMatch).book.id).toBe(physics.id)
       expect((await match('page 12 from the calculus book', physics.id) as LibraryMatch).book.id).toBe(calc.id)
@@ -231,7 +242,7 @@ describe('matchLibrary', () => {
 
   it('reads "the math book" as the book of that subject, the open one or the only one', async () => {
     expect(await match('page 12 in my math textbook')).toMatchObject({ confident: true, book: { id: calc.id } })
-    expect(await match('page 12 in the science book')).toMatchObject({ error: 'No book called "science" in your library.' })
+    expect(await match('page 12 in the science book')).toMatchObject({ error: 'Which textbook do you mean by "science"? Choose one below.' })
     const physics: BookRecord = { ...calc, id: 'sha256:physics', title: 'University Physics', fileName: 'physics.pdf', openedAt: Date.now() }
     const notes: BookRecord = { ...calc, id: 'sha256:notes', title: 'Unit 4 Notes', fileName: 'notes.pdf', openedAt: Date.now() }
     await saveBook(physics)
@@ -241,7 +252,7 @@ describe('matchLibrary', () => {
       // two books with no subject in their titles: the open one, else ask
       await removeBook(physics.id)
       await saveBook({ ...calc, title: 'Unit 3 Notes' }); await saveBook(notes)
-      expect(await match('page 12 in the math book', notes.id)).toMatchObject({ book: { id: notes.id } })
+      expect(await match('page 12 in the math book', notes.id)).toMatchObject({ error: 'Which book? Say its title or open it from the Library.' })
       expect(await match('page 12 in the math book')).toMatchObject({ error: 'Which book? Say its title or open it from the Library.' })
     } finally {
       await removeBook(physics.id); await removeBook(notes.id); forgetBookData(physics.id); forgetBookData(notes.id)
@@ -250,12 +261,43 @@ describe('matchLibrary', () => {
   })
 
   it('says when a section the book has holds no such item instead of offering other sections', async () => {
-    expect(await match('exercise 48 in section 3.3')).toEqual({ error: 'No exercise 48 in section 3.3.' })
-    expect(await match('problem 49 in section 3.2')).toEqual({ error: 'No problem 49 in section 3.2.' })
+    expect(await match('exercise 48 in section 3.3')).toEqual({ error: 'The local index did not identify exercise 48 in section 3.3. Try its printed number or page, or open the chapter and crop it visually.' })
+    expect(await match('problem 49 in section 3.2')).toEqual({ error: 'The local index did not identify problem 49 in section 3.2. Try its printed number or page, or open the chapter and crop it visually.' })
     expect(await match('exercise 48 in chapter 3')).toMatchObject({ book: { id: calc.id } })
     // a section or chapter the book does not show still offers what it has
     expect(await match('exercise 48 in section 3.9')).toMatchObject({ confident: false })
     expect(await match('exercise 48 in chapter 4')).toMatchObject({ confident: false })
+  })
+
+  it('imports chapter-end decimal problems and resolves spoken local numbers to the correct crop', async () => {
+    const pdf = await PDFDocument.create()
+    pdf.setTitle('Scattering Reference Fixture')
+    const font = await pdf.embedFont(StandardFonts.Helvetica)
+    const content: Text[][] = [
+      [['Chapter 6 Scattering', 72, 70, 18], ['6.1 Foundations', 72, 110, 16], ['A synthetic chapter for testing numbered problems.', 72, 150]],
+      [['Problems', 250, 60, 14], ['6.1 Consider a one-dimensional model.', 72, 120], ['Find its boundary conditions.', 90, 145]],
+      [['Problems', 250, 60, 14], ['6.2 Prove', 72, 110], ['A = B + C', 200, 160], ['in each of the following ways.', 90, 210],
+        ['a. By integrating the supplied expression.', 90, 235], ['b. By applying the stated identity.', 90, 260],
+        ['6.3 Estimate the radius of the sample.', 72, 380]],
+      [['Chapter 7 Applications', 72, 70, 18], ['7.1 Foundations', 72, 110, 16], ['7.2 Prove a different identity.', 72, 200]],
+    ]
+    for (const lines of content) {
+      const page = pdf.addPage([612, 792])
+      for (const [text, x, top, size = 10] of lines) page.drawText(text, { x, y: 792 - top - size * .8, size, font })
+    }
+    const book = await importBook(file(await pdf.save(), 'scattering-fixture.pdf'))
+    try {
+      for (const phrase of ['question 2 in chapter 6', 'problem 6.2', 'chapter 6 exercise 2']) {
+        const found = await match(phrase, book.id) as LibraryMatch
+        expect(found).toMatchObject({ confident: true, source: 'exact' })
+        expect(found.ranked[0].anchor).toMatchObject({ label: '6.2', pageIndex: 2 })
+        const crop = found.ranked[0].anchor!.box
+        expect(crop.y).toBeLessThan(110 / 792)
+        expect(crop.y + crop.h).toBeGreaterThan(260 / 792)
+        expect(crop.y + crop.h).toBeLessThan(380 / 792)
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally { await removeBook(book.id); forgetBookData(book.id); await touchBook(calc.id) }
   })
 
   it('finds the last exercises of a section on the page where the next section starts', async () => {
@@ -278,7 +320,7 @@ describe('matchLibrary', () => {
       expect(found).toMatchObject({ book: { id: book.id } })
       expect((found as LibraryMatch).ranked[0]).toMatchObject({ pageIndex: 3, anchor: { label: '58' } })
       expect(await matchLibrary(parseLibraryQuery('exercise 58 in chapter 1')!, { openBookId: book.id, near: null })).toMatchObject({ book: { id: book.id } })
-      expect(await matchLibrary(parseLibraryQuery('exercise 60 in section 1.1')!, { openBookId: book.id, near: null })).toEqual({ error: 'No exercise 60 in section 1.1.' })
+      expect(await matchLibrary(parseLibraryQuery('exercise 60 in section 1.1')!, { openBookId: book.id, near: null })).toEqual({ error: 'The local index did not identify exercise 60 in section 1.1. Try its printed number or page, or open the chapter and crop it visually.' })
     } finally {
       await removeBook(book.id); forgetBookData(book.id); await touchBook(calc.id)
     }

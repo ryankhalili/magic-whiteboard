@@ -1,7 +1,6 @@
 /**
  * Content keys of board imports: the same file always gets the same key, so its page images
- * are reused. Earlier versions also stored the original bytes in this IndexedDB store; imports
- * no longer do, and dropPdfSources frees what they left behind.
+ * are reused. Original bytes are kept for page-preserving homework exports and portable backups.
  */
 const DATABASE = 'marginalia-pdf-sources-v1'
 const STORE = 'sources'
@@ -28,14 +27,6 @@ function open(): Promise<IDBDatabase> {
 
 function hex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map(byte => byte.toString(16).padStart(2, '0')).join('')
-}
-
-let dropped = false
-/** Earlier versions kept every imported original here and nothing reads them, so free that space once. */
-export function dropPdfSources(): void {
-  if (dropped || typeof indexedDB === 'undefined') return
-  dropped = true
-  try { indexedDB.deleteDatabase(DATABASE) } catch { /* storage blocked */ }
 }
 
 /** A content key such as "sha256:9f86d0...". */

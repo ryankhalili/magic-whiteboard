@@ -6,6 +6,10 @@ import type { BoardObject, BoardOperation, BoardResult } from '../../shared/boar
 import type { MagicShape } from './MagicShape'
 import { flushSourceEdits, SOURCE_FLUSH_EVENT, sourceField, sourceUpdate, type SourceFlushOptions } from './liveSource'
 import { dispatchContentSelection } from './InlineEditor'
+import { getAxisMode, getPlotLayout } from './plotLayout'
+import { validateExpression } from './expression'
+import { NumberField } from '../ui/NumberField'
+import { ScientificControls } from '../math/ScientificControls'
 
 type Props = {
   editor: Editor; object: BoardObject; shape: TLShape; editing: boolean; busy: boolean
@@ -21,22 +25,6 @@ export function objectLabel(object: BoardObject): string {
   return source ? `${name}: ${source.replace(/\s+/g, ' ').slice(0, 35)}` : name
 }
 
-function NumberField({ label, value, min, max, step = 'any', onCommit, disabled = false }: { label: string; value: number; min?: number; max?: number; step?: number | 'any'; onCommit: (value: number) => unknown; disabled?: boolean }) {
-  const [draft, setDraft] = useState(String(Number(value.toFixed(3))))
-  const focused = useRef(false), dirty = useRef(false)
-  useEffect(() => { if (!focused.current) { setDraft(String(Number(value.toFixed(3)))); dirty.current = false } }, [value])
-  const commit = () => {
-    if (!dirty.current) return
-    const number = Number(draft)
-    if (draft.trim() && Number.isFinite(number) && (min === undefined || number >= min) && (max === undefined || number <= max)) {
-      const result = onCommit(number)
-      if (result && typeof result === 'object' && 'ok' in result && result.ok === false) setDraft(String(Number(value.toFixed(3))))
-    }
-    else setDraft(String(Number(value.toFixed(3))))
-    dirty.current = false
-  }
-  return <label>{label}<input aria-label={label} type="number" value={draft} min={min} max={max} step={step} disabled={disabled} onFocus={() => { focused.current = true }} onChange={event => { dirty.current = true; setDraft(event.target.value) }} onBlur={() => { focused.current = false; commit() }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); commit(); event.currentTarget.blur() } }}/></label>
-}
 
 function LiveSource({ editor, shape, disabled }: { editor: Editor; shape: MagicShape; disabled: boolean }) {
   const field = sourceField(shape), source = shape.props[field]
@@ -96,6 +84,8 @@ function LiveSource({ editor, shape, disabled }: { editor: Editor; shape: MagicS
 
 export function ObjectInspector({ editor, object, shape, editing, busy, execute, onCollapse, onDeselect, onEdit, onNaturalSize, onCleanInk, onPlotInk }: Props) {
   const locked = editor.isShapeOrAncestorLocked(shape), magic = shape.type === 'magic' ? shape : null
+  const plotRange = magic?.props.kind === 'plot' ? getPlotLayout(magic.props, getAxisMode(magic.meta)).range : null
+  const canFitCurve = magic?.props.kind === 'plot' && !magic.props.visualization && validateExpression(magic.props.expression).kind === 'explicit'
   const update = (fields: Omit<BoardOperation, 'type' | 'target'>) => execute([{ type: 'update_object', target: shape.id, ...fields }])
   const transform = (fields: Omit<BoardOperation, 'type' | 'target'>) => execute([{ type: 'transform_object', target: shape.id, ...fields }])
   const width = typeof shape.props.w === 'number' ? shape.props.w : undefined, height = typeof shape.props.h === 'number' ? shape.props.h : undefined
@@ -125,11 +115,13 @@ export function ObjectInspector({ editor, object, shape, editing, busy, execute,
     {magic && <>
       {magic.props.kind !== 'geometry' && <button className={`edit-on-board ${editing ? 'is-editing' : ''}`} disabled={locked} onPointerDown={event => event.preventDefault()} onClick={onEdit}><Pencil size={14}/>{editing ? 'Editing on board · click to focus' : 'Edit on board'}</button>}
       <LiveSource key={shape.id} editor={editor} shape={magic} disabled={locked}/>
-      {magic.props.kind === 'plot' && <>
+      {magic.props.visualization && <ScientificControls shape={magic} disabled={locked} update={update}/>}
+      {magic.props.kind === 'plot' && !magic.props.visualization && <>
+        <div className="inspector-layer-buttons"><button disabled={locked || !canFitCurve} title={canFitCurve ? 'Fit the curve over the current X range' : 'For implicit equations, set the axis limits below'} onClick={() => update({ fitY: true })}>Fit curve</button><button disabled={locked} onClick={() => update({ xMin: -10, xMax: 10, yMin: -10, yMax: 10, axisMode: 'auto' })}>Reset −10…10</button></div>
         <details className="inspector-section" open><summary>Graph axes</summary><div className="inspector-number-grid">
           <NumberField label="X minimum" value={magic.props.xMin} disabled={locked} onCommit={xMin => update({ xMin })}/><NumberField label="X maximum" value={magic.props.xMax} disabled={locked} onCommit={xMax => update({ xMax })}/>
-          <NumberField label="Y minimum" value={magic.props.yMin} disabled={locked} onCommit={yMin => update({ yMin, axisMode: 'auto' })}/><NumberField label="Y maximum" value={magic.props.yMax} disabled={locked} onCommit={yMax => update({ yMax, axisMode: 'auto' })}/>
-        </div><label className="inspector-select">Axis scaling<select aria-label="Graph axis scaling" disabled={locked} value={object.axisMode ?? 'auto'} onChange={event => update({ axisMode: event.target.value as 'equal' | 'auto' })}><option value="equal">Equal units</option><option value="auto">Independent axes</option></select></label><div className="inspector-checks"><label><input type="checkbox" checked={magic.props.showGrid !== false} disabled={locked} onChange={event => update({ showGrid: event.target.checked })}/>Grid</label><label><input type="checkbox" checked={magic.props.showAxes !== false} disabled={locked} onChange={event => update({ showAxes: event.target.checked })}/>Axes</label></div><button className="inspector-text-button" disabled={locked} onClick={onNaturalSize}>Natural graph size</button><p className="inspector-hint">Equal units keeps the same spacing on both axes. Editing Y limits switches to independent axes.</p></details>
+          <NumberField label="Y minimum" value={plotRange!.yMin} disabled={locked} onCommit={yMin => update({ yMin, axisMode: 'auto' })}/><NumberField label="Y maximum" value={plotRange!.yMax} disabled={locked} onCommit={yMax => update({ yMax, axisMode: 'auto' })}/>
+        </div><label className="inspector-select">Axis scaling<select aria-label="Graph axis scaling" disabled={locked} value={object.axisMode ?? 'auto'} onChange={event => update({ axisMode: event.target.value as 'equal' | 'auto' })}><option value="equal">Equal units</option><option value="auto">Independent axes</option></select></label><div className="inspector-checks"><label><input type="checkbox" checked={magic.props.showGrid !== false} disabled={locked} onChange={event => update({ showGrid: event.target.checked })}/>Grid</label><label><input type="checkbox" checked={magic.props.showAxes !== false} disabled={locked} onChange={event => update({ showAxes: event.target.checked, showNumbers: (magic.props.showNumbers ?? magic.props.showAxes) !== false })}/>Axis lines</label><label><input type="checkbox" checked={(magic.props.showNumbers ?? magic.props.showAxes) !== false} disabled={locked} onChange={event => update({ showNumbers: event.target.checked })}/>Numbers</label></div><button className="inspector-text-button" disabled={locked} onClick={onNaturalSize}>Natural graph size</button><p className="inspector-hint">Equal units keeps the same spacing on both axes. Editing Y limits switches to independent axes.</p></details>
       </>}
       <details className="inspector-section" open><summary>Appearance</summary><div className="inspector-number-grid">
         <NumberField label="Font size" value={magic.props.fontSize} min={8} max={160} disabled={locked} onCommit={fontSize => update({ fontSize })}/><label>Ink color<input aria-label="Object ink color" type="color" disabled={locked} value={magic.props.color.startsWith('#') ? magic.props.color : '#202124'} onChange={event => update({ color: event.target.value })}/></label>

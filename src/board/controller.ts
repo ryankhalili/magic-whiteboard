@@ -2,6 +2,7 @@ import { createAssetId, createShapeId, type AssetRecord, type Editor, type TLIma
 import type { BoardContext, BoardImage, BoardObject, BoardOperation, BoardResult, Bounds, PlacementOption } from '../../shared/board'
 import { DEFAULT_MAGIC_PROPS, type MagicShape, type MagicShapeProps } from './MagicShape'
 import { autoYRange, validateDomain, validateExpression } from './expression'
+import { validateScientific } from '../math/scientific'
 import { applyContentEdit, applyLatexContentEdit } from './contentEdit'
 import { getAxisMode, getPlotLayout } from './plotLayout'
 import { containsBounds, shapePageBounds } from './spatial'
@@ -169,7 +170,7 @@ export function spotForOption(option: PlacementOption, spots: readonly { bounds:
 /** The library request an insert_library operation refers to, or null when it names nothing. */
 export function libraryQueryFromOperation(operation: BoardOperation): LibraryQuery | null {
   const book = typeof operation.book === 'string' && operation.book.trim() ? operation.book.trim().slice(0, 200) : undefined
-  const withBook = (query: LibraryQuery): LibraryQuery => book && !query.book ? { ...query, book } : query
+  const withBook = (query: LibraryQuery): LibraryQuery => book ? { ...query, book } : query
   const page = typeof operation.page === 'string' ? operation.page.trim() : ''
   if (page) {
     const label = page.replace(/^(?:pages?|pgs?\.?|p\.?)\s*/i, '').trim()
@@ -218,6 +219,15 @@ function libraryObject(meta: Record<string, unknown>, height: number): { kind: s
 
 function propsFromOperation(operation: BoardOperation, original: MagicShapeProps): MagicShapeProps {
   const p = { ...original }
+  if (operation.visualization !== undefined) {
+    if (p.kind !== 'plot') throw new Error('Scientific visualization settings apply to plots only.')
+    p.visualization = { ...(original.visualization?.type === operation.visualization.type ? original.visualization : {}), ...operation.visualization }
+    if (!original.visualization) {
+      if (operation.strokeWidth === undefined) p.strokeWidth = operation.visualization.type === 'phase' ? 1.8 : .6
+      if (operation.fontSize === undefined) p.fontSize = 16
+    }
+  }
+  if (operation.fitY && p.kind !== 'plot') throw new Error('Fit curve applies to graphs only.')
   for (const key of stringProps) {
     const value = operation[key]
     if (value !== undefined) {
@@ -235,7 +245,7 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
   if (p.fill !== undefined) validateColor(p.fill)
   if (p.fillOpacity !== undefined) validateOpacity(p.fillOpacity)
   if (p.strokeWidth !== undefined) validateStrokeWidth(p.strokeWidth)
-  for (const key of ['showGrid', 'showAxes'] as const) if (operation[key] !== undefined) {
+  for (const key of ['showGrid', 'showAxes', 'showNumbers'] as const) if (operation[key] !== undefined) {
     if (typeof operation[key] !== 'boolean') throw new Error(`${key} must be true or false.`)
     p[key] = operation[key]
   }
@@ -252,10 +262,18 @@ function propsFromOperation(operation: BoardOperation, original: MagicShapeProps
     p.sides = geometry.geometry === 'polygon' ? geometry.vertices?.length : undefined
   }
   if (p.kind === 'plot') {
+    if (p.visualization) {
+      const checked = validateScientific(p.expression, p.visualization)
+      p.expression = checked.expression; p.visualization = checked.spec
+      if (operation.fitY) throw new Error('Set the domain bounds directly for a scientific visualization.')
+      validateDomain(p.xMin, p.xMax, p.yMin, p.yMax)
+      return p
+    }
     p.expression = validateExpression(p.expression).expression
+    if (operation.fitY && validateExpression(p.expression).kind === 'implicit') throw new Error('Choose explicit X and Y limits for an implicit equation; Fit curve supports y = f(x).')
     validateDomain(p.xMin, p.xMax)
     const changedDomain = operation.expression !== undefined || operation.xMin !== undefined || operation.xMax !== undefined
-    if (changedDomain && operation.yMin === undefined && operation.yMax === undefined) [p.yMin, p.yMax] = autoYRange(p.expression, p.xMin, p.xMax)
+    if ((changedDomain || operation.fitY) && operation.yMin === undefined && operation.yMax === undefined) [p.yMin, p.yMax] = autoYRange(p.expression, p.xMin, p.xMax)
     validateDomain(p.xMin, p.xMax, p.yMin, p.yMax)
   }
   return p
@@ -282,11 +300,12 @@ export class BoardController {
       }
       if (shape.type === 'magic') {
         object.color = shape.props.color; object.title = shape.props.title; object.fontSize = shape.props.fontSize
-        for (const key of ['fill', 'fillOpacity', 'strokeWidth', 'showGrid', 'showAxes', 'vertices', 'angles', 'sides'] as const) Object.assign(object, { [key]: shape.props[key] })
+        for (const key of ['fill', 'fillOpacity', 'strokeWidth', 'showGrid', 'showAxes', 'showNumbers', 'vertices', 'angles', 'sides'] as const) Object.assign(object, { [key]: shape.props[key] })
         if (shape.props.kind === 'plot') {
+          object.visualization = shape.props.visualization
           for (const key of ['expression', 'xMin', 'xMax', 'yMin', 'yMax'] as const) Object.assign(object, { [key]: shape.props[key] })
           object.axisMode = getAxisMode(shape.meta)
-          object.displayedRange = getPlotLayout(shape.props, object.axisMode).range
+          object.displayedRange = getPlotLayout(shape.props, shape.props.visualization ? 'auto' : object.axisMode).range
         } else if (shape.props.kind === 'math') object.latex = shape.props.latex
         else if (shape.props.kind === 'text') object.text = shape.props.text
         else { object.geometry = shape.props.geometry; object.text = shape.props.text }
@@ -328,6 +347,13 @@ export class BoardController {
           id: assetId, typeName: 'asset', type: 'image', meta: {},
           props: { name: image.name, src: image.src, w: image.w, h: image.h, mimeType: image.mimeType, isAnimated: false },
         })
+        if (operation.target) {
+          const previous = virtual.get(operation.target as TLShapeId)
+          if (!previous || previous.type !== 'image' || !previous.meta.library || previous.isLocked) throw new Error('Select an unlocked textbook excerpt to restore.')
+          const next = { ...previous, x: b.x, y: b.y, props: { ...previous.props, assetId, w: b.w, h: b.h, crop: { x: 0, y: 0, w: 1, h: 1 } }, meta: { ...previous.meta, ...meta } }
+          updates.set(previous.id, next); virtual.set(previous.id, next); touched.add(previous.id)
+          continue
+        }
         const id = createShapeId(), isLocked = operation.locked === true
         const shape: TLCreateShapePartial<TLImageShape> = { id, type: 'image', x: b.x, y: b.y, rotation: 0, isLocked, opacity: 1,
           props: { assetId, w: b.w, h: b.h, altText: image.name }, meta: { ...meta, marginaliaBackground: false } }
@@ -341,6 +367,7 @@ export class BoardController {
         continue
       }
       if (operation.axisMode !== undefined && !['equal', 'auto'].includes(operation.axisMode)) throw new Error('Axis mode must be equal or auto.')
+      if (operation.fitY !== undefined && typeof operation.fitY !== 'boolean') throw new Error('Fit Y must be true or false.')
       if (operation.opacity !== undefined) validateOpacity(operation.opacity)
       if (operation.layer !== undefined && !['front', 'back'].includes(operation.layer)) throw new Error('Choose front or back for the object layer.')
       if (operation.crop !== undefined) validateCrop(operation.crop)
@@ -354,7 +381,7 @@ export class BoardController {
         const shape: TLCreateShapePartial<MagicShape> = { id, type: 'magic', opacity: operation.opacity ?? 1,
           x: b.x + b.w / 2 - Math.cos(rotation) * b.w / 2 + Math.sin(rotation) * b.h / 2,
           y: b.y + b.h / 2 - Math.sin(rotation) * b.w / 2 - Math.cos(rotation) * b.h / 2, rotation, props,
-          meta: { ...(kind === 'plot' ? { axisMode: operation.axisMode ?? 'equal' } : {}), ...(region ? { literalBounds: { ...region } } : {}) } }
+          meta: { ...(kind === 'plot' ? { axisMode: operation.fitY ? 'auto' : operation.axisMode ?? 'auto' } : {}), ...(region ? { literalBounds: { ...region } } : {}) } }
         requireInside(region, shapePageBounds(this.editor, shape as MagicShape))
         creates.set(id, shape)
         virtual.set(id, { ...shape, props, isLocked: false, parentId: this.editor.getCurrentPageId() } as MagicShape)
@@ -394,6 +421,8 @@ export class BoardController {
         }
         if (operation.type !== 'update_object' && operation.type !== 'edit_content' && operation.type !== 'transform_object') throw new Error('Undo or redo must be a separate action.')
         if (shape.type !== 'magic' && operation.type === 'edit_content') throw new Error('Character editing is supported for equations, graphs and text.')
+        if (shape.type !== 'magic' && operation.fitY) throw new Error('Fit curve applies to graphs only.')
+        if (shape.type !== 'magic' && operation.visualization !== undefined) throw new Error('Scientific visualization settings apply to plots only.')
         if (operation.crop !== undefined && shape.type !== 'image') throw new Error('Cropping applies to images only.')
         const next = { ...shape, props: { ...shape.props }, meta: { ...shape.meta } } as TLShape
         if (operation.opacity !== undefined) next.opacity = operation.opacity
@@ -416,10 +445,19 @@ export class BoardController {
         if (region) next.meta.literalBounds = { ...region }
         else delete next.meta.literalBounds
         if (next.type === 'magic') {
+          if (next.props.kind === 'plot' && operation.axisMode === undefined && ['xMin', 'xMax', 'yMin', 'yMax'].some(key => operation[key as keyof BoardOperation] !== undefined)) next.meta.axisMode = 'auto'
+          if (next.props.kind === 'plot' && (operation.yMin !== undefined || operation.yMax !== undefined) && operation.axisMode !== 'equal') {
+            // A one-sided limit edit must preserve the OTHER visible limit, not
+            // the hidden stored range of an old equal-unit plot.
+            const range = getPlotLayout(next.props, getAxisMode(shape.meta)).range
+            next.props.yMin = range.yMin; next.props.yMax = range.yMax
+            next.meta.axisMode = 'auto'
+          }
           if (operation.axisMode !== undefined) {
             if (next.props.kind !== 'plot') throw new Error('Axis mode applies to graphs only.')
             next.meta.axisMode = operation.axisMode
           }
+          if (operation.fitY) next.meta.axisMode = 'auto'
           if (operation.type === 'edit_content') {
             const expected = next.props.kind === 'math' ? 'latex' : next.props.kind === 'plot' ? 'expression' : 'text'
             if (operation.field !== expected) throw new Error(`This object uses its ${expected} field.`)
@@ -481,7 +519,7 @@ export class BoardController {
       context.lastCreatedIds = context.selectedIds.length ? context.selectedIds : context.lastCreatedIds.filter(id => virtual.has(id))
     }
     return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], pageDeletes: [...pageDeletes], touched: [...touched], nextLast: context.lastCreatedIds, layers,
-      assets: [...assets.values()].filter(asset => [...creates.values()].some(shape => shape.type === 'image' && shape.props?.assetId === asset.id)),
+      assets: [...assets.values()].filter(asset => [...creates.values(), ...updates.values()].some(shape => shape.type === 'image' && shape.props?.assetId === asset.id)),
       locked: locked.filter(id => creates.has(id)) }
   }
 

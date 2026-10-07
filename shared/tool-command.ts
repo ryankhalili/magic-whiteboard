@@ -44,6 +44,8 @@ export function parseBoardCommand(input: unknown): BoardCommand {
   for (const operation of raw.operations) if (!operationSchema.strict().safeParse(operation).success) throw new BoardCommandParseError()
   const proposal = parsed.data.operations.find(operation => operation.type === 'propose_image')
   if (proposal && (parsed.data.operations.length !== 1 || !proposal.prompt)) throw new BoardCommandParseError('An image proposal must be a single operation with a prompt.')
+  const mathReview = parsed.data.operations.find(op => op.type === 'confirm_math' || op.type === 'cancel_math')
+  if (mathReview && (parsed.data.operations.length !== 1 || !mathReview.target || mathReview.type === 'confirm_math' && !mathReview.previewRevision)) throw new BoardCommandParseError('Confirm or discard only the identified current math preview, separately from other actions.')
   return parsed.data as BoardCommand
 }
 

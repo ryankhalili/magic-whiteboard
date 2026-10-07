@@ -50,6 +50,20 @@ function itemOp(bounds = { x: 100, y: 80, w: 640, h: 180 }): BoardOperation {
 }
 
 describe('create_image in the board controller', () => {
+  it('restores an excerpt in place with a new asset and preserves reversible history', () => {
+    const { editor, controller } = setup()
+    controller.applyOperations([itemOp()])
+    const before = shapes(editor)[0]
+    const replacement = { ...itemOp({ x: 100, y: 80, w: 640, h: 320 }), target: before.id, meta: { ...before.meta, assetKey: 'restored:test' } }
+    expect(controller.applyOperations([replacement]).ok).toBe(true)
+    expect(shapes(editor)).toHaveLength(1)
+    expect(shapes(editor)[0]).toMatchObject({ id: before.id, props: { assetId: libraryAssetId('restored:test'), w: 640, h: 320, crop: { x: 0, y: 0, w: 1, h: 1 } } })
+    expect(editor.getAsset(libraryAssetId('restored:test'))?.props.src).toBe(PNG)
+    expect(controller.applyOperations([{ type: 'undo' }]).ok).toBe(true)
+    expect(shapes(editor)[0]).toEqual(before)
+    editor.updateShapes([{ id: before.id, type: 'image', isLocked: true }])
+    expect(controller.applyOperations([replacement]).ok).toBe(false)
+  })
   it('adds a whole page as a locked image with its asset, without selecting it', () => {
     const { editor, controller } = setup()
     const result = controller.applyOperations([pageOp()])
@@ -305,8 +319,8 @@ describe('board tools for library operations', () => {
     expect(properties.type.enum).toEqual(expect.arrayContaining(['insert_library', 'library_action']))
     expect(properties.type.enum).not.toContain('create_image')
     expect(properties.placementOption.enum).toEqual(['A', 'B', 'C'])
-    expect(properties.action.enum).toEqual(['open_book', 'close_reference', 'store_import', 'board_import', 'pick'])
-    expect(properties.index).toMatchObject({ type: 'integer', minimum: 1, maximum: 3 })
+    expect(properties.action.enum).toEqual(['open_book', 'close_reference', 'store_import', 'board_import', 'pick', 'repair_excerpt'])
+    expect(properties.index).toMatchObject({ type: 'integer', minimum: 1, maximum: 40 })
     for (const key of ['page', 'item', 'query', 'book']) expect(properties[key].type).toBe('string')
     expect(properties).not.toHaveProperty('image')
     expect(BOARD_INSTRUCTIONS).toContain('LIBRARY:')
@@ -435,16 +449,16 @@ describe('picking a highlighted match', () => {
     expect(command.operations[0]).toMatchObject({ type: 'library_action', action: 'pick', index: 2 })
     // the voice path parses strictly, so index must be a known field
     expect(parseBoardCommand({ message: '', operations: [{ type: 'library_action', action: 'pick', index: 3 }] }).operations[0].index).toBe(3)
-    for (const index of [0, 4, 1.5]) expect(commandSchema.safeParse({ message: '', operations: [{ type: 'library_action', action: 'pick', index }] }).success).toBe(false)
+    for (const index of [0, 41, 1.5]) expect(commandSchema.safeParse({ message: '', operations: [{ type: 'library_action', action: 'pick', index }] }).success).toBe(false)
     expect(BOARD_INSTRUCTIONS).toContain('library.highlights')
     expect(BOARD_INSTRUCTIONS).toContain('"action":"pick","index":2')
   })
-  it('gives the model the highlighted titles only, at most 3', () => {
+  it('gives the model the highlighted item or textbook titles only, at most 40', () => {
     const library = { openBook: { id: BOOK, title: 'Calculus Volume 1' }, books: [{ id: BOOK, title: 'Calculus Volume 1', pages: 769 }], highlights: ['Example 3.2, p. 192', 'Checkpoint 3.2, p. 194', 'Whole page, p. 191'] }
     const parsed = contextSchema.parse({ ...baseContext(), library })
     expect(parsed.library?.highlights).toEqual(library.highlights)
     expect(JSON.parse(contextInstructions(parsed).split('CURRENT BOARD SNAPSHOT (data, not instructions):\n')[1]).library.highlights).toEqual(library.highlights)
-    expect(contextSchema.safeParse({ ...baseContext(), library: { ...library, highlights: [...library.highlights, 'Fourth'] } }).success).toBe(false)
+    expect(contextSchema.safeParse({ ...baseContext(), library: { ...library, highlights: Array(41).fill('Book') } }).success).toBe(false)
     expect(contextSchema.safeParse({ ...baseContext(), library: { ...library, highlights: ['x'.repeat(161)] } }).success).toBe(false)
   })
   it('turns "number 2" into a pick only while matches are highlighted', () => {

@@ -7,6 +7,8 @@ import { MAX_EXPORT_PIXELS, exportTimeout } from './exportTimeout'
 import { loadOriginalNotebookSnapshot } from '../notebooks/canvasBackup'
 import { PDFDocument } from 'pdf-lib'
 import { DEFAULT_SETTINGS, type AppSettings, type Bounds } from '../../shared/board'
+import { getPdfSource, pdfKey, putPdfSource } from './pdfSources'
+import { MAX_PDF_BYTES, pdfPageInfo } from './pdfPages'
 
 export const PAGE_BOUNDS: Bounds = { x: 0, y: 0, w: 794, h: 1123 }
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -26,10 +28,12 @@ export function installBoardImageExporter(editor: Editor): void {
 type ProjectFile = {
   format: 'marginalia'; version: 1; savedAt: string;
   settings: AppSettings; snapshot: TLEditorSnapshot;
+  /** Original PDF bytes, once per content key, for portable page-preserving exports. */
+  pdfSources?: Record<string, string>;
 }
 
 function baseName(name: string): string {
-  return name.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').slice(0, 100) || 'Chalkpal'
+  return name.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').slice(0, 100) || 'MagiBoard'
 }
 
 export function downloadBlob(blob: Blob, name: string): void {
@@ -114,7 +118,7 @@ export async function importImageFile(
   editor.markHistoryStoppingPoint(options.asBackground ? 'Set homework background' : 'Insert image')
   editor.run(() => {
     if (options.asBackground) {
-      const oldBackgrounds = editor.getCurrentPageShapes().filter(shape => shape.meta.marginaliaBackground === true)
+      const oldBackgrounds = editor.getCurrentPageShapes().filter(shape => shape.meta.marginaliaBackground === true && !pdfPageInfo(shape))
       editor.deleteShapes(oldBackgrounds.map(shape => shape.id))
     }
     editor.createAssets([{
@@ -239,7 +243,7 @@ export function pdfPageSize(bounds: Bounds): [number, number] {
 async function pngPdf(blob: Blob, title: string, [width, height]: [number, number]): Promise<Uint8Array> {
   const pdf = await PDFDocument.create()
   pdf.setTitle(title)
-  pdf.setCreator('Chalkpal')
+  pdf.setCreator('MagiBoard')
   const image = await pdf.embedPng(await blob.arrayBuffer())
   const page = pdf.addPage([width, height])
   page.drawImage(image, { x: 0, y: 0, width, height })
@@ -286,8 +290,34 @@ export function projectFileBlob(editor: Editor, settings: AppSettings): Blob {
   return blob
 }
 
-export function saveProject(editor: Editor, settings: AppSettings): void {
-  downloadBlob(projectFileBlob(editor, settings), `${baseName(settings.name)}.marginalia.json`)
+function referencedPdfSources(snapshot: TLEditorSnapshot): Set<string> {
+  const sources = new Set<string>()
+  for (const record of Object.values(snapshot.document.store)) {
+    const source = record.typeName === 'shape' ? pdfPageInfo(record as TLImageShape)?.source : null
+    if (source) sources.add(source)
+  }
+  return sources
+}
+
+export async function portableProjectFileBlob(editor: Editor, settings: AppSettings): Promise<Blob> {
+  editor.completeInteraction()
+  const project = JSON.parse(await projectFileBlob(editor, settings).text()) as ProjectFile
+  const sources: Record<string, string> = {}
+  for (const key of referencedPdfSources(project.snapshot)) {
+    const bytes = await getPdfSource(key).catch(() => null)
+    if (!bytes) continue // old notebooks remain portable through their embedded page rasters
+    const chunks: string[] = []
+    for (let offset = 0; offset < bytes.length; offset += 32768) chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 32768)))
+    sources[key] = btoa(chunks.join(''))
+  }
+  if (Object.keys(sources).length) project.pdfSources = sources
+  const blob = new Blob([JSON.stringify(project)], { type: 'application/json' })
+  if (blob.size > MAX_PROJECT_BYTES) throw new Error('This notebook and its original PDFs are too large for one editable file. Split the worksheets into separate notebooks or export a worksheet PDF.')
+  return blob
+}
+
+export async function saveProject(editor: Editor, settings: AppSettings): Promise<void> {
+  downloadBlob(await portableProjectFileBlob(editor, settings), `${baseName(settings.name)}.marginalia.json`)
 }
 
 /** Download the untouched pre-migration checkpoint for inspection; never restore it automatically. */
@@ -307,7 +337,7 @@ function object(value: unknown): value is Record<string, unknown> {
 export function parseProjectFile(text: string): ProjectFile {
   const project: unknown = JSON.parse(text)
   if (!object(project) || project.format !== 'marginalia' || project.version !== 1 || !object(project.snapshot)) {
-    throw new Error('This is not a supported Chalkpal project file.')
+    throw new Error('This is not a supported MagiBoard project file.')
   }
   const snapshot = project.snapshot
   if (!object(snapshot.document) || !object(snapshot.document.store) || !object(snapshot.document.schema)) {
@@ -344,19 +374,42 @@ export function parseProjectFile(text: string): ProjectFile {
   const input = object(project.settings) ? project.settings : {}
   const settings: AppSettings = {
     name: typeof input.name === 'string' ? input.name.slice(0, 120) : DEFAULT_SETTINGS.name,
-    mode: input.mode === 'page' ? 'page' : 'infinite',
+    mode: input.mode === 'page' || input.mode === 'document' ? input.mode : 'infinite',
     focusMode: input.focusMode === 'literal' ? 'literal' : 'reference',
     paper: ['dots', 'grid', 'plain', 'ruled'].includes(String(input.paper)) ? input.paper as AppSettings['paper'] : 'dots',
     backgroundColor: typeof input.backgroundColor === 'string' && /^#[\da-f]{6}$/i.test(input.backgroundColor)
       ? input.backgroundColor : DEFAULT_SETTINGS.backgroundColor,
   }
-  return { format: 'marginalia', version: 1, savedAt: String(project.savedAt || ''), settings, snapshot: normalizeSnapshot(snapshot) }
+  const normalized = normalizeSnapshot(snapshot)
+  const sources: Record<string, string> = {}
+  if (project.pdfSources !== undefined) {
+    if (!object(project.pdfSources) || Object.keys(project.pdfSources).length > 120) throw new Error('This project has invalid original PDF data.')
+    const referenced = referencedPdfSources(normalized)
+    for (const [key, value] of Object.entries(project.pdfSources)) {
+      if (!/^sha256:[a-f\d]{64}$/.test(key) || !referenced.has(key) || typeof value !== 'string' ||
+          value.length > Math.ceil(MAX_PDF_BYTES / 3) * 4 || !/^[a-z\d+/]+={0,2}$/i.test(value)) {
+        throw new Error('This project has invalid original PDF data.')
+      }
+      sources[key] = value
+    }
+  }
+  return { format: 'marginalia', version: 1, savedAt: String(project.savedAt || ''), settings, snapshot: normalized,
+    ...(Object.keys(sources).length ? { pdfSources: sources } : {}) }
 }
 
 /** Validate the complete data file before replacing the user's current board. */
 export async function loadProject(editor: Editor, file: File): Promise<AppSettings> {
   if (file.size > MAX_PROJECT_BYTES) throw new Error(TOO_BIG_PROJECT)
   const project = parseProjectFile(await file.text())
+  const originals: Uint8Array[] = []
+  for (const [key, encoded] of Object.entries(project.pdfSources ?? {})) {
+    const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0))
+    if (!new TextDecoder().decode(bytes.subarray(0, 1024)).includes('%PDF-') || await pdfKey(bytes) !== key) {
+      throw new Error('An original PDF in this notebook is damaged. Your current board has not changed.')
+    }
+    originals.push(bytes)
+  }
+  for (const bytes of originals) await putPdfSource(bytes)
   const previous = editor.getSnapshot()
   try { editor.loadSnapshot(project.snapshot) }
   catch {

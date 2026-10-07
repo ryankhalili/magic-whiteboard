@@ -64,6 +64,101 @@ describe('merged voice context and instruction ownership', () => {
     const client = createRealtimeClient({ ...callbacks, ...overrides }); clients.push(client); await client.connect()
     return { client, callbacks, channel: Peer.latest.channel }
   }
+  it('keeps listening during an utterance longer than the idle timeout', async () => {
+    const { client, channel, callbacks } = await start()
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'long' })
+    await vi.advanceTimersByTimeAsync(95_000)
+    expect(client.isConnected()).toBe(true)
+    expect(track.stop).not.toHaveBeenCalled()
+    expect(callbacks.onNotice).not.toHaveBeenCalledWith(expect.stringContaining('90 seconds'))
+  })
+  it('recovers an empty completed response instead of silently returning to listening', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'empty', 'Plot an empty three-dimensional axes for now.')
+    await done(channel, 'nothing')
+    expect(callbacks.repairRequest).toHaveBeenCalledOnce()
+    expect(callbacks.applyOperations).toHaveBeenCalledOnce()
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('recovers an explicit undo without treating it as an inferred deletion', async () => {
+    const repair = vi.fn(async () => ({ operations: [{ type: 'undo' as const }], message: '' }))
+    const { channel, callbacks } = await start({ repairRequest: repair })
+    await speak(channel, 'undo', 'No, wait, can you undo that?')
+    await done(channel, 'undo-failure', [command([], 'wrong_function')])
+    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'undo' }], expect.any(Function))
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('recovers a self-contained command after interrupting an unfinished one', async () => {
+    const { client, channel, callbacks } = await start(); client.sendText('write x')
+    channel.receive({ type: 'response.created', response: { id: 'old' } })
+    await speak(channel, 'new', 'Plot an empty three-dimensional axes for now.')
+    channel.receive({ type: 'response.done', response: { id: 'old', status: 'cancelled', output: [] } })
+    await vi.advanceTimersByTimeAsync(0)
+    await done(channel, 'new-response', [command([], 'wrong_function')])
+    expect(callbacks.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Plot an empty three-dimensional axes for now.' }), expect.any(AbortSignal))
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('finishes a spoken question retrieval when the model only opens the book and suppresses duplicate continuation', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'question', 'Pull question 2 from chapter 6, please.')
+    await done(channel, 'retrieve', [command([{ type: 'library_action', action: 'open_book', book: 'Sakuri QM' }]),
+      command([{ type: 'insert_library', item: 'question 6.2' }])])
+    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([
+      { type: 'insert_library', query: 'Pull question 2 from chapter 6, please.', book: 'Sakuri QM' },
+    ], expect.any(Function))
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('waits for late final transcription before treating open-book as completed retrieval', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'late-question')
+    await done(channel, 'late-open', [command([{ type: 'library_action', action: 'open_book' }])])
+    expect(callbacks.applyOperations).not.toHaveBeenCalled()
+    channel.receive({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'late-question', transcript: 'pull question 2 from chapter 6' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([
+      { type: 'insert_library', query: 'pull question 2 from chapter 6', book: undefined },
+    ], expect.any(Function))
+  })
+  it('does not apply a pending open-only call after a new speech turn replaces it', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'old-question')
+    await done(channel, 'old-open', [command([{ type: 'library_action', action: 'open_book' }])])
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'new-question' })
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(callbacks.applyOperations).not.toHaveBeenCalled()
+  })
+  it('keeps the microphone active through a preview revision and a later spoken confirmation', async () => {
+    board.pendingMath = { id: 'math-preview:test', revision: 1, objectIds: ['draft:a'] }
+    board.objects = [{ ...object('draft:a', ''), kind: 'plot', expression: 'x*y', visualization: { type: 'surface' } }]
+    const apply = vi.fn((ops: BoardOperation[]) => {
+      if (ops[0].type === 'update_object') { board.pendingMath!.revision++; board.objects[0].expression = 'x^2+y^2' }
+      if (ops[0].type === 'confirm_math') delete board.pendingMath
+      return { ok: true, message: 'Updated.', ids: [] }
+    })
+    const { channel, callbacks } = await start({ applyOperations: apply })
+    await speak(channel, 'correction', 'make it x squared plus y squared')
+    await done(channel, 'correct-draft', [command([{ type: 'update_object', target: 'draft:a', expression: 'x^2+y^2' }])])
+    expect(track.enabled).toBe(true)
+    expect(contextOf(contexts(channel).at(-1)).pendingMath.revision).toBe(2)
+    await speak(channel, 'approval', 'add it')
+    await done(channel, 'approve-draft', [command([{ type: 'confirm_math', target: 'math-preview:test', previewRevision: 2 }])])
+    expect(apply).toHaveBeenCalledTimes(2)
+    expect(board.pendingMath).toBeUndefined()
+    expect(track.enabled).toBe(true)
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('prevents a model from confirming a revision created within the same speech turn', async () => {
+    board.pendingMath = { id: 'math-preview:test', revision: 1, objectIds: ['draft:a'] }
+    const apply = vi.fn(() => { board.pendingMath!.revision++; return { ok: true, message: 'Revised.', ids: [] } })
+    const { channel, callbacks } = await start({ applyOperations: apply })
+    await speak(channel, 'correction', 'make it blue')
+    await done(channel, 'self-approval', [
+      command([{ type: 'update_object', target: 'draft:a', color: 'blue' }]),
+      command([{ type: 'confirm_math', target: 'math-preview:test', previewRevision: 2 }]),
+    ])
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.stringContaining('new instruction'))
+  })
   it('bounds large PDF boards by UTF-8 bytes while keeping the full selected equation first', async () => {
     const latex = String.raw`\int_0^1 x^2\,dx = \frac13`
     board = { ...base, selectedIds: ['math:chosen'], objects: [

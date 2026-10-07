@@ -84,7 +84,7 @@ for path in sorted(font_dir.glob('*.txt')):
     font_sections.extend([f'--- {path.name} ---', path.read_text(encoding='utf-8').strip()])
 font_sections.extend(['--- SIL Open Font License 1.1 ---', ofl])
 sections.append('\n\n'.join(font_sections))
-header = f'''Chalkpal — Third-party software and font notices
+header = f'''MagiBoard — Third-party software and font notices
 Generated {date.today()} from the installed production dependency tree.
 These packages retain their own licenses, independently of the application's license.
 This artifact includes backend dependencies as well as browser dependencies.

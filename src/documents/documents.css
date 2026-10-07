@@ -1,0 +1,9 @@
+.document-navigator{position:absolute;top:72px;left:50%;transform:translateX(-50%);z-index:20;display:flex;align-items:center;gap:4px;max-width:calc(100% - 140px);padding:5px 8px;background:#fff;border:1px solid #d7dce3;border-radius:10px;box-shadow:0 2px 8px #1824330d;font:13px Arial,sans-serif;color:#334155}
+.document-navigator button{display:flex;align-items:center;justify-content:center;gap:5px;flex-shrink:0;min-width:32px;height:32px;padding:0 7px;border:0;border-radius:5px;background:transparent;color:inherit;cursor:pointer}
+.document-navigator button:hover{background:#f1f5f9}
+.document-navigator button:disabled{opacity:.35;cursor:default}
+.document-navigator label{display:flex;align-items:center;min-width:0}
+.document-navigator select{min-width:90px;max-width:280px;padding:5px 4px;border:0;background:transparent;color:inherit;font:inherit;text-overflow:ellipsis}
+.document-page-name{display:none}
+.document-page-mask{position:absolute;pointer-events:none;z-index:2;background:transparent;box-shadow:0 0 0 200vmax #edf0f3;border:1px solid #cbd5e1}
+@media(max-width:640px){.document-navigator{top:112px;max-width:calc(100% - 90px);gap:0;padding:4px}.document-navigator select{max-width:145px}.document-navigator button span{display:none}}

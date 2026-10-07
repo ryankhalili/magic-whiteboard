@@ -1,3 +1,5 @@
+import { localHistoryCommand } from '../../shared/history'
+import { excerptRepairOperation } from '../library/excerptRepair'
 import type { BoardContext, BoardOperation, BoardResult } from '../../shared/board'
 import { parseBoardCommand } from '../../shared/tool-command'
 import { apiRequest } from './commands'
@@ -7,6 +9,7 @@ import { extractContentPreviews, type ContentPreview } from './content-preview'
 import { generateMathTranscriptPreview } from './spoken-math-preview'
 import { classifyRealtimeRateLimit, updateRealtimeRateLimits, type RealtimeRateLimitSnapshot } from './realtime-rate-limit'
 import { createTextDictationSession } from './text-dictation-session'
+import { completeLibraryRetrieval } from '../library/retrievalIntent'
 import { boardState, failureMessage, pinBoardRepair, prepareBoardRepair, repairInstructions, validateRepairContext, type BoardRepair } from './board-repair'
 import { contextFingerprint, isFatalVoiceError, isTransientVoiceError, pinRecoveredCommand, remember, voiceApiRequest, type VoiceRecoveryState, type VoiceRepair, type VoiceRepairRequest } from './voice-recovery'
 export type { ContentPreview } from './content-preview'
@@ -29,6 +32,9 @@ export type RealtimeOptions = {
   onAudioLevel?: (level: number) => void;
   onContentPreview?: (preview: ContentPreview | null) => void;
   spokenReplies?: boolean;
+  /** Connect silently for hold-to-talk. Recovery never overrides this choice. */
+  initiallyEnabled?: boolean;
+  onMicrophoneEnabled?: (enabled: boolean) => void;
 }
 type WireEvent = { type: string; [key: string]: any }
 type VoiceTurn = {
@@ -39,6 +45,7 @@ type VoiceTurn = {
   carriedFrom?: VoiceTurn; repairInstructionSource?: VoiceTurn; carriedAmbiguous?: boolean;
   modelPreview?: boolean; mathPreviewContext?: BoardContext; mathPreviewBlocked?: boolean;
   receiveTranscript?: (text: string) => void
+  libraryRetrievalCompleted?: boolean
 }
 type ResponseOwner = { turn: VoiceTurn; mode: 'normal' | 'repair' | 'confirmation'; requestId?: string; omittedSources?: Set<string> }
 type ToolCall = { call_id: string; name?: string; arguments: string; metadataError?: string }
@@ -116,6 +123,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
   let responseActive = false
   let pendingResponse = false
   let spokenReplies = options.spokenReplies ?? true
+  let microphoneEnabled = options.initiallyEnabled ?? true
   let assistantText = ''
   let assistantAsked = false
   let activeResponseId: string | null = null
@@ -211,7 +219,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
   }
   function setRecovery(state: VoiceRecoveryState) {
     recoveryState = state
-    for (const track of microphone?.getAudioTracks() ?? []) track.enabled = !state
+    syncMicrophone()
     if (audio) audio.muted = !spokenReplies || !!state
     if (state) { clearTimeout(idleTimer); clearTimeout(responseTimer); speechActive = false; clearPreview(); options.onAudioLevel?.(0) }
     send({ type: 'input_audio_buffer.clear' })
@@ -254,12 +262,15 @@ export function createRealtimeClient(options: RealtimeOptions) {
   }
   function resetIdle() {
     clearTimeout(idleTimer)
-    idleTimer = setTimeout(() => { options.onNotice?.('Microphone paused after 90 seconds without speech. Resume it whenever you are ready.'); disconnect() }, 90_000)
+    idleTimer = setTimeout(() => {
+      if (speechActive || responseActive || finishingResponse || recoveryState) { resetIdle(); return }
+      options.onNotice?.('Microphone paused after 90 seconds without speech. Resume it whenever you are ready.'); disconnect()
+    }, 90_000)
   }
   function compactContext(budget = CONTEXT_BYTES) {
     budget -= 64 // reserve space for final omission counts
     const context = options.getContext()
-    const important = new Set([...context.selectedIds, ...context.lastCreatedIds, ...(context.focus?.targetIds ?? []), ...(context.contentSelection ? [context.contentSelection.shapeId] : [])])
+    const important = new Set([...(context.pendingMath?.objectIds ?? []), ...context.selectedIds, ...context.lastCreatedIds, ...(context.focus?.targetIds ?? []), ...(context.contentSelection ? [context.contentSelection.shapeId] : [])])
     const objects = [...context.objects.filter(o => important.has(o.id)), ...context.objects.filter(o => !important.has(o.id))]
     const { selectedIds, lastCreatedIds, focus } = context
     type CompactObject = BoardContext['objects'][number] & { sourceOmitted?: string[] }
@@ -300,6 +311,19 @@ export function createRealtimeClient(options: RealtimeOptions) {
     }
     snapshot.contextBudget.omittedObjectCount = objects.length - snapshot.objects.length
     return snapshot
+  }
+  function syncMicrophone() {
+    const enabled = microphoneEnabled && !recoveryState
+    for (const track of microphone?.getAudioTracks() ?? []) track.enabled = enabled
+    options.onMicrophoneEnabled?.(enabled && !!microphone)
+    if (!enabled) options.onAudioLevel?.(0)
+  }
+  function setMicrophoneEnabled(enabled: boolean) {
+    microphoneEnabled = enabled
+    syncMicrophone()
+    // Disabled tracks transmit silence, allowing server VAD to finish the captured
+    // phrase. Clearing/committing here races the server and can lose its final word.
+    if (enabled && channel?.readyState === 'open') { resetIdle(); sendContext(true) }
   }
   function sendContext(force = false) {
     if (channel?.readyState !== 'open') return false
@@ -380,7 +404,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
       // repair scope. Never replace that intent with the intervening filler.
       return ''
     }
-    if (turn.carriedAmbiguous || !isFiller(instruction) || !turn.carriedFrom) throw new Error('An unfinished instruction was interrupted. Please repeat the complete remaining change so it can be corrected safely.')
+    if (localHistoryCommand(instruction) || /^(?:(?:please|okay|ok|now)[,\s]+)*(?:(?:can|could|would) you\s+)?(?:plot|draw|create|write|insert|pull|show|add)\b/i.test(instruction)) return instruction
+    if (!isFiller(instruction) || turn.carriedAmbiguous || !turn.carriedFrom) throw new Error('An unfinished instruction was interrupted. Please repeat the complete remaining change so it can be corrected safely.')
     const original = turn.carriedFrom
     if (original.applied || original.phase !== 'normal') throw new Error('The earlier instruction is no longer safe to repeat. Please say only the remaining change.')
     turn.repairInstructionSource = original
@@ -469,7 +494,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
         operations = pinned.value
       } else {
         if (contextFingerprint(boardState(captured)) !== contextFingerprint(boardState(options.getContext()))) throw new Error('The board changed during recovery. The correction was discarded; please repeat the instruction.')
-        operations = pinRecoveredCommand(command, captured)
+        operations = pinRecoveredCommand(command, captured, instruction)
       }
       turn.phase = 'repair-attempted'
       const results = await options.applyOperations(operations, stillCurrent)
@@ -556,7 +581,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
         context.lastCreatedIds = [id]; selectionUnknown = false
         continue
       }
-      if (['insert_library', 'library_action', 'propose_image', 'undo', 'redo'].includes(operation.type)) {
+      if (['insert_library', 'library_action', 'propose_image', 'confirm_math', 'cancel_math', 'undo', 'redo'].includes(operation.type)) {
         selectionUnknown = true; continue
       }
       const explicit = Boolean(operation.ids?.length || operation.target && !['selected', 'selection', 'focus', 'last'].includes(operation.target))
@@ -599,6 +624,9 @@ export function createRealtimeClient(options: RealtimeOptions) {
       let refreshContext = false
       try {
         if (turn.phase === 'stopped') { output = { ok: false, message: 'Automatic editing has stopped for this instruction.' }; needsContinuation = false }
+        else if (turn.libraryRetrievalCompleted && call.name === 'apply_board_operations') {
+          output = { ok: true, message: 'The requested library lookup is already complete. Do not repeat it.' }; needsContinuation = false
+        }
         else if (call.metadataError || !['get_board_context', 'inspect_board', 'apply_board_operations'].includes(call.name ?? '')) {
           const message = call.metadataError || (call.name
             ? `The voice assistant requested an unsupported whiteboard tool: ${call.name.slice(0, 100)}.`
@@ -630,6 +658,24 @@ export function createRealtimeClient(options: RealtimeOptions) {
             if (!send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(output) } })) stopTurn(turn, SEND_FAILED)
             return false
           }
+          // Final ASR can trail the tool call. For an open-only response, briefly
+          // wait for the user's words before deciding whether retrieval is missing.
+          if (operations.length === 1 && (operations[0].type === 'insert_library' || operations[0].type === 'library_action' && operations[0].action === 'open_book')
+            && !turn.instruction && turn.inputItem && !turn.transcriptionFailed) {
+            let timer: ReturnType<typeof setTimeout> | undefined
+            const previousReceiver = turn.receiveTranscript
+            try {
+              await new Promise<void>(resolve => {
+                turn.receiveTranscript = text => { previousReceiver?.(text); resolve() }
+                timer = setTimeout(resolve, 2500)
+              })
+            } finally { clearTimeout(timer); turn.receiveTranscript = previousReceiver }
+            if (!isCurrent()) return false
+          }
+          const completedOperations = completeLibraryRetrieval(operations, turn.instruction)
+          const completingRetrieval = completedOperations !== operations
+          const restoringExcerpt = excerptRepairOperation(turn.instruction, turn.context)
+          operations = restoringExcerpt ?? completedOperations
           // Flush pending manual edits before checking the source snapshot. The
           // application callback and applyOperations must keep this step synchronous.
           options.beforeApplyOperations?.()
@@ -648,6 +694,12 @@ export function createRealtimeClient(options: RealtimeOptions) {
               if (!pinned || !pinned.ok) throw new Error(pinned && !pinned.ok ? pinned.reason : 'The original edit is no longer available to correct.')
               operations = pinned.value; turn.phase = 'repair-attempted'
             }
+            for (const operation of operations) {
+              if (operation.type === 'confirm_math' && (operation.target !== turn.context.pendingMath?.id
+                || operation.previewRevision !== turn.context.pendingMath?.revision)) {
+                throw new Error('Review the updated preview, then say “add it” in a new instruction. Nothing was inserted.')
+              }
+            }
             assertSourceAvailable(operations, owner?.omittedSources ?? omittedSources)
             const results = await options.applyOperations(operations, isCurrent)
             if (thisGeneration !== generation || turn !== currentTurn || responseId && interruptedResponses.has(responseId)) return false
@@ -660,6 +712,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
             // success needs no board copy: the context item is refreshed right after this output
             output = success ? { results: brief(results) } : { results: brief(results), context: compactContext() }
             if (success) {
+              if (completingRetrieval || restoringExcerpt) turn.libraryRetrievalCompleted = true
               turn.applied = true; refreshContext = true
               if (repairing) turn.phase = 'repaired'
               if (repairing && recoveryState?.phase === 'repairing') setRecovery(null)
@@ -912,6 +965,11 @@ export function createRealtimeClient(options: RealtimeOptions) {
           }
           continuation = false
         }
+        if (!cancelled && turn === currentTurn && event.response?.status === 'completed' && !turn.applied && !turn.repairUsed
+          && turn.phase === 'normal' && !continuation && !pendingCalls.size && !(event.response?.output ?? []).length && turn.instruction && !isFiller(turn.instruction) && options.repairRequest) {
+          try { await repairExternally(turn, { kind: 'response_incomplete', message: 'The voice response ended without an action or answer.' }) }
+          catch (error) { stopTurn(turn, error instanceof Error ? error.message : 'That instruction could not be completed. Please try again.') }
+        }
         if (thisGeneration !== generation) return
         finishingResponse = false; activeResponseId = null
         for (const id of responseCalls.get(responseId) ?? []) { executions.delete(id); argumentStreams.delete(id); remember(completedCalls, id, true, 256) }
@@ -1086,10 +1144,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
     reconnectTimes = []; contextRenewals = 0; setStatus('connecting')
     window.addEventListener?.('pagehide', stopOnPageHide)
     try {
-      meter = createAudioMeter(options.onAudioLevel)
+      meter = createAudioMeter(options.onAudioLevel ? level => options.onAudioLevel?.(microphoneEnabled && !recoveryState ? level : 0) : undefined)
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
       if (thisGeneration !== generation) { stream.getTracks().forEach(track => track.stop()); return }
-      microphone = stream; meter.attach(stream)
+      microphone = stream; syncMicrophone(); meter.attach(stream)
       await openTransport()
       if (thisGeneration !== generation) return
       setStatus('listening'); resetIdle()
@@ -1137,7 +1195,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
     if (audio) audio.muted = !enabled || !!recoveryState
     send({ type: 'session.update', session: { type: 'realtime', output_modalities: enabled ? ['audio'] : ['text'] } })
   }
-  return { connect, disconnect, sendText, updateContext, setSpokenReplies, isConnected: () => channel?.readyState === 'open',
+  return { connect, disconnect, sendText, updateContext, setSpokenReplies, setMicrophoneEnabled,
+    isMicrophoneEnabled: () => microphoneEnabled && !recoveryState && !!microphone,
+    isWorking: () => speechActive || responseActive || finishingResponse || pendingResponse || textDictation.isPending() || !!recoveryState,
+    isConnected: () => channel?.readyState === 'open',
     getDiagnostics: () => ({ generation, recovering: recoveryState?.phase ?? null, executions: executions.size, responses: responseOwners.size, streams: argumentStreams.size, streamCharacters: [...argumentStreams.values()].reduce((sum, stream) => sum + stream.text.length, 0), transcripts: transcripts.size, rememberedCalls: completedCalls.size, rememberedResponses: closedResponses.size, inputTurns: inputTurns.size }) }
 }
 

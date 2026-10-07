@@ -6,7 +6,13 @@ import type { Anchor, AnchorKind, BookRecord, PageRecord } from '../src/library/
 describe('parseLibraryQuery', () => {
   const q = (text: string) => parseLibraryQuery(text)
 
-  it('reads printed page requests', () => {
+  it('distinguishes structural pages from problems and extracts only the actual book name', () => {
+    expect(q('Can you pull the first page of chapter 6?')).toMatchObject({ kind: 'topic', terms: 'first page of chapter 6', chapter: '6' })
+    expect(q('Can you pull the first page of the table of contents from the quantum mechanics textbook?')).toMatchObject({ kind: 'topic', terms: 'table of contents', book: 'quantum mechanics' })
+    expect(titleMatch('quantum mechanics', 'Sakuri QM')).toBeGreaterThanOrEqual(.5)
+  })
+
+  it('reads printed page requests' , () => {
     expect(q('page 22')).toEqual({ kind: 'page', label: '22', raw: 'page 22' })
     expect(q('p. 22')).toMatchObject({ kind: 'page', label: '22' })
     expect(q('pg 22')).toMatchObject({ kind: 'page', label: '22' })
@@ -118,6 +124,43 @@ const PAGES: PageRecord[] = Array.from({ length: 12 }, (_, index) => ({
 
 describe('buildCandidates', () => {
   const kinds = (text: string) => buildCandidates(parseLibraryQuery(text)!, BOOK, PAGES, ANCHORS).map(candidate => candidate.anchor?.kind ?? candidate.kind).sort()
+
+  it('resolves chapter-local speech to printed decimal problem numbers without crossing chapters', () => {
+    const anchors = [anchor(2, 'section', '6.1', '6.1 Scattering'), anchor(8, 'checkpoint', '6.2', '6.2 Prove the identity.'),
+      anchor(9, 'checkpoint', '6.20', '6.20 Another problem.'), anchor(10, 'section', '7.1', '7.1 Next chapter'), anchor(11, 'checkpoint', '7.2', '7.2 Different problem.')]
+    for (const phrase of ['question 2 in chapter 6', 'chapter 6 problem 2', 'exercise 2 from chapter 6']) {
+      const query = parseLibraryQuery(phrase)!
+      const candidates = buildCandidates(query, BOOK, PAGES, anchors)
+      expect(certainItem(query, candidates)?.anchor?.label).toBe('6.2')
+      expect(candidates.some(c => c.anchor?.label === '6.20' || c.anchor?.label === '7.2')).toBe(false)
+    }
+    expect(buildCandidates(parseLibraryQuery('question 2')!, BOOK, PAGES, anchors)).toHaveLength(0)
+  })
+
+  it('uses a qualified identifier when chapter metadata is missing, but never against known scope', () => {
+    const problem = anchor(8, 'checkpoint', '6.2', '6.2 Prove the identity.')
+    for (const phrase of ['question 2 in chapter 6', 'question 6.2 in chapter 6']) {
+      const query = parseLibraryQuery(phrase)!
+      expect(certainItem(query, buildCandidates(query, BOOK, PAGES, [problem]))?.anchor?.label).toBe('6.2')
+      expect(certainItem(query, buildCandidates(query, BOOK, PAGES, [anchor(2, 'section', '7.1', '7.1 Other chapter'), problem]))).toBeNull()
+    }
+  })
+
+  it('asks for a choice when both local and qualified numbers exist, and supports section-local labels', () => {
+    const query = parseLibraryQuery('question 2 in chapter 6')!
+    const anchors = [anchor(1, 'section', '6.1', '6.1 Scattering'), anchor(7, 'question', '2', 'Question 2'), anchor(8, 'checkpoint', '6.2', '6.2 Prove it.')]
+    expect(certainItem(query, buildCandidates(query, BOOK, PAGES, anchors))).toBeNull()
+    const section = parseLibraryQuery('exercise 2 in section 6.1')!
+    expect(certainItem(section, buildCandidates(section, BOOK, PAGES, [anchor(8, 'exercise', '6.1.2', 'Exercise 6.1.2')]))?.anchor?.label).toBe('6.1.2')
+  })
+
+  it('offers a page containing the qualified label when an exact crop was not indexed', () => {
+    const query = parseLibraryQuery('question 2 in chapter 6')!
+    const pages = [{ ...PAGES[8], text: 'Problems\n6.2 Prove the following identity.\n6.3 Compare the solutions.' }]
+    const candidates = buildCandidates(query, BOOK, pages, [])
+    expect(candidates[0]).toMatchObject({ kind: 'page', pageIndex: 8, features: { inSection: 1 } })
+    expect(certainItem(query, candidates)).toBeNull()
+  })
 
   it('offers only practice items for problem, question, exercise and a bare number', () => {
     const candidates = buildCandidates(parseLibraryQuery('problem 3.2')!, BOOK, PAGES, ANCHORS)

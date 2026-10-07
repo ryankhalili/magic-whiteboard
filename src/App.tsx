@@ -1,3 +1,5 @@
+import { restoreMissingLibraryAssets } from './library/restoreAssets'
+import { excerptRepairOperation } from './library/excerptRepair'
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import katex from 'katex'
 import { DefaultColorStyle, DefaultSizeStyle, type Editor, type TLShapeId } from './canvas/editor'
@@ -7,6 +9,14 @@ import { createBoardController, getPlacementBounds, MagicShapeView } from './boa
 import { focusImageBounds, libraryAssetId, libraryImageSize, libraryItemKey, libraryQueryFromOperation, spotForOption, type LibraryImageKind } from './board/controller'
 import { guessContentSize, NATURAL_SIZES } from './board/placementSpots'
 import { finishPointerFollow, focusFromGesture, movePointerFollow, startPointerFollow, type PointerFollow } from './board/interactions'
+import { createHoldToTalk } from './ai/hold-to-talk'
+import { MathProposal, needsMathPreview } from './math/MathProposal'
+import { MathProposalPanel } from './math/MathProposalPanel'
+import { MathStudio } from './math/MathStudio'
+import { placeStudioOperation } from './math/studioPlacement'
+import { DocumentNavigator, DocumentPageMask } from './documents/DocumentNavigator'
+import { exportWorksheetPdf } from './files/pdfExport'
+import { getBookGuideContext } from './library/guide'
 import { createRealtimeClient, checkVoiceConnection, type ContentPreview } from './ai/realtime'
 import { NotebookSwitcher, useNotebookLibrary, saveNotebookSnapshot, loadNotebookSnapshot, type NotebookLibrary } from './notebooks'
 import { getApiStatus, sendBoardCommand, pairDevice, repairBoardCommand } from './ai/commands'
@@ -16,7 +26,7 @@ import { useImageGeneration } from './images/useImageGeneration'
 import { ImageGenerationPanel } from './images/ImageGenerationPanel'
 import { downloadOriginalNotebook, exportBoard, exportRegionPdf, importImageFile, installBoardImageExporter, loadProject, PAGE_BOUNDS, regionFromSelection, saveProject } from './files/boardFiles'
 import { boardNeedsImage, captureBoardContext } from './files/capture'
-import { boardImportLimit, isPdfFile } from './files/pdfPages'
+import { boardImportLimit, isPdfFile, worksheetPages } from './files/pdfPages'
 import { addedBounds, asksForPanelPage, boardOnly, captureBoardCommandGuard, commandAllowance, createSpeechStart, freeSpots, insertMessage, instructionTooLong, isPairingError, localHistoryCommand, localContextObjects, modelLibrary, wantsPlacement } from './appLogic'
 import { defaultImportTarget, ImportDialog, importProgressText, type ImportInfo, type ImportTarget } from './library/ImportDialog'
 import { LibraryPanel } from './library/LibraryPanel'
@@ -24,11 +34,12 @@ import { candidateTitle, panelHits, ReferencePanel } from './library/ReferencePa
 import { ensureIndexed, importBook, inspectPdf, needsReindex } from './library/indexer'
 import { createBoundsFor, createInsertLock, easeInOut, FLOATING_UI, INSPECTOR_UI, inspectorZone, manualOverride, matchWithReindex, revealShift, type ScreenRect } from './library/insertLayout'
 import { detectLibraryIntent, type LibraryIntent } from './library/intent'
+import { completeLibraryRetrieval } from './library/retrievalIntent'
 import { rankItems } from './library/rank'
-import { renderCrop, renderPage } from './library/render'
+import { renderAnchor, renderCrop, renderPage } from './library/render'
 import { forgetBookData, matchLibrary, problemImage } from './library/resolve'
 import { kindName, parseLibraryQuery, pickBook, titleMatch } from './library/search'
-import { listBooks, removeBook, touchBook } from './library/store'
+import { getAnchors, getBook, listBooks, removeBook, touchBook } from './library/store'
 import type { BookRecord, Candidate, ImportProgress, LibraryQuery, PageBox, RankedCandidate, RenderedImage, Spot } from './library/types'
 import { ObjectInspector } from './board/ObjectInspector'
 import { flushSourceEdits, snapshotWithPendingSource } from './board/liveSource'
@@ -73,6 +84,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const touches = useRef(new Map<number, Point>())
   const pinch = useRef<{ distance: number; zoom: number; anchor: Point } | null>(null)
   const voiceRef = useRef<ReturnType<typeof createRealtimeClient> | null>(null)
+  const holdTalkRef = useRef<ReturnType<typeof createHoldToTalk> | null>(null)
+  const priorHoldTool = useRef<Tool>('draw')
   const voiceOrbRef = useRef<HTMLButtonElement>(null)
   const contentSelectionRef = useRef<BoardContext['contentSelection']>(undefined)
   const dictationRef = useRef<'assistant' | 'math' | 'text'>('assistant')
@@ -119,7 +132,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }, [library.updateNotebookSettings, notebook.id])
   const focusModeRef = useRef<'reference' | 'literal'>(notebook.settings.focusMode ?? 'reference')
   focusModeRef.current = settings.focusMode ?? 'reference'
-  const [tool, setTool] = useState<Tool>('magic')
+  const [tool, setToolState] = useState<Tool>('magic')
+  const toolRef = useRef<Tool>('magic')
+  const setTool = useCallback((next: Tool) => { toolRef.current = next; setToolState(next) }, [])
   const [color, setColor] = useState(COLORS[0])
   const [inkSize, setInkSize] = useState<'s' | 'm'>('m')
   const [ready, setReady] = useState(false)
@@ -133,6 +148,17 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const [commandProgress, setCommandProgress] = useState('')
   const aiPaused = !!recovery || !!commandProgress
   const [voiceStatus, setVoiceStatus] = useState('idle')
+  const [microphoneEnabled, setMicrophoneEnabled] = useState(false)
+  const [holdingTalk, setHoldingTalk] = useState(false)
+  const [mathStudio, setMathStudio] = useState(false)
+  const mathProposalRef = useRef<MathProposal | null>(null)
+  const [mathProposal, setMathProposal] = useState<{ draft: MathProposal; revision: number } | null>(null)
+  const publishMathProposal = useCallback((draft: MathProposal | null) => {
+    mathProposalRef.current = draft
+    setMathProposal(draft ? { draft, revision: draft.revision } : null)
+    queueMicrotask(() => voiceRef.current?.updateContext())
+  }, [])
+  const [documentPageId, setDocumentPageId] = useState<string | null>(null)
   const [voiceMode, setVoiceMode] = useState(false)
   const [voiceControlsHidden, setVoiceControlsHidden] = useState(false)
   const [dictationMode, setDictationMode] = useState<'assistant' | 'math' | 'text'>('assistant')
@@ -144,6 +170,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   const [error, setError] = useState('')
   const [menu, setMenu] = useState<'paper' | 'export' | 'help' | 'library' | null>(null)
   const [books, setBooksState] = useState<BookRecord[]>([])
+  const [bookChoice, setBookChoiceState] = useState<{ query: LibraryQuery; books: BookRecord[]; notebookId: string } | null>(null)
+  const bookChoiceRef = useRef(bookChoice)
+  const setBookChoice = useCallback((choice: typeof bookChoice) => { bookChoiceRef.current = choice; setBookChoiceState(choice) }, [])
   const [openBook, setOpenBookState] = useState<BookRecord | null>(null)
   const [highlight, setHighlightState] = useState<RankedCandidate[] | null>(null)
   const [lookup, setLookup] = useState(0)
@@ -190,11 +219,12 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const relevantObjects = localContextObjects(controller.current?.getObjects() || [], important, view)
     const shelf = booksRef.current, open = openBookRef.current, pending = importRef.current, page = panelPageRef.current
     const matches = open ? panelHits(highlightRef.current, open) : []
-    // titles only: the model never receives book text, and book ids tell it nothing
+    // Only the locally extracted, bounded guide accompanies titles; no whole-book prompt.
     const library = modelLibrary({
       books: shelf, open, pending: pending && !pending.busy ? { name: pending.file.name, pages: pending.info?.pageCount ?? 0 } : null,
-      highlights: open ? matches.map(c => candidateTitle(c, open.labels)) : [], panelPageIndex: open && page?.bookId === open.id ? page.pageIndex : null,
+      highlights: bookChoiceRef.current?.notebookId === notebook.id ? bookChoiceRef.current.books.map(book => book.title) : open ? matches.map(c => candidateTitle(c, open.labels)) : [], panelPageIndex: open && page?.bookId === open.id ? page.pageIndex : null,
     })
+    if (library?.openBook && open) library.openBook.guide = getBookGuideContext(open, page?.bookId === open.id ? page.pageIndex : null)
     return {
       focus: currentFocus,
       focusMode: focusModeRef.current,
@@ -202,7 +232,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       selectedIds,
       lastCreatedIds: controller.current?.lastCreatedIds || [],
       viewport: vp ? { x: vp.x, y: vp.y, w: vp.w, h: vp.h } : { x: 0, y: 0, w: 1200, h: 800 },
-      objects: relevantObjects, gesture: gestureRef.current,
+      objects: [...(mathProposalRef.current?.objects ?? []), ...relevantObjects].slice(0, 120),
+      ...(mathProposalRef.current ? { pendingMath: mathProposalRef.current.summary } : {}), gesture: gestureRef.current,
       dictationMode: dictationRef.current,
       contentSelection: contentSelectionRef.current && selectedIds.includes(contentSelectionRef.current.shapeId) ? contentSelectionRef.current : undefined,
       ...(library ? { library } : {}),
@@ -232,6 +263,45 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   // reveal: new objects that are off screen or under a panel glide into view
   const execute = useCallback((ops: BoardOperation[], reportFailure = true, reveal = true): BoardResult => {
     if (!controller.current) return { ok: false, message: 'The board is still loading.', ids: [] }
+    try {
+      const draft = mathProposalRef.current
+      if (ops.some(op => op.type === 'confirm_math' || op.type === 'cancel_math')) {
+        if (ops.length !== 1 || !draft || ops[0].target !== draft.id) throw new Error('That math preview is no longer available. Nothing was inserted.')
+        if (ops[0].type === 'cancel_math') { publishMathProposal(null); return { ok: true, message: 'Math preview discarded. The board is unchanged.', ids: [] } }
+        const approved = draft.operations(ops[0].target, ops[0].previewRevision)
+        const ed = editorRef.current!
+        flushSourceEdits(); ed.completeInteraction(); stopFollowing()
+        const previous = contextOverride.current, existing = ed.getCurrentPageShapeIds()
+        // Confirmation uses the reviewed placement, even if the pointer has moved.
+        contextOverride.current = { ...previous, focus: draft.context.focus, focusMode: draft.context.focusMode, selectedIds: [], lastCreatedIds: [] }
+        let result: BoardResult
+        try { result = controller.current.applyOperations(approved) } finally { contextOverride.current = previous }
+        if (result.ok) {
+          publishMathProposal(null); setError(''); notify(result.message)
+          const added = addedBounds(ed, existing, result.ids)
+          if (added) revealRef.current(added, true)
+        } else if (reportFailure) setError(result.message)
+        return result
+      }
+      if (draft?.targets(ops)) {
+        const result = draft.revise(ops)
+        if (result.ok) { publishMathProposal(draft); setError(''); notify(result.message) }
+        else if (reportFailure) setError(result.message)
+        return result
+      }
+      if (needsMathPreview(ops)) {
+        if (draft) return draft.result('A math preview is already open. Adjust or confirm it, or discard it before starting another.')
+        flushSourceEdits(); editorRef.current!.completeInteraction(); stopFollowing()
+        const proposal = new MathProposal(editorRef.current!, getContext(), ops)
+        publishMathProposal(proposal); setInspectorOpen(false); setError('')
+        notify('Preview ready. Keep talking to adjust it, or say “add it”.')
+        return proposal.result()
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The math preview could not be updated.'
+      if (reportFailure) setError(message)
+      return { ok: false, message, ids: [] }
+    }
     if (ops.some(operation => operation.type === 'propose_image')) {
       try {
         if (ops.length !== 1) throw new Error('Propose one image at a time, separately from other board changes.')
@@ -268,7 +338,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       }
     } else if (reportFailure) setError(result.message)
     return result
-  }, [notify, stopFollowing, getContext, images.propose])
+  }, [notify, stopFollowing, getContext, images.propose, publishMathProposal])
   const executeManual = useCallback((ops: BoardOperation[]): BoardResult => {
     const ed = editorRef.current
     if (!ed) return { ok: false, message: 'The board is still loading.', ids: [] }
@@ -300,7 +370,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   useEffect(() => { if (imageMessage) recoverPairing(imageMessage) }, [imageMessage, recoverPairing])
   useEffect(() => {
     workspaceActive.current = true
-    return () => { workspaceActive.current = false; voiceRef.current?.disconnect(); commandAbort.current?.abort() }
+    return () => { workspaceActive.current = false; holdTalkRef.current?.dispose(); voiceRef.current?.disconnect(); commandAbort.current?.abort() }
   }, [])
   useEffect(() => {
     if (!aiPaused) return
@@ -321,6 +391,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   const flushNotebook = useCallback(async () => {
     if (busy || insertLock.held()) throw new Error('Wait for the current instruction or import to finish before switching notebooks.')
+    holdTalkRef.current?.cancel()
     await snapshotLoad.current
     const ed = editorRef.current
     if (snapshotFailed.current) {
@@ -355,7 +426,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const initialize = async () => {
       const saved = await loadNotebookSnapshot(notebook.id, notebook.persistenceKey)
       if (disposed) return
-      if (saved) editor.loadSnapshot(saved)
+      const restored = saved ? await restoreMissingLibraryAssets(saved) : null
+      if (disposed) return
+      if (restored) editor.loadSnapshot(restored)
       editor.setEditingShape(null); editor.setCurrentTool('select')
     // Normalize the earlier prototype theme once, preserving all object content and positions.
     const migrationKey = `marginalia-plain-theme:${notebook.id}`
@@ -408,15 +481,46 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   const chooseTool = useCallback((next: Tool) => {
     flushSourceEdits()
+    const ed = editorRef.current
+    ed?.completeInteraction()
+    if (toolRef.current === 'magic' && next !== 'magic') {
+      // Releasing the talk key can precede pencil/mouse pointer-up. Finish the
+      // reference region before its overlay disappears and VAD commits speech.
+      const gesture = gestureRef.current
+      if (gesture?.active && ed) {
+        const completedFocus = focusFromGesture(ed, gesture)
+        if (completedFocus.targetIds.length) ed.select(...completedFocus.targetIds as TLShapeId[])
+        setFocus(completedFocus)
+      }
+      gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([])
+      voiceRef.current?.updateContext()
+    }
     setTool(next); stopFollowing()
-    editorRef.current?.setEditingShape(null)
-    editorRef.current?.setCurrentTool(['magic', 'math', 'text'].includes(next) ? 'select' : next)
-  }, [stopFollowing])
+    ed?.setEditingShape(null)
+    ed?.setCurrentTool(['magic', 'math', 'text'].includes(next) ? 'select' : next)
+  }, [stopFollowing, setFocus, setTool])
   const onVoiceShortcut = useEffectEvent(() => { void toggleVoice() })
+  const connectHeldVoice = useEffectEvent(() => connectVoice(false))
+  const heldVoiceChanged = useEffectEvent((held: boolean) => {
+    setHoldingTalk(held)
+    if (held) { priorHoldTool.current = toolRef.current; chooseTool('magic'); setVoiceControlsHidden(false) }
+    else if (toolRef.current === 'magic') chooseTool(priorHoldTool.current)
+  })
+  useEffect(() => {
+    const hold = createHoldToTalk({ getClient: () => voiceRef.current, connectMuted: () => connectHeldVoice(), onHoldChange: held => heldVoiceChanged(held), onError: error => setError(errorText(error, 'Microphone could not start.')) })
+    holdTalkRef.current = hold
+    const release = () => hold.release()
+    const keyup = (e: KeyboardEvent) => { if (e.code === 'KeyR' || e.key === 'Shift') release() }
+    const hidden = () => { if (document.hidden) release() }
+    window.addEventListener('keyup', keyup, true); window.addEventListener('blur', release); document.addEventListener('visibilitychange', hidden)
+    return () => { hold.dispose(); window.removeEventListener('keyup', keyup, true); window.removeEventListener('blur', release); document.removeEventListener('visibilitychange', hidden) }
+  }, [])
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return
+      if (event.composedPath().some(node => node instanceof Element && node.closest('[role="dialog"]'))) return
       if (event.composedPath().some(node => node instanceof Element && node.closest('input,textarea,select,[contenteditable]:not([contenteditable=false]),math-field,.marginalia-inline-editor'))) return
+      if (event.shiftKey && event.code === 'KeyR' && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); event.stopImmediatePropagation(); if (!event.repeat) void holdTalkRef.current?.press(); return }
       if (event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && (event.code === 'KeyV' || event.code === 'Space')) {
         event.preventDefault(); event.stopImmediatePropagation()
         if (event.repeat) return
@@ -428,7 +532,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         event.preventDefault(); event.stopImmediatePropagation()
         execute([{ type: event.code === 'KeyY' || event.shiftKey ? 'redo' : 'undo' }]); return
       }
-      if (event.code === 'Escape') { stopFollowing(); setFocus(null); setMenu(null); setError('') }
+      if (event.code === 'Escape') { holdTalkRef.current?.cancel(); stopFollowing(); setFocus(null); setMenu(null); setError('') }
       if (event.code === 'KeyM' && !event.ctrlKey && !event.metaKey) { event.preventDefault(); chooseTool('magic') }
       if (event.code === 'KeyP' && !event.ctrlKey && !event.metaKey) chooseTool('draw')
       if (event.code === 'KeyV' && !event.ctrlKey && !event.metaKey) chooseTool('select')
@@ -444,6 +548,25 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
   const editor = editorRef.current
   const objects = useMemo(() => ready ? controller.current?.getObjects() || [] : [], [ready, editor, tick])
+  const documentPages = useMemo(() => editor && ready ? worksheetPages(editor) : [], [editor, ready, tick])
+  const activeDocumentPage = documentPages.find(p => p.id === documentPageId) ?? documentPages[0] ?? null
+  useEffect(() => {
+    if (settings.mode !== 'document' || !ready || !editor || !activeDocumentPage || documentPageId === activeDocumentPage.id) return
+    setDocumentPageId(activeDocumentPage.id); editor.zoomToBounds(activeDocumentPage.bounds, { inset: 105 })
+  }, [settings.mode, ready, editor, documentPageId, activeDocumentPage])
+  const goToDocumentPage = (id: string) => {
+    const page = documentPages.find(p => p.id === id); if (!page || !editor) return
+    flushSourceEdits(); editor.completeInteraction(); holdTalkRef.current?.cancel(); setFocus(null); editor.selectNone()
+    setDocumentPageId(id); editor.zoomToBounds(page.bounds, { inset: 105 })
+  }
+  const exportHomework = async () => {
+    if (!editor) return
+    flushSourceEdits(); editor.completeInteraction(); holdTalkRef.current?.cancel(); setBusy(true); setMenu(null)
+    try { const result = await exportWorksheetPdf(editor, { ...(settings.mode === 'document' && activeDocumentPage ? { docId: activeDocumentPage.info.doc } : {}), title: settings.name }); notify(`Exported ${result.pages} homework pages.${result.rasterizedPages ? ' Some original PDFs were unavailable; those pages use their saved images.' : ''}`) }
+    catch (e) { setError(errorText(e, 'Homework could not be exported.')) }
+    finally { setBusy(false) }
+  }
+
   const selectedIds = editor?.getSelectedShapeIds() || []
   const selected = objects.find(o => selectedIds.includes(o.id as TLShapeId))
   const selectedRecord = selected ? editor?.getShape(selected.id as TLShapeId) : undefined
@@ -570,6 +693,8 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const literalText = voiceRef.current?.isConnected() && dictationRef.current === 'text'
     const step = literalText ? null : localHistoryCommand(text)
     if (step) return runLocal(text, async () => execute([{ type: step }], false), 'That could not be done.')
+    const repair = literalText ? null : excerptRepairOperation(text, getContext())
+    if (repair) return runLocal(text, guard => executeResolved(repair, true, null, guard.isCurrent, guard.acceptLibraryChange), 'The excerpt could not be restored.')
     const panel = panelSource()
     if (!literalText && panel && asksForPanelPage(text)) {
       return runLocal(text, guard => insertLock.run(async () => {
@@ -580,7 +705,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         return applyResolved([op], [], true)
       }), 'That page could not be drawn.')
     }
-    const intent = literalText ? null : detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0, bookTitles: booksRef.current.map(book => book.title), highlightCount: shownMatches().length })
+    const intent = literalText ? null : detectLibraryIntent(text, { importPending: !!importRef.current && !importRef.current.busy, hasBooks: booksRef.current.length > 0, bookTitles: booksRef.current.map(book => book.title), highlightCount: bookChoiceRef.current?.notebookId === notebook.id ? bookChoiceRef.current.books.length : shownMatches().length })
     if (intent) return runLocal(text, guard => runIntent(intent, guard), 'The library could not be read.')
     if (api?.pairingRequired && !api.authorized) { setError('Enter the pairing code shown in Help on your laptop to connect this device.'); return }
     setPrompt(''); setError(''); addMessage('user', text); setBusy(true)
@@ -600,6 +725,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       const placementCandidates = wantsPlacement(text, before) ? typedCandidates(text) : undefined
       sent = true
       const result = await sendBoardCommand(text, { ...before, placementOptions: undefined }, messages.filter(m => m.role !== 'event').slice(-8).map(m => ({ role: m.role as 'user' | 'assistant', text: m.text })), visual || undefined, abort.signal, placementCandidates)
+      result.operations = completeLibraryRetrieval(result.operations, text)
       if (abort.signal.aborted) return
       flushSourceEdits(); editorRef.current?.completeInteraction(); stopFollowing()
       if (boardBefore !== boardKey()) { notify('The board changed while I was working, so I left this response unapplied. Give the instruction again when ready.'); return }
@@ -625,7 +751,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         if (applied && !applied.ok) setError(`I couldn’t safely finish that edit after checking it. ${applied.message} You can keep working or give a new instruction.`)
       }
       // the board, not the model, knows whether a book lookup inserted something or is waiting for a tap
-      addMessage('assistant', applied && (!applied.ok || result.operations.some(op => op.type === 'propose_image' || isLibraryOp(op))) ? applied.message : result.message || applied?.message || 'Done.')
+      addMessage('assistant', applied && (!applied.ok || !!mathProposalRef.current || result.operations.some(op => ['propose_image', 'confirm_math', 'cancel_math'].includes(op.type) || isLibraryOp(op))) ? applied.message : result.message || applied?.message || 'Done.')
     } catch (e) { if (!abort.signal.aborted) { setError(e instanceof Error ? e.message : String(e)); recoverPairing(e) } }
     finally {
       clearTimeout(progressTimer); if (commandAbort.current === abort) commandAbort.current = null; setBusy(false); setCommandProgress('')
@@ -634,14 +760,20 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     }
   }
   const toggleVoice = async () => {
+    holdTalkRef.current?.cancel()
     if (voiceStatus !== 'idle') { voiceRef.current?.disconnect(); setVoiceStatus('idle'); setLiveTranscript(''); return }
-    if (busy) return
+    await connectVoice()
+  }
+  const connectVoice = async (initiallyEnabled = true) => {
+    if (voiceRef.current?.isConnected()) return voiceRef.current
+    if (busy || voiceStatus !== 'idle') return null
     setError('')
-    if (api?.pairingRequired && !api.authorized) { setError('Connect this device with the laptop pairing code before starting voice.'); return }
-    if (!window.isSecureContext) { setError('Microphone access needs HTTPS on your iPad. Use the secure preview address; localhost works on this computer.'); return }
+    if (api?.pairingRequired && !api.authorized) { setError('Connect this device with the laptop pairing code before starting voice.'); return null }
+    if (!window.isSecureContext) { setError('Microphone access needs HTTPS on your iPad. Use the secure preview address; localhost works on this computer.'); return null }
     setVoiceMode(true)
     try {
       const client = createRealtimeClient({
+        initiallyEnabled, onMicrophoneEnabled: setMicrophoneEnabled,
         getContext, getVisualContext,
         applyOperations: (ops, isCurrent) => {
           if (isCurrent && !isCurrent()) return { ok: false, message: 'The instruction was cancelled. No edit was applied.', ids: [] }
@@ -665,8 +797,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       })
       voiceRef.current = client
       await client.connect()
-      if (voiceRef.current === client && client.isConnected()) chooseTool('magic')
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setVoiceStatus('idle'); recoverPairing(e) }
+      if (voiceRef.current === client && client.isConnected() && initiallyEnabled) chooseTool('magic')
+      return client.isConnected() ? client : null
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setVoiceStatus('idle'); recoverPairing(e); return null }
   }
 
   const pair = async () => {
@@ -707,6 +840,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (hit) beginEditing(hit.id)
   }
   const changeDictation = (mode: 'assistant' | 'math' | 'text') => {
+    if (mode === dictationRef.current) return
+    // Never reinterpret already captured speech under a different action mode.
+    if (holdTalkRef.current?.isHeld() || voiceRef.current?.isWorking()) { notify('Finish the current phrase before changing voice action.'); return }
     handleContentPreview(null)
     dictationRef.current = mode; setDictationMode(mode); voiceRef.current?.updateContext()
   }
@@ -758,7 +894,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }, [setBooks, setOpenBook, setHighlight])
   useEffect(() => { void refreshBooks() }, [refreshBooks])
   useEffect(() => { if (menu === 'library') void refreshBooks() }, [menu, refreshBooks])
-  useEffect(() => { voiceRef.current?.updateContext() }, [books, openBook, highlight, pendingImport?.id, pendingImport?.info, pendingImport?.busy])
+  useEffect(() => { voiceRef.current?.updateContext() }, [books, openBook, highlight, bookChoice, pendingImport?.id, pendingImport?.info, pendingImport?.busy])
 
   // floating panels on screen; content that will be selected also keeps clear of where the inspector opens
   const floatingRects = useCallback((selects: boolean): ScreenRect[] => {
@@ -970,7 +1106,10 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     const match = await lookupLibrary(query, openBookRef.current?.id ?? null, isCurrent, onScopeChange, near)
     if (!isCurrent()) throw new Error('The instruction was cancelled or its writing target changed. No delayed insert was applied.')
     if ('error' in match) {
-      if ('books' in match && match.books?.length) setMenu('library')
+      if ('books' in match && match.books?.length) {
+        setBookChoice({ query, books: match.books, notebookId: notebook.id }); setMenu('library')
+        return { result: { ok: true, message: match.error, ids: [] } }
+      }
       return { result: { ok: false, message: match.error, ids: [] } }
     }
     if (!match.confident || !match.ranked.length) {
@@ -1029,9 +1168,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         onProgress: (page, pages) => patchImport(job.id, { progress: { phase: 'reading', done: page - 1, total: pages } }),
       })
       const name = job.file.name.replace(/\.pdf$/i, '').trim().slice(0, 120)
-      setSettings(s => ({ ...s, ...(result.switchToInfinite ? { mode: 'infinite' as const } : {}), ...(s.name === DEFAULT_SETTINGS.name && name ? { name } : {}) }))
+      holdTalkRef.current?.cancel()
+      setDocumentPageId(result.ids[0]); ed.zoomToBounds(result.first, { inset: 105 })
+      setSettings(s => ({ ...s, mode: 'document', ...(s.name === DEFAULT_SETTINGS.name && name ? { name } : {}) }))
       setFocus(null)
-      notify(`${result.pages === 1 ? 'PDF page' : `${result.pages} PDF pages`} added${result.switchToInfinite ? ' on the infinite canvas' : ''}. Write right on ${result.pages === 1 ? 'it' : 'them'}.`)
+      notify(`${result.pages} homework ${result.pages === 1 ? 'page' : 'pages'} ready. Export Homework PDF to keep the original pages.${result.keptSource ? '' : ' Original PDF storage is unavailable; export will use page images.'}`)
     } catch (error) { setError(errorText(error, 'This PDF could not be put on the board.')) }
     finally {
       if (importRef.current?.id === job.id) setImport(null)
@@ -1144,13 +1285,22 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     return result
   }
   // insert_library and library_action become board operations here, for typed and voice commands alike
-  const executeResolved = async (ops: BoardOperation[], reportFailure = true, options: PlacementOption[] | null = null, isCurrent?: () => boolean): Promise<BoardResult> => {
+  const executeResolved = async (ops: BoardOperation[], reportFailure = true, options: PlacementOption[] | null = null, isCurrent?: () => boolean, onLibraryChange?: () => void): Promise<BoardResult> => {
     const fail = (message: string): BoardResult => { if (reportFailure) setError(message); return { ok: false, message, ids: [] } }
-    const { isCurrent: current, acceptLibraryChange } = captureInstructionGuard(isCurrent)
+    const guard = captureInstructionGuard(isCurrent)
+    const current = guard.isCurrent
+    const acceptLibraryChange = () => { guard.acceptLibraryChange(); onLibraryChange?.() }
     let queryNear = nearPage()
     const stale = () => fail('The instruction was cancelled or its writing target changed. No delayed insert was applied.')
     if (!current()) return stale()
     if (!Array.isArray(ops) || !ops.length) return fail('Send between 1 and 20 whiteboard actions.')
+    const choosing = bookChoiceRef.current
+    if (choosing?.notebookId === notebook.id && ops.length === 1 && ops[0].type === 'library_action' && ops[0].action === 'pick') {
+      const book = choosing.books[(ops[0].index ?? 0) - 1]
+      if (!book) return fail('Choose one of the textbooks shown.')
+      setBookChoice(null); bookChoiceRef.current = null; setMenu(null)
+      ops = [{ type: 'insert_library', book: book.id, query: choosing.query.raw }]
+    }
     // images only come from the library, never straight from the model
     if (ops.some(op => op?.type === 'create_image')) return fail('That whiteboard action is not supported.')
     if (!ops.some(isLibraryOp)) return execute(ops, reportFailure)
@@ -1167,6 +1317,26 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
         for (const op of ops) {
           if (!current()) return stale()
           const pick = op.type === 'library_action' && op.action === 'pick'
+          if (op.type === 'library_action' && op.action === 'repair_excerpt') {
+            const ids = op.target && !['selected', 'selection', 'last', 'focus'].includes(op.target) ? [op.target]
+              : context.selectedIds.length ? context.selectedIds : context.lastCreatedIds
+            const shape = ids.length === 1 ? editorRef.current?.getShape(ids[0] as TLShapeId) : undefined
+            const source = shape?.meta?.library as { bookId?: string; pageIndex?: number; anchorId?: string; itemLabel?: string } | undefined
+            if (!shape || shape.type !== 'image' || shape.isLocked || !source?.bookId) return fail('Select one unlocked textbook excerpt to restore from its PDF.')
+            let book = await getBook(source.bookId)
+            if (!book) return fail('The source PDF is no longer in this browser. Import it again to restore this excerpt.')
+            if (needsReindex(book)) { await reindexBook(book.id, current, acceptLibraryChange); book = await getBook(book.id) ?? book }
+            if (!current()) return stale()
+            const anchors = await getAnchors(book.id)
+            const anchor = anchors.find(a => a.id === source.anchorId) ?? anchors.find(a => a.pageIndex === source.pageIndex && a.label === source.itemLabel && ['problem', 'exercise', 'question'].includes(a.kind))
+            const image = anchor ? await renderAnchor(book.id, anchor) : await renderPage(book.id, source.pageIndex ?? 0)
+            if (!current()) return stale()
+            ready.push({ type: 'create_image', target: shape.id, image: { ...image, name: 'Restored textbook excerpt' },
+              bounds: { x: shape.x, y: shape.y, w: shape.props.w, h: shape.props.w * image.h / image.w },
+              meta: { ...shape.meta, assetKey: `restored:${crypto.randomUUID()}` } })
+            notes.push(anchor ? 'Restored the complete excerpt from the original PDF.' : 'Restored the original page from the PDF.')
+            continue
+          }
           if (op.type === 'library_action' && !pick) {
             const result = await runLibraryAction(op.action, op.book ?? '', current, acceptLibraryChange)
             if (!current()) return stale()
@@ -1220,7 +1390,9 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (intent.action === 'route_import') return routeImport(intent.to)
     if (intent.action === 'close_reference') return runLibraryAction('close_reference', '', guard.isCurrent, guard.acceptLibraryChange)
     if (intent.action === 'open_book') return runLibraryAction('open_book', intent.book, guard.isCurrent, guard.acceptLibraryChange)
-    if (intent.action === 'pick') return insertLock.run(() => pickMatch(intent.index, guard.isCurrent))
+    if (intent.action === 'pick') return bookChoiceRef.current?.notebookId === notebook.id
+      ? executeResolved([{ type: 'library_action', action: 'pick', index: intent.index }], true, null, guard.isCurrent, guard.acceptLibraryChange)
+      : insertLock.run(() => pickMatch(intent.index, guard.isCurrent))
     const query = intent.query, near = nearPage()
     return insertLock.run(async () => {
       if (!guard.isCurrent()) return cancelledInsert()
@@ -1312,11 +1484,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     editor.run(() => editor.deleteShapes(editor.getCurrentPageShapes().filter(s => s.meta.marginaliaBackground === true).map(s => s.id)), { ignoreShapeLock: true })
     setMenu(null); notify('Background removed. Undo will restore it.')
   }
-  const save = () => {
+  const save = async () => {
     if (!editor) return
     flushSourceEdits(); editor.completeInteraction(); stopFollowing()
     // a notebook too large to open again is refused with a message
-    try { saveProject(editor, settings); notify('Editable notebook downloaded.') } catch (e) { setError(errorText(e, 'This notebook could not be saved.')) }
+    try { await saveProject(editor, settings); notify('Editable notebook downloaded.') } catch (e) { setError(errorText(e, 'This notebook could not be saved.')) }
   }
   const downloadOriginal = async () => {
     try { await downloadOriginalNotebook(notebook.id, settings); notify('Original notebook backup downloaded. Your current board is unchanged.') }
@@ -1324,6 +1496,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
   }
   const changeMode = (mode: AppSettings['mode']) => {
     setSettings(s => ({ ...s, mode })); setMenu(null)
+    if (mode === 'document' && activeDocumentPage) goToDocumentPage(activeDocumentPage.id)
     if (mode === 'page') editor?.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 }, { animation: { duration: 350 } })
   }
   const changeFocusMode = (mode: 'reference' | 'literal') => {
@@ -1337,7 +1510,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     if (selected?.kind !== 'plot') return
     const size = getPlacementBounds({ type: 'create_plot', placement: 'auto' }, { ...getContext(), focusMode: 'reference' }, 'plot')
     const bounds = { x: selected.bounds.x + (selected.bounds.w - size.w) / 2, y: selected.bounds.y + (selected.bounds.h - size.h) / 2, w: size.w, h: size.h }
-    executeManual([{ type: 'update_object', target: selected.id, bounds, axisMode: 'equal' }])
+    executeManual([{ type: 'update_object', target: selected.id, bounds }])
   }
 
   const origin = pageToLocal({ x: 0, y: 0 })
@@ -1354,18 +1527,50 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     } catch { /* Wait for validated final bounds when a partial instruction cannot fit. */ }
   }
 
+  const insertStudioMath = (operation: BoardOperation): BoardResult => {
+    const ed = editorRef.current
+    if (!ed) return { ok: false, message: 'The board is still loading.', ids: [] }
+    try {
+      const context = { ...getContext(), objects: controller.current?.getObjects() ?? [] }
+      const avoid = floatingRects(false).map(rect => {
+        const a = ed.screenToPage({ x: rect.left, y: rect.top }), b = ed.screenToPage({ x: rect.right, y: rect.bottom })
+        return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y }
+      })
+      const op = placeStudioOperation(operation, context, {
+        zoom: ed.getZoomLevel(), avoid,
+        sheet: settings.mode === 'page' ? PAGE_BOUNDS : settings.mode === 'document' ? activeDocumentPage?.bounds : null,
+        isBackground: id => ed.getShape(id as TLShapeId)?.meta.marginaliaBackground === true,
+      })
+      const result = executeManual([op])
+      if (result.ok) {
+        setInspectorOpen(true)
+        if (op.bounds) revealInserted(op.bounds, true)
+        if (op.type === 'create_math' && result.ids[0]) beginEditing(result.ids[0])
+      }
+      return result
+    } catch (error) { return { ok: false, message: errorText(error, 'Choose a placement area for this math.'), ids: [] } }
+  }
+
   return <div className="app-shell">
+    {mathStudio && <MathStudio onClose={() => setMathStudio(false)} onInsert={insertStudioMath}/>}
     <header className="app-header">
-      <div className="header-left"><span className="brand">Chalkpal</span><NotebookSwitcher library={library} beforeChange={flushNotebook}/></div>
+      <div className="header-left"><span className="brand">MagiBoard</span><NotebookSwitcher library={library} beforeChange={flushNotebook}/></div>
       <div className="document-title"><input aria-label="Notebook title" value={settings.name} onChange={e => setSettings(s => ({ ...s, name: e.target.value }))}/><span><Check size={12}/>{saveState}</span></div>
       <div className="header-actions">
         <button aria-label="Generate image" title="Generate image" className="plain-button secondary-action" disabled={!ready || aiPaused || !!images.draft} onClick={() => { try { images.propose({ type: 'propose_image' }) } catch (error) { setError((error as Error).message) } }}><ImagePlus size={17}/><span>Generate image</span></button>
         <button aria-label={voiceMode ? 'Type' : 'Voice mode'} title={voiceMode ? 'Show typing bar' : 'Voice mode'} className={`plain-button voice-mode-toggle ${voiceMode ? 'active' : ''}`} onClick={() => { setVoiceControlsHidden(false); if (voiceMode) setVoiceMode(false); else { setVoiceMode(true); if (voiceStatus === 'idle') void toggleVoice() } }}>{voiceMode ? <Keyboard size={18}/> : <Mic size={18}/>}<span>{voiceMode ? 'Type' : 'Voice mode'}</span></button>
         <button aria-label={voiceControlsHidden ? 'Show voice controls' : 'Hide voice controls'} title={`${voiceControlsHidden ? 'Show' : 'Hide'} voice controls (Shift+V)`} aria-expanded={!voiceControlsHidden} aria-controls="voice-panel-controls" aria-keyshortcuts="Shift+V" className="plain-button" onClick={() => setVoiceControlsHidden(hidden => !hidden)}>{voiceControlsHidden ? <Eye size={18}/> : <EyeOff size={18}/>}</button>
-        {voiceControlsHidden && <button aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} title={`${voiceStatus === 'idle' ? 'Start' : 'Stop'} microphone (Shift+Space)`} aria-keyshortcuts="Shift+Space" className={`plain-button ${voiceStatus !== 'idle' ? 'active' : ''}`} onClick={() => void toggleVoice()}>{voiceStatus === 'idle' ? <MicOff size={18}/> : <Mic size={18}/>}</button>}
+        {voiceControlsHidden && <button aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} title={`${voiceStatus === 'idle' ? 'Start' : 'Stop'} voice session (Shift+Space)`} aria-keyshortcuts="Shift+Space" className={`plain-button ${microphoneEnabled ? 'active' : ''}`} onClick={() => void toggleVoice()}>{voiceStatus === 'connecting' ? <LoaderCircle className="spin" size={18}/> : microphoneEnabled ? <Mic size={18}/> : <MicOff size={18}/>}</button>}
         <button aria-label="Background" title="Set image background" className="plain-button hide-small secondary-action" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/><span>Background</span></button>
         <button aria-label="Import" title="Import a PDF or an image" className="plain-button" disabled={!!pendingImport?.busy} onClick={() => importInput.current?.click()}><FileUp size={17}/><span>Import</span></button>
         <button aria-label="Library" title="Your textbooks" aria-expanded={menu === 'library'} className={`plain-button ${menu === 'library' ? 'active' : ''}`} onClick={() => setMenu(menu === 'library' ? null : 'library')}><Library size={17}/><span>Library</span></button>
+        <button aria-label="Insert math" className="plain-button" onClick={() => setMathStudio(true)}><Sigma size={18}/><span>Insert math</span></button>
+        <button aria-label="Hold to talk" title="Hold Shift+R to point and talk" aria-keyshortcuts="Shift+R" aria-pressed={holdingTalk} className={`plain-button ${holdingTalk && microphoneEnabled ? 'active' : ''}`} style={{ touchAction: 'none' }}
+          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); void holdTalkRef.current?.press() }}
+          onPointerUp={() => holdTalkRef.current?.release()} onPointerCancel={() => holdTalkRef.current?.release()} onLostPointerCapture={() => holdTalkRef.current?.release()} onBlur={() => holdTalkRef.current?.release()}
+          onKeyDown={e => { if ([' ', 'Enter'].includes(e.key) && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); if (!e.repeat) void holdTalkRef.current?.press() } }}
+          onKeyUp={e => { if ([' ', 'Enter'].includes(e.key)) { e.preventDefault(); holdTalkRef.current?.release() } }}
+        >{holdingTalk && !microphoneEnabled ? <LoaderCircle className="spin" size={18}/> : <Mic size={18}/>}<span>{holdingTalk ? microphoneEnabled ? 'Listening' : recovery ? 'Recovering…' : 'Connecting…' : 'Hold to talk'}</span></button>
         <button aria-label="Export" className="export-button" onClick={() => setMenu(menu === 'export' ? null : 'export')}><Download size={16}/><span>Export</span><ChevronDown size={13}/></button>
       </div>
     </header>
@@ -1375,6 +1580,7 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       <div className="inspector-zone" aria-hidden="true"/>
       {ready && settings.mode === 'page' && <div className="page-boundary" style={localBounds({ x: 0, y: 0, w: 794, h: 1123 })}><span>A4</span></div>}
       <WhiteboardCanvas persistenceKey={notebook.persistenceKey} onMount={onMount} renderShape={shape => shape.type === 'magic' ? <MagicShapeView shape={shape}/> : null}/>
+      {settings.mode === 'document' && activeDocumentPage && <><DocumentPageMask bounds={{ ...pageToLocal(activeDocumentPage.bounds), w: activeDocumentPage.bounds.w * zoom, h: activeDocumentPage.bounds.h * zoom }}/><DocumentNavigator pages={documentPages} activePageId={activeDocumentPage.id} onPageChange={goToDocumentPage} onInfinite={() => changeMode('infinite')} onFit={() => goToDocumentPage(activeDocumentPage.id)}/></>}
       {!ready && <div className="notebook-loading">Opening notebook…</div>}
       {['magic', 'text', 'math'].includes(tool) && <div className={`magic-surface ${following ? 'is-following' : ''} ${aiPaused && tool === 'magic' ? 'is-recovering' : ''}`} onPointerDown={magicDown} onPointerUp={magicUp} onDoubleClick={editAtPointer} onPointerCancel={() => { gestureRef.current = null; pathRef.current = []; touches.current.clear(); pinch.current = null; setPath([]) }}/>}
       <svg className="gesture-overlay" aria-hidden="true">{path.length > 1 && <path d={path.map((p, i) => { const v = pageToLocal(p); return `${i ? 'L' : 'M'} ${v.x} ${v.y}` }).join(' ')} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>}</svg>
@@ -1383,8 +1589,11 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
 
       {images.draft && <div className="image-placement-preview" style={localBounds(images.draft.bounds)} aria-label="Image placement preview"><span><ImagePlus size={16}/>{images.draft.phase === 'review' ? 'Image preview · awaiting confirmation' : ['submitting', 'generating'].includes(images.draft.phase) ? 'Generating image…' : 'Image request paused'}</span></div>}
       <ImageGenerationPanel images={images} model={api?.models?.image}/>
+      {mathProposal && <MathProposalPanel draft={mathProposal.draft}
+        onConfirm={() => execute([{ type: 'confirm_math', target: mathProposal.draft.id, previewRevision: mathProposal.revision }])}
+        onDismiss={() => execute([{ type: 'cancel_math', target: mathProposal.draft.id }])}/> }
 
-      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label><button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void refreshStatus().catch(() => {}) }}><CircleHelp size={16}/></button></div>
+      <div className="board-options"><button onClick={() => setMenu(menu === 'paper' ? null : 'paper')}><Settings2 size={14}/>{settings.mode === 'page' ? 'A4 page' : settings.mode === 'document' ? 'Homework pages' : 'Infinite canvas'}<ChevronDown size={12}/></button><label className="work-area-control" title={settings.focusMode === 'literal' ? 'AI changes must fit within the selected region.' : 'Use the selected region as a location cue, with room to grow.'}>Work here<select disabled={aiPaused} aria-label="Work area mode" value={settings.focusMode ?? 'reference'} onChange={e=>changeFocusMode(e.target.value as 'reference' | 'literal')}><option value="reference">Reference</option><option value="literal">Literal</option></select></label><button aria-label="Help and pairing" title="Help and pairing" onClick={() => { setMenu(menu === 'help' ? null : 'help'); void refreshStatus().catch(() => {}) }}><CircleHelp size={16}/></button></div>
       <nav className="tool-rail" aria-label="Drawing tools">
         {([{ id: 'magic', label: 'Magic pen', key: 'M', icon: Sparkles }, { id: 'draw', label: 'Pencil', key: 'P', icon: Pencil }, { id: 'select', label: 'Select & move', key: 'V', icon: MousePointer2 }, { id: 'text', label: 'Text', key: 'T', icon: Type }, { id: 'math', label: 'Math', key: 'Q', icon: Sigma }, { id: 'eraser', label: 'Eraser', key: 'E', icon: Eraser }, { id: 'hand', label: 'Pan', key: 'H', icon: Hand }] as const).map(({ id, label, key, icon: Icon }) => <button key={id} aria-label={label} aria-pressed={tool === id} title={`${label} (${key})`} className={tool === id ? 'active' : ''} onClick={() => chooseTool(id)}>{id === 'magic' && aiPaused ? <LoaderCircle className="spin" size={21}/> : <Icon size={21}/>}<span className="tool-tip">{label}<kbd>{key}</kbd></span></button>)}
         <div className="rail-divider"/>
@@ -1401,35 +1610,40 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
       {selected && !showHistory && !inspectorOpen && !images.draft && <button className="reopen-inspector" onClick={() => setInspectorOpen(true)}><Settings2 size={15}/>Object controls</button>}
       {showHistory && <aside className="history-panel"><div className="inspector-heading"><span>Conversation</span><button aria-label="Close conversation" onClick={() => setShowHistory(false)}><X size={16}/></button></div><div className="messages">{messages.length ? messages.map(m => <div className={`message ${m.role}`} key={m.id}><span>{m.role === 'user' ? 'You' : 'Assistant'}</span><p>{m.text}</p></div>) : <p className="quiet">Your instructions and replies will appear here.</p>}</div></aside>}
 
-      {menu === 'paper' && <div className="popover paper-popover"><div className="popover-heading">Page settings<button aria-label="Close page settings" onClick={()=>setMenu(null)}><X size={16}/></button></div><span className="field-caption">Layout</span><div className="segmented"><button className={settings.mode === 'infinite' ? 'selected' : ''} onClick={() => changeMode('infinite')}>Infinite</button><button className={settings.mode === 'page' ? 'selected' : ''} onClick={() => changeMode('page')}>A4 page</button></div><span className="field-caption">Paper</span><div className="paper-swatches">{(['plain','dots', 'grid', 'ruled'] as const).map(p => <button aria-label={`${p} paper`} title={p} key={p} className={`swatch-${p} ${settings.paper === p ? 'selected' : ''}`} onClick={() => setSettings(s => ({ ...s, paper: p }))}/>)}</div><div className="paper-colors">{['#ffffff', '#f8f9fa', '#fffde7', '#eef5ff'].map(c => <button key={c} aria-label={`Paper color ${c}`} style={{ background: c }} className={settings.backgroundColor === c ? 'selected' : ''} onClick={() => setSettings(s => ({ ...s, backgroundColor: c }))}/>)}</div><button className="menu-row" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/>Set image background</button><button className="menu-row" onClick={() => { importAsBackground.current = false; imageInput.current?.click() }}><FileImage size={17}/>Insert movable image</button><button className="menu-row" onClick={() => projectInput.current?.click()}><FileUp size={17}/>Open notebook file</button><button className="menu-row" onClick={() => { save(); setMenu(null) }}><Save size={17}/>Save editable notebook</button>{editor?.getCurrentPageShapes().some(s => s.meta.marginaliaBackground === true) && <button className="menu-row" onClick={removeBackground}><Trash2 size={17}/>Remove background</button>}</div>}
-      {menu === 'export' && <div className="popover export-popover"><div className="popover-heading">Export<button aria-label="Close export" onClick={()=>setMenu(null)}><X size={16}/></button></div><button className="menu-row" onClick={() => void doExport('png')}><FileImage size={18}/><span>PNG image<small>Include the whole board</small></span></button><button className="menu-row" onClick={() => void doExport('pdf')}><Download size={18}/><span>PDF<small>{settings.mode === 'page' ? 'A4 portrait page' : 'Fitted to your canvas'}</small></span></button><button className="menu-row" onClick={() => void exportArea()}><Scan size={18}/><span>Selected area PDF<small>{focus?.kind === 'region' ? 'The area you circled' : 'Circle an area or select objects first'}</small></span></button><button className="menu-row" onClick={() => {save();setMenu(null)}}><Save size={18}/><span>Editable notebook<small>Keep the objects and images</small></span></button></div>}
-      {menu === 'library' && <LibraryPanel books={books} openBookId={openBook?.id ?? null} onOpen={book => void openFromLibrary(book)} onImport={() => importInput.current?.click()} onRemove={book => void removeFromLibrary(book)} onClose={() => setMenu(null)}/>}
+      {menu === 'paper' && <div className="popover paper-popover"><div className="popover-heading">Page settings<button aria-label="Close page settings" onClick={()=>setMenu(null)}><X size={16}/></button></div><span className="field-caption">Layout</span><div className="segmented"><button className={settings.mode === 'infinite' ? 'selected' : ''} onClick={() => changeMode('infinite')}>Infinite</button><button className={settings.mode === 'page' ? 'selected' : ''} onClick={() => changeMode('page')}>A4 page</button>{documentPages.length > 0 && <button className={settings.mode === 'document' ? 'selected' : ''} onClick={() => changeMode('document')}>Homework</button>}</div><span className="field-caption">Paper</span><div className="paper-swatches">{(['plain','dots', 'grid', 'ruled'] as const).map(p => <button aria-label={`${p} paper`} title={p} key={p} className={`swatch-${p} ${settings.paper === p ? 'selected' : ''}`} onClick={() => setSettings(s => ({ ...s, paper: p }))}/>)}</div><div className="paper-colors">{['#ffffff', '#f8f9fa', '#fffde7', '#eef5ff'].map(c => <button key={c} aria-label={`Paper color ${c}`} style={{ background: c }} className={settings.backgroundColor === c ? 'selected' : ''} onClick={() => setSettings(s => ({ ...s, backgroundColor: c }))}/>)}</div><button className="menu-row" onClick={() => { importAsBackground.current = true; imageInput.current?.click() }}><ImagePlus size={17}/>Set image background</button><button className="menu-row" onClick={() => { importAsBackground.current = false; imageInput.current?.click() }}><FileImage size={17}/>Insert movable image</button><button className="menu-row" onClick={() => projectInput.current?.click()}><FileUp size={17}/>Open notebook file</button><button className="menu-row" onClick={() => { void save(); setMenu(null) }}><Save size={17}/>Save editable notebook</button>{editor?.getCurrentPageShapes().some(s => s.meta.marginaliaBackground === true) && <button className="menu-row" onClick={removeBackground}><Trash2 size={17}/>Remove background</button>}</div>}
+      {menu === 'export' && <div className="popover export-popover"><div className="popover-heading">Export<button aria-label="Close export" onClick={()=>setMenu(null)}><X size={16}/></button></div>{documentPages.length > 0 && <button className="menu-row" disabled={busy} onClick={() => void exportHomework()}><FileImage size={18}/><span>Homework PDF<small>Original pages with your work; excludes scratchwork</small></span></button>}<button className="menu-row" onClick={() => void doExport('png')}><FileImage size={18}/><span>PNG image<small>Include the whole board</small></span></button><button className="menu-row" onClick={() => void doExport('pdf')}><Download size={18}/><span>Canvas PDF<small>{settings.mode === 'page' ? 'A4 portrait page' : 'Fitted to your canvas'}</small></span></button><button className="menu-row" onClick={() => void exportArea()}><Scan size={18}/><span>Selected area PDF<small>{focus?.kind === 'region' ? 'The area you circled' : 'Circle an area or select objects first'}</small></span></button><button className="menu-row" onClick={() => {void save();setMenu(null)}}><Save size={18}/><span>Editable notebook<small>Keep the objects and images</small></span></button></div>}
+      {menu === 'library' && <LibraryPanel books={bookChoice?.notebookId === notebook.id ? bookChoice.books : books} choosing={bookChoice?.notebookId === notebook.id} openBookId={openBook?.id ?? null} onOpen={book => {
+        const choice = bookChoiceRef.current
+        if (choice?.notebookId !== notebook.id) { void openFromLibrary(book); return }
+        setBookChoice(null); bookChoiceRef.current = null; setMenu(null)
+        void runLocal(choice.query.raw, guard => runIntent({ action: 'insert', query: { ...choice.query, book: book.id } }, guard), 'The book could not be read.')
+      }} onImport={() => importInput.current?.click()} onRemove={book => void removeFromLibrary(book)} onClose={() => { setMenu(null); setBookChoice(null); bookChoiceRef.current = null }}/>}
       {openBook && <ReferencePanel book={openBook} highlight={highlight} busy={refBusy || inserting} message={refMessage} lookup={lookup} onClose={closeBook} onSearch={text => void searchBook(text)}
         onDismiss={() => setHighlight(null)} onPageChange={index => { panelPageRef.current = { bookId: openBook.id, pageIndex: index }; voiceRef.current?.updateContext() }}
         onInsertPage={index => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index }, `page ${book.labels?.[index] ?? index + 1}`, { manual: true })) }}
         onInsertCrop={(index, box) => { const book = openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: index, box }, 'part of a textbook page', { manual: true })) }}
         onInsertCandidate={c => { const book = bookFor(c.bookId) ?? openBook; void panelInsert(() => libraryImageOp({ book, pageIndex: c.pageIndex, candidate: c }, c.description, { manual: true })) }}/>}
-      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Keyboard:</b> Shift+V hides or shows the voice controls. Shift+Space starts or stops the microphone. Hiding the controls keeps the microphone in its current state. Shortcuts are inactive while typing or editing math.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts or after 20 wrong codes.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}<br/>Images: {api.models.image || 'gpt-image-2.5-flare'} · Low quality</p>}{allowance && <p className={`allowance-line ${allowance.low ? 'low' : ''}`}><b>Typed commands:</b> {allowance.left} of {allowance.limit} left in the local allowance.{allowance.low ? ' Check usage before raising OPENAI_COMMAND_LIMIT.' : ''}</p>}<small>Voice uses API credit while connected. Pause microphone closes the voice connection; turning spoken replies off only silences the assistant. Sessions renew automatically while active, with a {api?.limits?.voiceMinutesLimit ?? 180}-minute local allowance. Voice pauses after 90 seconds of inactivity.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
+      {menu === 'help' && <div className="popover help-popover"><div className="popover-heading">Help & iPad connection<button aria-label="Close help" onClick={() => setMenu(null)}><X size={16}/></button></div><p><b>Magic pen:</b> tap near an object or loosely circle an area, then speak or type. Double-click an equation or text to edit its characters.</p><p><b>Work here:</b> Reference uses your selection as a location cue and allows content to grow beyond it. Literal keeps AI changes inside the selected region; circle an area first.</p><p><b>Graphs:</b> Equal units keeps x and y spacing the same. Natural graph size restores a comfortable width and height.</p><p><b>Voice mode:</b> hides the typing bar. The microphone circle responds to your actual voice. Choose Assistant, Dictate math, or Dictate text.</p><p><b>Hold to talk:</b> hold Shift+R to temporarily use the magic pen and microphone. Release to return to drawing. The Hold to talk button works on touch screens.</p><p><b>Keyboard:</b> Shift+V hides or shows the voice controls. Shift+Space starts or stops the microphone. Hiding the controls keeps the microphone in its current state. Shortcuts are inactive while typing or editing math.</p><p><b>Notebooks:</b> each notebook saves separately on this device. Download a notebook file to transfer it to another device.</p>{api?.pairingCode ? <div className="pair-code"><span>iPad pairing code</span><strong>{api.pairingCode}</strong><p>Open the HTTPS preview in iPad Safari and enter this code. It permits AI use through this laptop. It changes when the server restarts or after 20 wrong codes.</p></div> : <p>Find the pairing code in Help on the laptop at <b>localhost:3000</b>. This device does not display the code.</p>}<button className="menu-row" onClick={testVoice} disabled={checkingVoice || voiceStatus !== 'idle'}>{checkingVoice ? <LoaderCircle className="spin" size={15}/> : <Mic size={15}/>}Check voice connection</button><button className="menu-row" onClick={() => void worksheetExample()} disabled={busy}><FileImage size={16}/>Try a sample homework background</button><button className="menu-row" onClick={() => void downloadOriginal()}><Download size={16}/>Download original notebook backup</button>{api?.models && <p className="model-details"><b>AI models</b><br/>Voice: {api.models.realtime}<br/>Typed instructions: {api.models.text}<br/>Images: {api.models.image || 'gpt-image-2.5-flare'} · Low quality</p>}{allowance && <p className={`allowance-line ${allowance.low ? 'low' : ''}`}><b>Typed commands:</b> {allowance.left} of {allowance.limit} left in the local allowance.{allowance.low ? ' Check usage before raising OPENAI_COMMAND_LIMIT.' : ''}</p>}<small>Voice uses API credit while connected. Pause microphone closes the voice connection; turning spoken replies off only silences the assistant. Sessions renew automatically while active, with a {api?.limits?.voiceMinutesLimit ?? 180}-minute local allowance. Voice pauses after 90 seconds of inactivity.</small><p><a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a></p></div>}
 
       {api?.pairingRequired && !api.authorized && <form className="pair-banner" onSubmit={e=>{e.preventDefault();void pair()}}><div><b>Connect your iPad to AI</b><span>On your laptop, open Help & iPad connection to find the code.</span></div><input aria-label="Pairing code" placeholder="6-digit code" value={pairCode} onChange={e => setPairCode(e.target.value)} inputMode="numeric" maxLength={6}/><button disabled={pairing}>{pairing?'Connecting…':'Connect'}</button></form>}
-      <div className="canvas-footer"><span className="canvas-status">{settings.mode === 'page' ? 'A4 portrait' : 'Infinite canvas'}<span className="footer-separator">·</span>{shapeCount} {shapeCount === 1 ? 'object' : 'objects'}</span><div className="history-buttons"><button aria-label="Undo" title="Undo" onClick={() => execute([{type:'undo'}])}><Undo2 size={17}/></button><button aria-label="Redo" title="Redo" onClick={() => execute([{type:'redo'}])}><Redo2 size={17}/></button></div><div className="zoom-controls"><button aria-label="Zoom out" onClick={() => editor?.zoomOut()}><Minus size={15}/></button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => editor?.zoomIn()}><Plus size={15}/></button><button aria-label="Fit canvas" title="Fit canvas" onClick={() => settings.mode === 'page' ? editor?.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 }) : editor?.zoomToFit()}><Maximize size={15}/></button></div></div>
+      <div className="canvas-footer"><span className="canvas-status">{settings.mode === 'page' ? 'A4 portrait' : settings.mode === 'document' ? 'Homework pages' : 'Infinite canvas'}<span className="footer-separator">·</span>{shapeCount} {shapeCount === 1 ? 'object' : 'objects'}</span><div className="history-buttons"><button aria-label="Undo" title="Undo" onClick={() => execute([{type:'undo'}])}><Undo2 size={17}/></button><button aria-label="Redo" title="Redo" onClick={() => execute([{type:'redo'}])}><Redo2 size={17}/></button></div><div className="zoom-controls"><button aria-label="Zoom out" onClick={() => editor?.zoomOut()}><Minus size={15}/></button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => editor?.zoomIn()}><Plus size={15}/></button><button aria-label="Fit canvas" title="Fit canvas" onClick={() => settings.mode === 'page' ? editor?.zoomToBounds({ x: -100, y: -70, w: 994, h: 1313 }) : settings.mode === 'document' && activeDocumentPage ? goToDocumentPage(activeDocumentPage.id) : editor?.zoomToFit()}><Maximize size={15}/></button></div></div>
 
       <div className={`command-dock ${voiceMode ? 'voice-first' : ''}`}>
         {library.storageWarning && <div className="error-banner" role="alert">{library.storageWarning}</div>}
         {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}><X size={15}/></button></div>}
         {toast && !error && <div className="toast" role="status">{toast}</div>}
       {following && <div className="live-status">Move your pointer. Tap to place.</div>}
-        {aiPaused && <div className="recovery-status" role="status"><LoaderCircle className="spin" size={18}/><span>{recovery?.message || commandProgress}<small>{recovery ? 'Microphone paused while I recover. You can still use the pencil.' : 'Magic pen paused. You can still use the pencil.'}</small></span><button aria-label="Cancel pending request" onClick={() => { commandAbort.current?.abort(); if (recovery) voiceRef.current?.disconnect() }}>Cancel</button></div>}
+        {aiPaused && <div className="recovery-status" role="status"><LoaderCircle className="spin" size={18}/><span>{recovery?.message || commandProgress}<small>{recovery ? 'Microphone paused while I recover. You can still use the pencil.' : 'Magic pen paused. You can still use the pencil.'}</small></span><button aria-label="Cancel pending request" onClick={() => { commandAbort.current?.abort(); holdTalkRef.current?.cancel(); if (recovery) voiceRef.current?.disconnect() }}>Cancel</button></div>}
         <div id="voice-panel-controls" hidden={voiceControlsHidden}>
         {voiceMode ? <div className="voice-panel">
-          <div className="voice-transcript" aria-live="polite">{recovery?.message || liveTranscript || (voiceStatus === 'connecting' ? 'Connecting… Allow microphone access if your browser asks.' : voiceStatus === 'thinking' ? 'Working…' : voiceStatus === 'speaking' ? 'Speaking…' : voiceStatus !== 'idle' ? 'Listening. Point anywhere and speak.' : 'Tap the microphone to start.')}</div>
-          <div className="voice-controls"><button className="compact-control" aria-label="Show typing bar" title="Show typing bar" onClick={()=>setVoiceMode(false)}><Keyboard size={18}/></button><button ref={voiceOrbRef} className={`voice-orb ${voiceStatus !== 'idle' ? 'connected' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} aria-keyshortcuts="Shift+Space" title="Start or stop microphone (Shift+Space)" onClick={()=>void toggleVoice()}><span className="voice-orb-halo"/>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={25}/> : voiceStatus !== 'idle' ? <Mic size={25}/> : <MicOff size={25}/>}</button><button className="compact-control" aria-label={spokenReplies ? 'Turn off spoken replies' : 'Enable spoken replies'} onClick={()=>{setSpokenReplies(v=>!v);voiceRef.current?.setSpokenReplies(!spokenReplies)}}>{spokenReplies?<Volume2 size={18}/>:<VolumeX size={18}/>}</button></div>
-          <button className="microphone-pause" onClick={() => void toggleVoice()}>{voiceStatus === 'idle' ? 'Resume microphone' : 'Pause microphone'}</button>
-          <div className="voice-output-label">Spoken replies {spokenReplies ? 'on' : 'off'} · microphone {recovery ? 'paused for recovery' : voiceStatus === 'idle' ? 'paused' : 'on'}</div>
-          <div className="voice-mode-options"><select disabled={!!recovery} aria-label="Voice action" value={dictationMode} onChange={e=>changeDictation(e.target.value as typeof dictationMode)}><option value="assistant">Assistant</option><option value="math">Dictate math</option><option value="text">Dictate text</option></select><button onClick={()=>setShowHistory(!showHistory)}>Conversation</button></div>
+          <div className="voice-transcript" aria-live="polite">{recovery?.message || liveTranscript || (voiceStatus === 'connecting' ? 'Connecting… Allow microphone access if your browser asks.' : voiceStatus === 'thinking' ? 'Working…' : voiceStatus === 'speaking' ? 'Speaking…' : microphoneEnabled ? 'Listening. Point anywhere and speak.' : voiceStatus !== 'idle' ? 'Microphone paused. Hold Shift+R to speak again.' : 'Hold Shift+R to talk, or tap the microphone for continuous voice.')}</div>
+          <div className="voice-controls"><button className="compact-control" aria-label="Show typing bar" title="Show typing bar" onClick={()=>setVoiceMode(false)}><Keyboard size={18}/></button><button ref={voiceOrbRef} className={`voice-orb ${microphoneEnabled ? 'connected' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} aria-keyshortcuts="Shift+Space" title="Start or stop voice session (Shift+Space)" onClick={()=>void toggleVoice()}><span className="voice-orb-halo"/>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={25}/> : microphoneEnabled ? <Mic size={25}/> : <MicOff size={25}/>}</button><button className="compact-control" aria-label={spokenReplies ? 'Turn off spoken replies' : 'Enable spoken replies'} onClick={()=>{setSpokenReplies(v=>!v);voiceRef.current?.setSpokenReplies(!spokenReplies)}}>{spokenReplies?<Volume2 size={18}/>:<VolumeX size={18}/>}</button></div>
+          <button className="microphone-pause" onClick={() => void toggleVoice()}>{voiceStatus === 'idle' ? 'Start continuous voice' : 'Stop voice session'}</button>
+          <div className="voice-output-label">Spoken replies {spokenReplies ? 'on' : 'off'} · microphone {recovery ? 'paused for recovery' : microphoneEnabled ? 'on' : 'paused'}</div>
+          <div className="voice-mode-options"><select disabled={!!recovery || holdingTalk || voiceStatus === 'thinking' || voiceStatus === 'connecting'} aria-label="Voice action" value={dictationMode} onChange={e=>changeDictation(e.target.value as typeof dictationMode)}><option value="assistant">Assistant</option><option value="math">Dictate math</option><option value="text">Dictate text</option></select><button onClick={()=>setShowHistory(!showHistory)}>Conversation</button></div>
           {dictationMode === 'math' && <p className="dictation-hint">Live LaTeX draft. Pause briefly between phrases to finish each edit.</p>}
           {dictationMode === 'text' && <p className="dictation-hint">Speak to write your words. Choose Assistant to give editing commands.</p>}
-        </div> : <><form className={`command-bar ${voiceStatus !== 'idle' ? 'voice-active' : ''}`} onSubmit={e => { e.preventDefault(); void runPrompt() }}><input ref={inputRef} aria-label="Ask Chalkpal" value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Give an idea a little space…" disabled={busy || !!recovery || voiceStatus === 'connecting'}/><button type="submit" className="send-command" aria-label="Send instruction" disabled={busy || !!recovery || voiceStatus === 'connecting' || !prompt.trim()}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowUp size={18}/>}</button><span className="command-divider"/><button type="button" className={`voice-button ${voiceStatus !== 'idle' ? 'recording' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} aria-keyshortcuts="Shift+Space" title="Start or stop microphone (Shift+Space)" onClick={()=>void toggleVoice()}>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={19}/> : <Mic size={19}/>}</button></form>
+        </div> : <><form className={`command-bar ${microphoneEnabled ? 'voice-active' : ''}`} onSubmit={e => { e.preventDefault(); void runPrompt() }}><input ref={inputRef} aria-label="Ask MagiBoard" value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Give an idea a little space…" disabled={busy || !!recovery || voiceStatus === 'connecting'}/><button type="submit" className="send-command" aria-label="Send instruction" disabled={busy || !!recovery || voiceStatus === 'connecting' || !prompt.trim()}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowUp size={18}/>}</button><span className="command-divider"/><button type="button" className={`voice-button ${microphoneEnabled ? 'recording' : ''}`} aria-label={voiceStatus === 'idle' ? 'Start voice session' : 'Stop voice session'} aria-keyshortcuts="Shift+Space" title="Start or stop voice session (Shift+Space)" onClick={()=>void toggleVoice()}>{voiceStatus === 'connecting' || recovery ? <LoaderCircle className="spin" size={19}/> : microphoneEnabled ? <Mic size={19}/> : <MicOff size={19}/>}</button></form>
         <div className="command-caption"><span>{selectedContent ? `Selected: ${selectedContent.slice(0,35)}` : focus ? <><Scan size={12}/>{focus.kind === 'region' ? 'Region selected' : 'Point selected'}<button onClick={()=>setFocus(null)}>clear</button></> : 'Circle an area, then speak or type.'}</span>{allowance?.low && <span className="allowance-warning" role="status">{allowance.left ? `${allowance.left} of ${allowance.limit} typed commands left` : 'Typed command allowance used up'}</span>}<button onClick={()=>setShowHistory(!showHistory)}>Conversation{messages.length?` (${messages.length})`:''}</button></div></>}
         </div>
       </div>
@@ -1439,6 +1653,6 @@ function NotebookWorkspace({ library }: { library: NotebookLibrary }) {
     {pendingImport && <ImportDialog file={pendingImport.file} info={pendingImport.info} progress={pendingImport.progress} busy={pendingImport.busy} choosing={pendingImport.choosing}
       defaultTarget={pendingImport.info ? defaultImportTarget(pendingImport.info.pageCount) : 'library'} boardLimit={boardImportLimit(pendingImport.info?.pageCount ?? 0, pendingImport.file.size)}
       onChoose={to => { const result = routeImport(to); if (!result.ok) setError(result.message) }} onCancel={() => { if (!importRef.current?.busy) setImport(null) }} container={stageRef.current}/>}
-    <input className="hidden-input" ref={projectInput} type="file" accept=".json,.marginalia" onChange={async e => { const f = e.target.files?.[0]; if (f && editor) { setBusy(true); try { flushSourceEdits(); editor.completeInteraction(); stopFollowing(); setSettings(await loadProject(editor, f)); notify('Notebook opened.'); setMenu(null); setFocus(null) } catch (error) { setError((error as Error).message) } finally { setBusy(false) } } e.target.value = '' }}/>
+    <input className="hidden-input" ref={projectInput} type="file" accept=".json,.marginalia" onChange={async e => { const f = e.target.files?.[0]; if (f && editor) { setBusy(true); try { holdTalkRef.current?.cancel(); voiceRef.current?.disconnect(); flushSourceEdits(); editor.completeInteraction(); stopFollowing(); setDocumentPageId(null); setSettings(await loadProject(editor, f)); notify('Notebook opened.'); setMenu(null); setFocus(null) } catch (error) { setError((error as Error).message) } finally { setBusy(false) } } e.target.value = '' }}/>
   </div>
 }

@@ -1,3 +1,4 @@
+import type { VisualizationSpec } from './visualization'
 export type Bounds = { x: number; y: number; w: number; h: number }
 export type Point = { x: number; y: number }
 export type GeometryKind = 'triangle' | 'right_triangle' | 'rectangle' | 'ellipse' | 'arrow' | 'polygon' | 'polyline'
@@ -17,9 +18,10 @@ export type BoardObject = {
   expression?: string; latex?: string; text?: string; title?: string;
   xMin?: number; xMax?: number; yMin?: number; yMax?: number;
   axisMode?: AxisMode; displayedRange?: AxisRange;
+  visualization?: VisualizationSpec;
   color?: string; geometry?: string; locked?: boolean; fontSize?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
-  showGrid?: boolean; showAxes?: boolean; vertices?: Point[]; angles?: number[]; sides?: number; crop?: ImageCrop
+  showGrid?: boolean; showAxes?: boolean; showNumbers?: boolean; vertices?: Point[]; angles?: number[]; sides?: number; crop?: ImageCrop
   /** board units kept free under an inserted textbook problem for the teacher's work */
   workBelow?: number
 }
@@ -27,9 +29,9 @@ export type BoardObject = {
 export type PlacementOption = { id: 'A' | 'B' | 'C'; bounds: Bounds; note?: string }
 /** A free spot the client found for a typed command; the server ranks these into placementOptions. */
 export type PlacementCandidate = { id: string; bounds: Bounds; description: string; features?: Record<string, number> }
-/** Book titles only; the model never sees book text. */
+/** Bounded book guide and titles, never the full textbook. */
 export type LibraryContext = {
-  openBook: { id?: string; title: string } | null
+  openBook: { id?: string; title: string; guide?: string } | null
   books: { id?: string; title: string; pages: number }[]
   pendingImport?: { name: string; pages: number } | null
   /** titles of the matches waiting for a tap, badge 1 first ("Example 3.2, p. 192") */
@@ -43,21 +45,24 @@ export type BoardContext = {
   gesture?: { active: boolean; bounds: Bounds; start: Point; current: Point } | null;
   contentSelection?: ContentSelection | null; dictationMode?: DictationMode; focusMode?: FocusMode
   library?: LibraryContext; placementOptions?: PlacementOption[]
+  pendingMath?: { id: string; revision: number; objectIds: string[] }
 }
-export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import' | 'pick'
+export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import' | 'pick' | 'repair_excerpt'
 /** A rendered raster for create_image; src is a data:image/(png|jpeg) base64 URL. */
 export type BoardImage = { src: string; w: number; h: number; mimeType: 'image/png' | 'image/jpeg'; name: string }
 export type BoardOperation = {
   type: 'create_plot' | 'create_math' | 'create_text' | 'create_geometry' | 'propose_image' | 'update_object' | 'edit_content' | 'transform_object' | 'delete_objects' | 'undo' | 'redo'
-    | 'insert_library' | 'library_action' | 'create_image';
+    | 'insert_library' | 'library_action' | 'create_image' | 'confirm_math' | 'cancel_math';
+  previewRevision?: number;
   target?: string; ids?: string[]; placement?: 'focus' | 'pointer' | 'auto';
   expression?: string; latex?: string; text?: string; title?: string;
   prompt?: string;
   geometry?: GeometryKind; vertices?: Point[]; angles?: number[]; sides?: number;
   fill?: string; fillOpacity?: number; strokeWidth?: number; opacity?: number;
-  showGrid?: boolean; showAxes?: boolean; crop?: ImageCrop;
+  showGrid?: boolean; showAxes?: boolean; showNumbers?: boolean; crop?: ImageCrop;
   color?: string; xMin?: number; xMax?: number; yMin?: number; yMax?: number;
-  axisMode?: AxisMode; layer?: 'front' | 'back';
+  axisMode?: AxisMode; fitY?: boolean; layer?: 'front' | 'back';
+  visualization?: VisualizationSpec;
   bounds?: Bounds; rotation?: number; rotateBy?: number; scale?: number;
   dx?: number; dy?: number; fitFocus?: boolean; fontSize?: number;
   followPointer?: boolean;
@@ -71,5 +76,5 @@ export type BoardOperation = {
 }
 export type BoardResult = { ok: boolean; message: string; ids: string[]; objects?: BoardObject[] }
 export type BoardCommand = { operations: BoardOperation[]; message: string; placementOptions?: PlacementOption[] }
-export type AppSettings = { name: string; paper: 'dots' | 'grid' | 'plain' | 'ruled'; mode: 'infinite' | 'page'; backgroundColor: string; focusMode?: FocusMode }
+export type AppSettings = { name: string; paper: 'dots' | 'grid' | 'plain' | 'ruled'; mode: 'infinite' | 'page' | 'document'; backgroundColor: string; focusMode?: FocusMode }
 export const DEFAULT_SETTINGS: AppSettings = { name: 'Untitled notebook', paper: 'plain', mode: 'infinite', backgroundColor: '#ffffff', focusMode: 'reference' }

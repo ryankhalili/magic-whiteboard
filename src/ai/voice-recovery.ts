@@ -1,3 +1,4 @@
+import { localHistoryCommand } from '../../shared/history'
 import type { BoardCommand, BoardContext, BoardOperation } from '../../shared/board'
 import { SERVER_UNREACHABLE } from './commands'
 
@@ -17,12 +18,14 @@ export function contextFingerprint(context: BoardContext): string {
 }
 
 /** An unparsed request has no trusted operation scope. Use only its original selection. */
-export function pinRecoveredCommand(command: BoardCommand, context: BoardContext): BoardOperation[] {
+export function pinRecoveredCommand(command: BoardCommand, context: BoardContext, instruction = ''): BoardOperation[] {
   const selected = context.contentSelection ? [context.contentSelection.shapeId]
     : context.selectedIds.length ? context.selectedIds : context.focus?.targetIds.length ? context.focus.targetIds : context.lastCreatedIds
-  const allowed = new Set(selected)
+  const allowed = new Set([...selected, ...(context.pendingMath?.objectIds ?? [])])
   return command.operations.map(operation => {
+    if (command.operations.length === 1 && localHistoryCommand(instruction) === operation.type) return operation
     if (['undo', 'redo', 'delete_objects'].includes(operation.type)) throw new Error('The correction includes a destructive action. Please give that instruction again.')
+    if (operation.type === 'confirm_math' || operation.type === 'cancel_math') throw new Error('Please confirm or discard the preview again after voice resumes.')
     if (operation.followPointer) throw new Error('Repeat the pointer-follow instruction after voice resumes.')
     // library inserts and panel actions name no board object, so they pass through untargeted
     if (operation.type.startsWith('create_') || ['propose_image', 'insert_library', 'library_action'].includes(operation.type)) return operation

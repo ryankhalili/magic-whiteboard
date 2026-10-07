@@ -53,7 +53,7 @@ describe('interactive object features', () => {
     editor.loadSnapshot(editor.getSnapshot())
     expect(editor.getShape<TLShape<'magic'>>(made.ids[0])!.props).toMatchObject({expression:'x=1', showGrid:false, showAxes:false, strokeWidth:5})
     const output = await renderShapesToSvg(editor, made.ids)
-    expect(output.svg).toContain('x=1')
+    expect(output.svg).toContain('x = 1')
     expect(output.svg).not.toContain('y = x=1')
     expect(output.svg).toContain('stroke-width="5"')
   })

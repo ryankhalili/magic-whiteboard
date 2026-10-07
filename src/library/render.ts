@@ -91,7 +91,7 @@ export function cropScale(page: { width: number; height: number }, box: PageBox,
  * Where the ink ends: trailing blank rows, separator rules under the item and blank columns on the right
  * are dropped. data is RGBA; returns the kept width and height and the top row to start from.
  */
-export function inkBounds(data: Uint8ClampedArray, width: number, height: number, margin = 12, blankTop = false): { top: number; w: number; h: number } {
+export function inkBounds(data: Uint8ClampedArray, width: number, height: number, margin = 12, blankTop = false, preserveHeading = false): { top: number; w: number; h: number } {
   const inkRow = new Float64Array(height), ink = (i: number) => data[i + 3] > 16 && (data[i] < 235 || data[i + 1] < 235 || data[i + 2] < 235)
   for (let y = 0; y < height; y++) {
     let count = 0
@@ -104,7 +104,7 @@ export function inkBounds(data: Uint8ClampedArray, width: number, height: number
   const zone = Math.min(height, Math.max(3, Math.round(height * 0.06)))
   let first = 0
   while (first < zone && inkRow[first] < 0.6) first++
-  if (first < zone) {
+  if (first < zone && !preserveHeading) {
     let end = first
     while (end < height && inkRow[end] >= 0.6) end++
     if (end - first <= thin) top = end
@@ -283,7 +283,7 @@ function trimmed(canvas: Canvas, blankTop: boolean): { canvas: Canvas; top: numb
   const kinds = leftEdge(data, canvas.width, canvas.height)
   // the first part must show a box of at least two rows of text; the rest of a split item may hold just a formula
   const end = shadedEnd(data, canvas.width, canvas.height, blankTop ? 1 : 2, kinds)
-  const kept = inkBounds(data, canvas.width, end ?? canvas.height, 12, blankTop)
+  const kept = inkBounds(data, canvas.width, end ?? canvas.height, 12, blankTop, !blankTop)
   return { canvas, ...kept, shaded: shadedStart(kinds) !== null }
 }
 

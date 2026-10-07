@@ -72,6 +72,53 @@ describe('voice fixes', () => {
   })
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
+  describe('microphone gate', () => {
+    it('can connect muted and release without clearing the final captured words', async () => {
+      const onMicrophoneEnabled = vi.fn()
+      const h = handlers({ initiallyEnabled: false, onMicrophoneEnabled })
+      const client = createRealtimeClient(h)
+      await client.connect()
+      const channel = FakePeer.latest.channel
+      expect(track.enabled).toBe(false)
+      expect(client.isMicrophoneEnabled()).toBe(false)
+      client.setMicrophoneEnabled(true)
+      await speak(channel, 'held1', 'write x squared')
+      channel.sent = []
+      client.setMicrophoneEnabled(false)
+      expect(track.enabled).toBe(false)
+      expect(channel.sent.some(event => event.type === 'input_audio_buffer.clear' || event.type === 'input_audio_buffer.commit')).toBe(false)
+      await respond(channel, 'held-r1', [call('held-c1', [{ type: 'create_math', latex: 'x^2' }])])
+      await respond(channel, 'held-confirmation')
+      expect(h.applyOperations).toHaveBeenCalledTimes(1)
+      expect(client.isWorking()).toBe(false)
+      expect(onMicrophoneEnabled).toHaveBeenLastCalledWith(false)
+      client.disconnect()
+    })
+    it('does not unmute a released hold after automatic transport recovery', async () => {
+      const client = createRealtimeClient(handlers({ initiallyEnabled: false }))
+      await client.connect()
+      client.setMicrophoneEnabled(true)
+      FakePeer.latest.channel.close()
+      client.setMicrophoneEnabled(false)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(client.isConnected()).toBe(true)
+      expect(track.enabled).toBe(false)
+      expect(client.isMicrophoneEnabled()).toBe(false)
+      client.disconnect()
+    })
+    it('remains muted if released while browser microphone permission is pending', async () => {
+      let accept!: (stream: MediaStream) => void
+      vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementation(() => new Promise(resolve => { accept = resolve }))
+      const client = createRealtimeClient(handlers())
+      const opening = client.connect()
+      client.setMicrophoneEnabled(false)
+      accept({ getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream)
+      await opening
+      expect(track.enabled).toBe(false)
+      client.disconnect()
+    })
+  })
+
   describe('V1 brief tool results', () => {
     it('sends a short result for a successful edit and refreshes the context item right after it', async () => {
       const big = Array.from({ length: 80 }, (_, i) => `shape:${i}`)

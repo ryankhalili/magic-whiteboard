@@ -6,7 +6,7 @@ vi.mock('../src/library/render', () => ({ renderPage: vi.fn(async () => ({ src: 
 
 import { ImportDialog, defaultImportTarget, formatBytes, importProgressText, progressFraction } from '../src/library/ImportDialog'
 import { LibraryPanel, bookDescription, followStep, openedText, previewTarget, PREVIEW_SIZE } from '../src/library/LibraryPanel'
-import { ReferencePanel, anchorCandidate, anchorTitle, anchoredScroll, candidateTitle, clampPanel, defaultPanelRect, layoutPages, normalizeCrop, pageAt, pageFromQuery, pageLabelText, panelHits, renderEdge, safeAspect, visibleRange, DEFAULT_ASPECT, PANEL_MIN } from '../src/library/ReferencePanel'
+import { ReferencePanel, anchorCandidate, anchorTitle, anchoredScroll, candidateTitle, clampPanel, defaultPanelRect, layoutPages, normalizeCrop, pageAt, pageFromQuery, pageLabelText, panelHits, readerPreferences, renderEdge, safeAspect, visibleRange, DEFAULT_ASPECT, PANEL_MIN } from '../src/library/ReferencePanel'
 import type { Anchor, BookRecord, RankedCandidate } from '../src/library/types'
 
 const labels = Array.from({ length: 769 }, (_, i) => i < 7 ? ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii'][i] : String(i - 7))
@@ -197,6 +197,17 @@ describe('reference panel', () => {
     expect(sections.length).toBeLessThan(8)
     expect(html).toContain('file page 1')
     expect(html).toContain('Insert page')
+    expect(html).toContain('Pin book panel')
+    expect(html).toContain('Zoom in book')
+    expect(html).toContain('Fit book to width')
+    expect(html).toContain('Book contents')
+    expect(html).toContain('Resize book panel')
+  })
+  it('bounds persisted reader preferences and tolerates corrupt storage', () => {
+    expect(readerPreferences({ zoom: Infinity, pinned: 'yes' })).toEqual({ zoom: 1, pinned: false })
+    expect(readerPreferences({ zoom: 20, pinned: true })).toEqual({ zoom: 3, pinned: true })
+    expect(readerPreferences({ zoom: -.5 })).toEqual({ zoom: .5, pinned: false })
+    expect(readerPreferences(null)).toEqual({ zoom: 1, pinned: false })
   })
   it('lists up to three unsure matches with numbered badges', () => {
     const top = anchorCandidate(book, anchor)

@@ -3,6 +3,9 @@ import { resolveGeometry } from '../../shared/geometry'
 import { validateColor, validateCrop, validateOpacity, validateStrokeWidth } from '../../shared/appearance'
 import type { ImageCrop, Point } from '../../shared/board'
 import { cropFromNative, type NativeImageCrop } from './imageCrop'
+import { validateScientific } from '../math/scientific'
+import { visualizationSchema } from '../../shared/visualization'
+import { validateDomain } from '../board/expression'
 
 const MAX_COORDINATE = 10_000_000
 const MAX_DIMENSION = 1_000_000
@@ -88,10 +91,16 @@ function magicProps(props: Record<string, unknown>): MagicShapeProps {
     result.geometry = custom.geometry; result.vertices = custom.vertices; result.angles = custom.angles
     result.sides = custom.geometry === 'polygon' ? custom.vertices?.length : undefined
   }
+  if (props.visualization !== undefined) {
+    if (result.kind !== 'plot') throw new Error('A scientific visualization must be a plot.')
+    const validated = validateScientific(result.expression, visualizationSchema.parse(props.visualization))
+    validateDomain(result.xMin, result.xMax, result.yMin, result.yMax)
+    result.expression = validated.expression; result.visualization = validated.spec
+  }
   if (props.fill !== undefined) result.fill = validateColor(props.fill as string)
   if (props.fillOpacity !== undefined) result.fillOpacity = validateOpacity(props.fillOpacity as number)
   if (props.strokeWidth !== undefined) result.strokeWidth = validateStrokeWidth(props.strokeWidth as number)
-  for (const key of ['showGrid', 'showAxes'] as const) if (props[key] !== undefined) {
+  for (const key of ['showGrid', 'showAxes', 'showNumbers'] as const) if (props[key] !== undefined) {
     if (typeof props[key] !== 'boolean') throw new Error('This project has an invalid plot display option.')
     result[key] = props[key]
   }

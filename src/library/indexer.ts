@@ -3,13 +3,15 @@ import { bodyFontSize, detectAnchors, type OpenItem } from './anchors'
 import { assignPrintedLabels } from './labels'
 import { closePdf, hasPdfHeader, openPdf, pageLines } from './pdfjs'
 import { thumbFromPage } from './render'
+import { buildBookGuide } from './guide'
+import { isContentsPage, isRepeatedMargin, repeatedMargins } from './structure'
 import { bookIdFor, getAnchors, getBook, getBookBytes, putAnchors, putBookBytes, putPages, putThumb, removeAnchors, removeBook, replaceBook, requestPersistentStorage, saveBook, touchBook } from './store'
 import type { Anchor, BookRecord, ImportProgress, PageRecord } from './types'
 
 export const MAX_BOOK_BYTES = 400 * 1024 * 1024
 const BATCH = 25
 /** bumped whenever finding items changes, so books indexed before are read again */
-export const INDEX_VERSION = 3
+export const INDEX_VERSION = 6
 
 /** True when a book never finished indexing or was indexed by an older item finder. */
 export function needsReindex(book: BookRecord): boolean {
@@ -126,14 +128,18 @@ async function readBook(id: string, doc: PDFDocumentProxy, report: Report): Prom
 
 function findItems(id: string, pages: PageRecord[], body: number, allExercises: boolean): Anchor[] {
   const anchors: Anchor[] = [], byId = new Map<string, Anchor>()
+  const margins = repeatedMargins(pages)
   let exerciseMode = allExercises, answers = 0, exerciseSize = 0, carry: OpenItem[] = []
+  let exerciseKind: 'exercise' | 'problem' | 'question' = 'exercise'
   for (const page of pages) {
-    const found = detectAnchors(id, { index: page.index, lines: page.lines, exerciseMode, answers, exerciseSize, carry, allExercises }, body)
+    if (isContentsPage(page)) { carry = []; continue }
+    const lines = page.lines.filter(line => !isRepeatedMargin(line, margins))
+    const found = detectAnchors(id, { index: page.index, lines, exerciseMode, exerciseKind, answers, exerciseSize, carry, allExercises }, body)
     // items that ran off the page before learn where they go on
     for (const { id: anchorId, continues } of found.continued) { const anchor = byId.get(anchorId); if (anchor) anchor.continues = continues }
     for (const anchor of found.anchors) byId.set(anchor.id, anchor)
     anchors.push(...found.anchors)
-    exerciseMode = found.exerciseMode; answers = found.answers; exerciseSize = found.exerciseSize; carry = found.open
+    exerciseMode = found.exerciseMode; exerciseKind = found.exerciseKind; answers = found.answers; exerciseSize = found.exerciseSize; carry = found.open
   }
   return anchors
 }
@@ -211,6 +217,7 @@ async function readNewBook(id: string, bytes: Uint8Array, file: File, existing: 
     await writeBook(read, report)
     const cover = await coverOf(id, doc, book.cover)
     const done: BookRecord = { ...book, labels: read.labels, outline: read.outline, cover, indexed: true, textPages: read.textPages, indexVersion: INDEX_VERSION }
+    done.guide = buildBookGuide(done, read.pages, read.anchors)
     await putBookBytes(id, bytes)
     await finish(done)
     report('saving', count, count)
@@ -257,6 +264,7 @@ async function reindex(bookId: string, report: Report): Promise<BookRecord> {
     await writeBook(read, report)
     const cover = book.cover ?? await coverOf(bookId, doc, null)
     const done: BookRecord = { ...base, cover, indexed: true, indexVersion: INDEX_VERSION }
+    done.guide = buildBookGuide(done, read.pages, read.anchors)
     await finish(done)
     report('saving', count, count)
     return done

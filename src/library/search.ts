@@ -1,5 +1,6 @@
 import { FEATURE_WEIGHTS } from '../../shared/ranking'
 import { romanValue } from './labels'
+import { guidePageScopes } from './guide'
 import type { Anchor, AnchorKind, BookRecord, Candidate, LibraryQuery, PageRecord } from './types'
 
 const KIND_WORDS: Record<string, AnchorKind | null> = {
@@ -7,6 +8,7 @@ const KIND_WORDS: Record<string, AnchorKind | null> = {
   example: 'example', examples: 'example', ex: 'exercise', exercise: 'exercise', exercises: 'exercise',
   question: 'question', questions: 'question', checkpoint: 'checkpoint', checkpoints: 'checkpoint', 'check point': 'checkpoint',
   section: 'section', sections: 'section', sec: 'section', theorem: 'theorem', theorems: 'theorem', thm: 'theorem',
+  lemma: 'theorem', corollary: 'theorem', proposition: 'theorem', diagram: 'figure', diagrams: 'figure',
   definition: 'definition', definitions: 'definition', def: 'definition', figure: 'figure', figures: 'figure', fig: 'figure',
   table: 'table', tables: 'table',
 }
@@ -45,7 +47,7 @@ function escape(text: string) { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&
 
 function bookHint(text: string): { hint?: string; phrase?: string } {
   const patterns = [
-    /\b(?:from|in|of|out of)\s+(?:the|my|our|this)?\s*([a-z0-9][a-z0-9 '&:-]{0,60}?)\s+(?:book|textbook|text)\b/,
+    /\b(?:from|in|of|out of)\s+(?:(?:the|my|our|this)\s+)?((?:(?!\b(?:from|in|of|out of)\b)[a-z0-9 '&:-]){1,60}?)\s+(?:book|textbook|text)\b/,
     /\b(?:the\s+)?([a-z][a-z0-9'-]{2,40})\s+(?:book|textbook)\b/,
     /\b(?:from|in)\s+([a-z][a-z0-9'-]{2,40}(?:\s+(?:volume|vol\.?|book|part)\s*\d+)?)\s*$/,
   ]
@@ -67,11 +69,17 @@ function strip(text: string, phrases: string[]): string {
 /** The query, plus the words it did not account for (a clear request leaves none). */
 export function analyzeLibraryText(text: string): { query: LibraryQuery | null; leftovers: string[] } {
   const raw = String(text ?? '').trim().slice(0, 500)
-  let clean = raw.toLowerCase().replace(/[“”"!?,;]+/g, ' ').replace(/\.(\s|$)/g, ' ').replace(/\s+/g, ' ').trim()
+  let clean = raw.normalize('NFKC').toLowerCase().replace(/\b(thm|fig|def|sec)\.(?=\s|\d)/g, '$1 ').replace(/[“”"!?,;]+/g, ' ').replace(/\.(\s|$)/g, ' ').replace(/\s+/g, ' ').trim()
   if (!clean) return { query: null, leftovers: [] }
   const { hint, phrase } = bookHint(clean)
   if (phrase) clean = clean.replace(phrase, ' ').replace(/\s+/g, ' ').trim()
   const book = hint ? { book: hint } : {}
+  // These refer to structure, not an exercise whose number happens to match.
+  if (/\b(?:first|opening|start(?:ing)?)\s+page\b/.test(clean) && /\bchapter\s+\d+\b/.test(clean)) {
+    const chapter = CHAPTER.exec(clean)?.[1]
+    if (chapter) return { query: { kind: 'topic', terms: `first page of chapter ${chapter}`, chapter, ...book, raw }, leftovers: [] }
+  }
+  if (/\b(?:table of contents|contents page)\b/.test(clean)) return { query: { kind: 'topic', terms: 'table of contents', ...book, raw }, leftovers: [] }
   // "exercise 48 in section 5.1", "section 5.1 exercise 48", "exercise 48 from chapter 5"
   const scope: { section?: string; chapter?: string } = {}
   const found = [...clean.matchAll(ITEMS)]
@@ -101,7 +109,7 @@ export function analyzeLibraryText(text: string): { query: LibraryQuery | null; 
   // "the 3.2", "3.2 in chapter 3", but never "what is 3.2"
   const lone = LONE.exec(stripped.split(' ').filter(word => !LONE_SKIP.has(word)).join(' '))
   if (lone) return { query: { kind: 'item', label: lone[1], ...book, ...scope, raw }, leftovers: [] }
-  if (hint || scope.chapter || LIBRARY_WORDS.test(clean)) {
+  if (hint || scope.chapter || LIBRARY_WORDS.test(clean) || /\b(?:theorem|lemma|corollary|proposition|figure|diagram|definition)\b/.test(clean)) {
     const terms = stripped.replace(LIBRARY_WORDS, ' ').split(/\s+/).filter(word => word && !STOP.has(word) && !/^(book|textbook|text|library)$/.test(word))
     if (terms.length) return { query: { kind: 'topic', terms: terms.join(' '), ...book, ...scope, raw }, leftovers: [] }
   }
@@ -128,6 +136,10 @@ export function parseLibraryQuery(text: string): LibraryQuery | null {
   return analyzeLibraryText(text).query
 }
 
+export function isStructureQuery(query: LibraryQuery): boolean {
+  return query.kind === 'topic' && (/^first page of chapter \d+$/.test(query.terms) || query.terms === 'table of contents')
+}
+
 const PRIOR: Record<AnchorKind | 'page', number> = {
   problem: 0.9, exercise: 0.85, example: 0.8, checkpoint: 0.7, question: 0.7, section: 0.4, theorem: 0.5, definition: 0.4, figure: 0.1, table: 0.1, page: 0.3,
 }
@@ -135,7 +147,7 @@ const PRIOR: Record<AnchorKind | 'page', number> = {
 export const PRACTICE = new Set<AnchorKind>(['example', 'exercise', 'problem', 'checkpoint', 'question'])
 // "problem 3.2", "number 12", "#12": a practice item of any kind
 const GENERAL_WORD = /\b(?:prob|problems?|number|no)\b|#/
-const TOPIC_KINDS = new Set<AnchorKind>(['example', 'exercise', 'problem', 'checkpoint', 'theorem', 'definition'])
+const TOPIC_KINDS = new Set<AnchorKind>(['example', 'exercise', 'problem', 'checkpoint', 'theorem', 'definition', 'figure', 'table', 'question', 'section'])
 const KIND_NAME: Record<AnchorKind, string> = {
   example: 'Example', exercise: 'Exercise', problem: 'Problem', checkpoint: 'Checkpoint', section: 'Section', theorem: 'Theorem',
   definition: 'Definition', question: 'Question', figure: 'Figure', table: 'Table',
@@ -147,7 +159,8 @@ const TOKEN_STOP = new Set([...STOP, 'be', 'was', 'were', 'has', 'have', 'had', 
 
 export function tokenize(text: string): string[] {
   const out: string[] = []
-  for (const word of String(text ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+  const normalized = String(text ?? '').normalize('NFKC').replace(/\u00ad/g, '').replace(/([a-z])-\s*\n\s*([a-z])/gi, '$1$2').toLowerCase()
+  for (const word of normalized.match(/[\p{L}\p{N}]+/gu) ?? []) {
     if (word.length < 2 || TOKEN_STOP.has(word)) continue
     out.push(word.length > 4 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word)
   }
@@ -216,12 +229,21 @@ function anchorDescription(book: BookRecord, anchor: Anchor, section?: string | 
   return `${name}${where} on ${pageName(book, anchor.pageIndex)}${body ? `: ${body}` : ''}`.replace(/\s+/g, ' ').slice(0, 300)
 }
 
-function pageDescription(book: BookRecord, page: PageRecord | undefined, index: number): string {
+function pageDescription(book: BookRecord, page: PageRecord | undefined, index: number, terms?: string): string {
   const label = book.labels?.[index]
   // running headers and footers repeat on every page and say nothing about it
   const lines = (page?.text ?? '').split('\n').filter((line, k, all) => !/access for free at/i.test(line)
     && !((k === 0 || k === all.length - 1) && label && new RegExp(`(^|\\s)${escape(label)}(\\s|$)`).test(line.trim())))
-  const text = lines.join(' ').replace(/\s+/g, ' ').trim()
+  let text = lines.join('\n').normalize('NFKC').replace(/\u00ad/g, '').replace(/([a-z])-\s*\n\s*([a-z])/gi, '$1$2').replace(/\s+/g, ' ').trim()
+  // Show the actual matched passage instead of the first 300 characters of a page.
+  if (terms) {
+    const words = tokenize(terms).filter(word => !(word in KIND_WORDS))
+    const locations = words.map(word => text.toLowerCase().indexOf(word)).filter(at => at >= 0)
+    if (locations.length) {
+      const start = Math.max(0, Math.min(...locations) - 60)
+      text = `${start ? '…' : ''}${text.slice(start)}`
+    }
+  }
   const name = pageName(book, index)
   return `${name[0].toUpperCase()}${name.slice(1)}${text ? `: ${text}` : ''}`.slice(0, 300)
 }
@@ -267,8 +289,11 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
   if (query.kind === 'page') return []
   const count = Math.max(book.pageCount || 0, pages.length, ...anchors.map(anchor => anchor.pageIndex + 1))
   const early = (index: number) => count > 1 ? 1 - index / (count - 1) : 1
-  const sectionOf = pageSections(anchors, count)
-  const chapterOf = sectionOf.map(section => section ? Number(section.split('.')[0]) : null)
+  const guideScope = guidePageScopes(book, count)
+  const detectedSections = pageSections(anchors, count)
+  const sectionOf = detectedSections.map((section, index) => guideScope.sections[index]
+    ?? (guideScope.chapters[index] !== null && section && Number(section.split('.')[0]) !== guideScope.chapters[index] ? null : section))
+  const chapterOf = sectionOf.map((section, index) => guideScope.chapters[index] ?? (section ? Number(section.split('.')[0]) : null))
   const byIndex = new Map(pages.map(page => [page.index, page]))
   const out: Candidate[] = []
   const scoped = !!(query.section || query.chapter)
@@ -290,12 +315,26 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
 
   if (query.kind === 'item') {
     const label = query.label
+    // Spoken local numbering ("question 2 in chapter 6") can be printed
+    // as either "2" or "6.2". Keep both candidates; do not rewrite the
+    // query or guess a chapter from the currently open page.
+    const prefix = query.section ?? query.chapter
+    const qualified = prefix && /^\d+$/.test(label) && (!query.itemKind || PRACTICE.has(query.itemKind)) ? `${prefix}.${label}` : null
+    const labels = qualified ? [label, qualified] : [label]
     const labelChapter = /^\d+\.\d/.test(label) ? Number(label.split('.')[0]) : null
     const words = tokenize(query.raw.replace(new RegExp(escape(label), 'g'), ' '))
       .filter(word => !(word in KIND_WORDS) && !FILLER_WORDS.has(word) && !/^\d+$/.test(word) && !/^(chapter|chap|ch)$/.test(word) && !(query.book ?? '').includes(word))
     const sameChapter = (index: number) => labelChapter !== null && chapterOf[index] !== null ? (chapterOf[index] === labelChapter ? 1 : 0) : 0
     const kindMatch = (kind: AnchorKind) => query.itemKind ? (query.itemKind === kind ? 1 : 0) : (PRACTICE.has(kind) ? 1 : 0)
-    const labelled = anchors.filter(anchor => anchor.label === label)
+    const labelled = anchors.filter(anchor => labels.includes(anchor.label))
+    const itemPlace = (index: number, printedLabel: string) => {
+      const features = place(index)
+      // A qualified printed identifier supplies scope when headings/bookmarks
+      // are absent. It never overrides a contradictory known chapter/section.
+      if (prefix && printedLabel.startsWith(`${prefix}.`) && (!query.itemKind || PRACTICE.has(query.itemKind)) && (chapterOf[index] === null || chapterOf[index] === askedChapter)
+        && (!query.section || sectionOf[index] === null || sectionOf[index] === query.section)) features.inSection = 1
+      return features
+    }
     // "problem 3.2", "exercise 48", "question 5" and "3.2" mean practice items; a bare number falls back to anything with it
     let pool = !query.itemKind || PRACTICE.has(query.itemKind) ? labelled.filter(anchor => PRACTICE.has(anchor.kind)) : labelled
     if (!pool.length && !query.itemKind && !GENERAL_WORD.test(query.raw.toLowerCase())) pool = labelled
@@ -304,7 +343,7 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
       out.push(anchorCandidate(book, anchor, {
         exactLabel: 1, kindMatch: kindMatch(anchor.kind), kindPrior: PRIOR[anchor.kind] ?? 0.2,
         textMatch: overlap(words, `${anchor.heading} ${anchor.snippet}`), early: early(anchor.pageIndex), sameChapter: sameChapter(anchor.pageIndex),
-        ...place(anchor.pageIndex),
+        ...itemPlace(anchor.pageIndex, anchor.label),
       }, sectionOf[anchor.pageIndex]))
     }
     // pages that name the item in their text, for books where it was not detected; once items were found,
@@ -312,17 +351,20 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
     const detected = out.length > 0
     if (!detected || (query.itemKind && !out.some(candidate => candidate.features.kindMatch === 1))) {
       const kinds = query.itemKind && (detected || !PRACTICE.has(query.itemKind)) ? escape(query.itemKind) : 'problem|exercise|example|question|checkpoint'
-      const named = new RegExp(`\\b(${kinds})s?\\s+${escape(label)}(?![\\d]|\\.\\d)`, 'i')
-      const leading = new RegExp(`(^|\\n)\\s*${escape(label)}\\s*[.)]?\\s+\\S`)
+      const aliases = query.itemKind === 'theorem' ? 'theorem|thm\\.?|lemma|corollary|proposition' : query.itemKind === 'figure' ? 'figure|fig\\.?' : kinds
+      const alternatives = labels.map(escape).join('|')
+      const named = new RegExp(`\\b(${aliases})s?\\s*(${alternatives})(?![\\d]|\\.\\d)`, 'i')
+      const leading = new RegExp(`(^|\\n)\\s*(${alternatives})(?![\\d]|\\.\\d)\\s*[.)]?\\s+\\S`)
       const extra: Candidate[] = []
       for (const page of pages) {
         if (found.has(page.index)) continue
-        const match = named.exec(page.text), lead = !detected && leading.test(page.text)
+        const normalized = page.text.normalize('NFKC').replace(/\u00ad/g, '')
+        const match = named.exec(normalized), lead = !detected ? leading.exec(normalized) : null
         if (!match && !lead) continue
         const kind = match ? (KIND_WORDS[match[1].toLowerCase()] ?? null) : null
         extra.push(pageCandidate(book, page.index, page, {
           exactLabel: 0, kindMatch: kind && query.itemKind === kind ? 1 : 0, kindPrior: PRIOR.page,
-          textMatch: lead ? 1 : 0.5, early: early(page.index), sameChapter: sameChapter(page.index), ...place(page.index),
+          textMatch: lead ? 1 : 0.5, early: early(page.index), sameChapter: sameChapter(page.index), ...itemPlace(page.index, match?.[2] ?? lead?.[2] ?? label),
         }))
       }
       out.push(...extra.sort((p, q) => localScore(q.features) - localScore(p.features)).slice(0, 5))
@@ -331,9 +373,8 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
     let hits = searchPages(pages, query.terms, scoped ? 400 : 30)
     // "limits examples in chapter 2" looks inside that chapter first
     if (scoped) hits = (hits.some(hit => inScope(hit.index)) ? hits.filter(hit => inScope(hit.index)) : hits).slice(0, 30)
-    if (!hits.length) return []
-    const best = hits[0].score
-    const words = [...new Set(tokenize(query.terms))].filter(word => !(word in KIND_WORDS))
+    const best = hits[0]?.score ?? 1
+    const words = [...new Set(tokenize(query.terms))].filter(word => !(word in KIND_WORDS) && !FILLER_WORDS.has(word))
     const wanted = (query.terms.toLowerCase().match(/[a-z]+/g) ?? []).map(word => KIND_WORDS[word]).find((kind): kind is AnchorKind => !!kind)
     const pageScore = new Map(hits.map(hit => [hit.index, hit.score / best]))
     for (const anchor of anchors) {
@@ -345,9 +386,23 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
       }, sectionOf[anchor.pageIndex]))
     }
     for (const hit of hits) {
-      out.push(pageCandidate(book, hit.index, byIndex.get(hit.index), {
+      const candidate = pageCandidate(book, hit.index, byIndex.get(hit.index), {
         exactLabel: 0, kindMatch: 0, kindPrior: PRIOR.page, textMatch: pageScore.get(hit.index) ?? 0, early: early(hit.index), ...place(hit.index),
-      }))
+      })
+      candidate.description = pageDescription(book, byIndex.get(hit.index), hit.index, query.terms)
+      out.push(candidate)
+    }
+    // Scanned books can still have useful PDF bookmarks. Return their actual
+    // destination as a page choice; never claim that unseen page text matched.
+    for (const entry of book.guide?.sections ?? book.outline) {
+      if (scoped && !inScope(entry.pageIndex)) continue
+      const matched = overlap(words, entry.title)
+      if (!words.length || matched < .75 || out.some(candidate => candidate.pageIndex === entry.pageIndex)) continue
+      const candidate = pageCandidate(book, entry.pageIndex, byIndex.get(entry.pageIndex), {
+        exactLabel: 0, kindMatch: wanted === 'section' ? 1 : 0, kindPrior: PRIOR.page, textMatch: matched, early: early(entry.pageIndex), ...place(entry.pageIndex),
+      })
+      candidate.description = `${entry.title} — ${pageName(book, entry.pageIndex)} (contents heading; inspect the page)`.slice(0, 300)
+      out.push(candidate)
     }
   }
   return out
@@ -355,6 +410,19 @@ export function buildCandidates(query: LibraryQuery, book: BookRecord, pages: Pa
     .sort((p, q) => q.score - p.score || p.order - q.order)
     .slice(0, Math.max(1, limit))
     .map(entry => entry.candidate)
+}
+
+/** A uniquely named heading is as unambiguous as a uniquely numbered theorem. */
+export function certainTopic(query: LibraryQuery, candidates: Candidate[]): Candidate | null {
+  if (query.kind !== 'topic') return null
+  const words = [...new Set(tokenize(query.terms))].filter(word => !(word in KIND_WORDS) && !FILLER_WORDS.has(word))
+  if (words.length < 2) return null
+  const wanted = (query.terms.toLowerCase().match(/[a-z]+/g) ?? []).map(word => KIND_WORDS[word]).find((kind): kind is AnchorKind => !!kind)
+  if (!wanted || PRACTICE.has(wanted)) return null
+  const matches = candidates.filter(candidate => candidate.anchor?.kind === wanted
+    && (!(query.chapter || query.section) || candidate.features.inSection === 1)
+    && overlap(words, candidate.anchor.heading) === 1)
+  return matches.length === 1 ? matches[0] : null
 }
 
 // kind words a teacher uses for any practice problem, so any practice item with the number fits them
@@ -369,6 +437,9 @@ export function certainItem(query: LibraryQuery, candidates: Candidate[]): Candi
   if (query.kind !== 'item') return null
   const scoped = !!(query.section || query.chapter)
   const fits = candidates.filter(c => c.kind === 'item' && !!c.anchor && c.features.exactLabel === 1 && (!scoped || c.features.inSection === 1))
+  // A book can contain both locally numbered questions and chapter-numbered
+  // problems. Different printed identifiers need a choice, not a silent guess.
+  if (new Set(fits.map(c => c.anchor!.label)).size > 1) return null
   // "problem 1.2" names the kind in books that print "Problem 1.2"
   const kind = query.itemKind ?? (/\bprob(?:lem)?s?\b/i.test(query.raw) ? 'problem' : undefined)
   const named = kind ? fits.filter(c => c.anchor!.kind === kind) : []
@@ -399,7 +470,7 @@ export function subjectBooks(hint: string, books: BookRecord[]): BookRecord[] | 
 }
 
 function titleTokens(text: string): string[] {
-  return (String(text ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(word => !['the', 'a', 'an', 'of', 'and', 'book', 'textbook', 'pdf', 'vol', 'volume'].includes(word))
+  return (String(text ?? '').toLowerCase().replace(/\bqm\b/g, 'quantum mechanics').match(/[a-z0-9]+/g) ?? []).filter(word => !['the', 'a', 'an', 'of', 'and', 'book', 'textbook', 'pdf', 'vol', 'volume'].includes(word))
 }
 
 /** How well a spoken book name matches a title, 0..1. */
@@ -415,11 +486,12 @@ export function pickBook(books: BookRecord[], hint?: string, openBookId?: string
   const list = books.filter(book => book && typeof book.id === 'string')
   const open = openBookId ? list.find(book => book.id === openBookId) ?? null : null
   if (hint && hint.trim()) {
+    const exactId = list.find(book => book.id === hint)
+    if (exactId) return { book: exactId, ambiguous: [] }
     const scored = list.map(book => ({ book, score: Math.max(titleMatch(hint, book.title), titleMatch(hint, book.fileName ?? '')) }))
     const top = Math.max(0, ...scored.map(entry => entry.score))
     if (top >= 0.5) {
       const matches = scored.filter(entry => entry.score === top).map(entry => entry.book)
-      if (open && matches.includes(open)) return { book: open, ambiguous: [] }
       if (matches.length === 1) return { book: matches[0], ambiguous: [] }
       return { book: null, ambiguous: matches }
     }
