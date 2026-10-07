@@ -11,7 +11,7 @@ import type { Anchor, BookRecord, ImportProgress, PageRecord } from './types'
 export const MAX_BOOK_BYTES = 400 * 1024 * 1024
 const BATCH = 25
 /** bumped whenever finding items changes, so books indexed before are read again */
-export const INDEX_VERSION = 5
+export const INDEX_VERSION = 6
 
 /** True when a book never finished indexing or was indexed by an older item finder. */
 export function needsReindex(book: BookRecord): boolean {

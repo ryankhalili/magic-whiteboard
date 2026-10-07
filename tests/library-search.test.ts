@@ -6,7 +6,13 @@ import type { Anchor, AnchorKind, BookRecord, PageRecord } from '../src/library/
 describe('parseLibraryQuery', () => {
   const q = (text: string) => parseLibraryQuery(text)
 
-  it('reads printed page requests', () => {
+  it('distinguishes structural pages from problems and extracts only the actual book name', () => {
+    expect(q('Can you pull the first page of chapter 6?')).toMatchObject({ kind: 'topic', terms: 'first page of chapter 6', chapter: '6' })
+    expect(q('Can you pull the first page of the table of contents from the quantum mechanics textbook?')).toMatchObject({ kind: 'topic', terms: 'table of contents', book: 'quantum mechanics' })
+    expect(titleMatch('quantum mechanics', 'Sakuri QM')).toBeGreaterThanOrEqual(.5)
+  })
+
+  it('reads printed page requests' , () => {
     expect(q('page 22')).toEqual({ kind: 'page', label: '22', raw: 'page 22' })
     expect(q('p. 22')).toMatchObject({ kind: 'page', label: '22' })
     expect(q('pg 22')).toMatchObject({ kind: 'page', label: '22' })

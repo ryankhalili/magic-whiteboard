@@ -4,7 +4,7 @@ import type { BookRecord } from './types'
 import { formatBytes } from './ImportDialog'
 import './library.css'
 
-type Props = { books: BookRecord[]; openBookId: string | null; onOpen(book: BookRecord): void; onImport(): void; onRemove(book: BookRecord): void; onClose(): void }
+type Props = { books: BookRecord[]; choosing?: boolean; openBookId: string | null; onOpen(book: BookRecord): void; onImport(): void; onRemove(book: BookRecord): void; onClose(): void }
 export type Point = { x: number; y: number }
 
 export const PREVIEW_SIZE = { w: 280, h: 180 }
@@ -49,7 +49,7 @@ export function bookDescription(book: BookRecord, now = Date.now()): string {
   return parts.filter(Boolean).join(' · ')
 }
 
-export function LibraryPanel({ books, openBookId, onOpen, onImport, onRemove, onClose }: Props) {
+export function LibraryPanel({ books, choosing, openBookId, onOpen, onImport, onRemove, onClose }: Props) {
   const [preview, setPreview] = useState<BookRecord | null>(null)
   const [showing, setShowing] = useState(false)
   const [confirming, setConfirming] = useState<string | null>(null)
@@ -89,9 +89,9 @@ export function LibraryPanel({ books, openBookId, onOpen, onImport, onRemove, on
   return <div ref={panel} className="popover library-popover" role="dialog" aria-label="Library">
     <div className="popover-heading">Library<div className="library-heading-actions">{books.length > 0 && <button type="button" className="library-import" onClick={onImport}><FileUp size={14}/>Import PDF</button>}<button type="button" aria-label="Close library" onClick={onClose}><X size={16}/></button></div></div>
     {books.length ? <>
-      <p className="library-caption">{books.length} {books.length === 1 ? 'book' : 'books'} in this browser. Pick one to open it beside the board.</p>
+      <p className="library-caption">{choosing ? 'Which textbook do you mean? Choose one to continue your request, or say its option number.' : `${books.length} ${books.length === 1 ? 'book' : 'books'} in this browser. Pick one to open it beside the board.`}</p>
       <ul className="library-list" onPointerLeave={hide}>
-        {books.map(book => {
+        {books.map((book, index) => {
           const open = book.id === openBookId, asking = confirming === book.id
           return <li key={book.id} className={`library-row ${open ? 'is-open' : ''} ${asking ? 'is-confirming' : ''}`} onPointerMove={event => { if (!asking) track(event, book) }} onPointerEnter={event => { if (asking) hide(); else track(event, book) }}>
             {asking ? <div className="library-confirm" role="alert">
@@ -100,7 +100,7 @@ export function LibraryPanel({ books, openBookId, onOpen, onImport, onRemove, on
             </div> : <>
               <button type="button" className="library-open" onClick={() => { hide(); onOpen(book) }} aria-current={open ? 'true' : undefined}>
                 <span className="library-text">
-                  <span className="library-title"><span className="library-title-text">{book.title || book.fileName}</span><ArrowUpRight className="library-arrow" size={16} aria-hidden="true"/></span>
+                  <span className="library-title"><span className="library-title-text">{choosing ? `${index + 1}. ` : ''}{book.title || book.fileName}</span><ArrowUpRight className="library-arrow" size={16} aria-hidden="true"/></span>
                   <span className="library-desc">{open && <em>Open now</em>}{bookDescription(book)}</span>
                 </span>
                 <span className="library-pages"><b>{book.pageCount}</b><small>{book.pageCount === 1 ? 'page' : 'pages'}</small></span>

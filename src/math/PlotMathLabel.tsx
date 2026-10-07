@@ -10,6 +10,7 @@ export function plotLabelLatex(expression: string, spec?: VisualizationSpec): st
     if (source.length > 256) throw new Error('Expression is too long.')
     return normalizeExpression(source).split('=').map(side => parse(side).toTex({ parenthesis: 'auto', implicit: 'hide' }).trim()).join(' = ')
   }
+  if (spec?.type === 'axes') return '\\text{3D axes}'
   if (spec?.type === 'phase') return `\\frac{dx}{dt} = ${tex(expression)} \\qquad \\frac{dy}{dt} = ${tex(spec.secondaryExpression ?? '')}`
   if (spec?.type === 'surface') return `z = ${tex(expression.replace(/^\s*z\s*=/, ''))}`
   if (spec?.type === 'revolution') return `r = ${tex(expression)} \\quad ${spec.sweep ?? 360}^{\\circ}\\text{ about }${spec.axis ?? 'x'}`

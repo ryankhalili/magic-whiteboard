@@ -20,6 +20,11 @@ describe('finishing explicit library retrieval', () => {
       expect(completeLibraryRetrieval(ops, 'pull question 2 from chapter 6')).toBe(ops)
     }
   })
+  it('corrects a model-supplied problem lookup when the user requested a chapter opening', () => {
+    const ops = completeLibraryRetrieval([{ type: 'insert_library', item: 'problem 6.2' }], 'Can you pull the first page of chapter 6?')
+    expect(libraryQueryFromOperation(ops[0])).toMatchObject({ kind: 'topic', terms: 'first page of chapter 6' })
+    expect(libraryQueryFromOperation({ type: 'insert_library', book: 'chosen-id', query: 'page 22 from the physics book' })).toMatchObject({ book: 'chosen-id' })
+  })
   it('prefers the book explicitly named by the user over an incorrect model-selected book', () => {
     expect(completeLibraryRetrieval(open, 'pull question 2 from chapter 6 of the Griffiths textbook')[0].book).toBe('griffiths')
   })

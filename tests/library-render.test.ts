@@ -39,6 +39,12 @@ describe('trimming helpers', () => {
     expect(shadeBand(rows(20, repeat(WHITE, 8)), 20, 8)).toBeNull()
   })
 
+  it('preserves a dense first line of a detected problem instead of treating it as a separator', () => {
+    const data = rows(100, [...repeat(WHITE, 2), ...repeat(INK, 3), ...repeat(WHITE, 15), ...repeat(INK, 30), ...repeat(WHITE, 50)])
+    expect(inkBounds(data, 100, 100, 12, false, true).top).toBe(0)
+    expect(inkBounds(data, 100, 100, 12, false, false).top).toBeGreaterThan(0)
+  })
+
   it('drops blank rows above the second part of a split item', () => {
     const data = rows(40, [...repeat(WHITE, 30), ...repeat(INK, 10), ...repeat(WHITE, 20)])
     expect(inkBounds(data, 40, 60, 12, true)).toEqual({ top: 24, w: 40, h: 28 })

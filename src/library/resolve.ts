@@ -2,7 +2,8 @@ import { needsReindex } from './indexer'
 import { findPageIndexes } from './labels'
 import { rankItems } from './rank'
 import { renderAnchor, renderPage } from './render'
-import { buildCandidates, certainItem, certainTopic, isHerePage, kindName, pageCandidate, pageSections, pickBook, subjectBooks, titleMatch } from './search'
+import { buildCandidates, certainItem, certainTopic, isHerePage, isStructureQuery, kindName, pageCandidate, pageSections, pickBook, subjectBooks, titleMatch } from './search'
+import { isContentsPage } from './structure'
 import { getBookGuideContext, guidePageScopes } from './guide'
 import { getAnchors, getPage, getPages, listBooks } from './store'
 import type { Anchor, BookRecord, Candidate, LibraryMatch, LibraryQuery, PageRecord, RankedCandidate, RenderedImage } from './types'
@@ -35,31 +36,19 @@ export type LibraryError = { error: string; books?: BookRecord[]; code?: 'reinde
 
 async function chooseBook(query: LibraryQuery, books: BookRecord[], openBookId: string | null): Promise<BookRecord | LibraryError> {
   const hint = query.book?.trim()
+  const exact = books.find(book => book.id === hint)
+  if (exact) return exact
   if (hint && !books.some(book => Math.max(titleMatch(hint, book.title), titleMatch(hint, book.fileName ?? '')) >= .5)) {
-    // "the math book" names a subject, not a title: the open book or the only one, else ask
+    // A subject alone must identify one book; otherwise ask.
     const subject = subjectBooks(hint, books)
-    const open = subject?.find(book => book.id === openBookId)
-    if (open) return open
     if (subject?.length === 1) return subject[0]
     if (subject) return { error: 'Which book? Say its title or open it from the Library.', books: subject }
     // a named book that is not here is never swapped for another one
-    return { error: `No book called "${hint.slice(0, 60)}" in your library.`, books }
+    return { error: `Which textbook do you mean by "${hint.slice(0, 60)}"? Choose one below.`, books }
   }
   const picked = pickBook(books, hint, openBookId)
   if (picked.book) return picked.book
-  const choices = picked.ambiguous.length ? picked.ambiguous : books
-  const times = choices.map(book => book.openedAt || 0)
-  const newest = Math.max(...times), oldest = Math.min(...times)
-  const result = await rankItems({
-    task: 'book', query: query.book ?? query.raw,
-    items: choices.map(book => ({
-      id: book.id, text: book.title,
-      features: { titleMatch: query.book ? titleMatch(query.book, book.title) : 0, recent: newest > oldest ? ((book.openedAt || 0) - oldest) / (newest - oldest) : 1 },
-    })),
-  })
-  const order = result.ranked.map(entry => choices.find(book => book.id === entry.id)).filter((book): book is BookRecord => !!book)
-  if (result.confident && order[0]) return order[0]
-  return { error: 'Which book? Say its title or open it from the Library.', books: order.length ? order : choices }
+  return { error: 'Which textbook do you mean? Choose one below.', books: picked.ambiguous.length ? picked.ambiguous : books }
 }
 
 function itemName(query: Extract<LibraryQuery, { kind: 'item' }>) {
@@ -141,6 +130,13 @@ export async function matchLibrary(query: LibraryQuery, opts: { openBookId?: str
       return { query, book, ranked: [{ ...pageCandidate(book, at, (await getPage(book.id, at).catch(() => null)) ?? undefined), p: 1 }], confident: true, source: 'exact' }
     }
     const { pages, anchors } = await bookData(book)
+    if (isStructureQuery(query) && query.kind === 'topic') {
+      const index = query.terms === 'table of contents' ? pages.find(isContentsPage)?.index
+        : (book.guide?.sections ?? book.outline).filter(entry => new RegExp(`^(?:chapter\\s+)?${query.chapter}(?:\\s|\\.)`, 'i').test(entry.title))
+          .sort((a, b) => a.pageIndex - b.pageIndex)[0]?.pageIndex
+      if (index === undefined) return { error: 'The book index could not locate that chapter or contents page. Open it in the reader and use Insert page.' }
+      return { query, book, ranked: [{ ...pageCandidate(book, index, pages.find(page => page.index === index)), p: 1 }], confident: true, source: 'exact' }
+    }
     const candidates = buildCandidates(query, book, pages, anchors, 40, at)
     const missing = scopeMiss(query, book, anchors, candidates)
     if (missing) return { error: missing }

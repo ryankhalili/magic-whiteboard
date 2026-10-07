@@ -160,25 +160,34 @@ describe('matchLibrary', () => {
     expect(result.ranked[0].anchor?.label).toBe('3.12')
   })
 
+  it('uses chapter structure, not matching problem numbers, for opening pages', async () => {
+    await saveBook({ ...calc, guide: { version: 1, sections: [{ title: 'Chapter 3 Derivatives', pageIndex: 1, depth: 0, source: 'outline' }], itemCounts: {}, exercisePages: [], unreadablePages: [], notes: [] } })
+    forgetBookData(calc.id)
+    try {
+      const result = await match('pull the first page of chapter 3', calc.id) as LibraryMatch
+      expect(result).toMatchObject({ confident: true, source: 'exact' })
+      expect(result.ranked[0]).toMatchObject({ kind: 'page', pageIndex: 1 })
+    } finally { await saveBook(calc); forgetBookData(calc.id) }
+  })
   it('never swaps a named book that is not in the library for another one', async () => {
     const result = await match('page 12 from the chemistry book') as { error: string; books: BookRecord[] }
-    expect(result.error).toBe('No book called "chemistry" in your library.')
+    expect(result.error).toBe('Which textbook do you mean by "chemistry"? Choose one below.')
     expect(result.books.map(book => book.id)).toEqual([calc.id])
-    expect(await match('problem 3.2 in physics', calc.id)).toMatchObject({ error: 'No book called "physics" in your library.' })
+    expect(await match('problem 3.2 in physics', calc.id)).toMatchObject({ error: 'Which textbook do you mean by "physics"? Choose one below.' })
     // words that are not book names still work
     expect(await match('page 12 in the new book')).toMatchObject({ confident: true, book: { id: calc.id } })
     expect(await match('example 3.12 in pencil')).toMatchObject({ confident: true, source: 'exact' })
   })
 
-  it('picks the recent book, asks when unsure, and follows the open or named book', async () => {
+  it('asks rather than guessing from recency, and follows an unambiguous open or named book', async () => {
     const physics = await importBook(file(await fixtureBook('University Physics', [['Physics only line', 72, 400]]), 'physics.pdf'))
     try {
-      // no open book and no title: the book opened most recently wins
-      expect((await match('page 12') as LibraryMatch).book.id).toBe(physics.id)
+      // Recency alone must not select the wrong textbook.
+      expect(await match('page 12')).toMatchObject({ error: 'Which textbook do you mean? Choose one below.' })
       await saveBook({ ...physics, openedAt: calc.openedAt })
       await saveBook(calc)
       const unsure = await match('page 12') as { error: string; books: BookRecord[] }
-      expect(unsure.error).toBe('Which book? Say its title or open it from the Library.')
+      expect(unsure.error).toBe('Which textbook do you mean? Choose one below.')
       expect(unsure.books.map(book => book.id).sort()).toEqual([calc.id, physics.id].sort())
       expect((await match('page 12', physics.id) as LibraryMatch).book.id).toBe(physics.id)
       expect((await match('page 12 from the calculus book', physics.id) as LibraryMatch).book.id).toBe(calc.id)
@@ -233,7 +242,7 @@ describe('matchLibrary', () => {
 
   it('reads "the math book" as the book of that subject, the open one or the only one', async () => {
     expect(await match('page 12 in my math textbook')).toMatchObject({ confident: true, book: { id: calc.id } })
-    expect(await match('page 12 in the science book')).toMatchObject({ error: 'No book called "science" in your library.' })
+    expect(await match('page 12 in the science book')).toMatchObject({ error: 'Which textbook do you mean by "science"? Choose one below.' })
     const physics: BookRecord = { ...calc, id: 'sha256:physics', title: 'University Physics', fileName: 'physics.pdf', openedAt: Date.now() }
     const notes: BookRecord = { ...calc, id: 'sha256:notes', title: 'Unit 4 Notes', fileName: 'notes.pdf', openedAt: Date.now() }
     await saveBook(physics)
@@ -243,7 +252,7 @@ describe('matchLibrary', () => {
       // two books with no subject in their titles: the open one, else ask
       await removeBook(physics.id)
       await saveBook({ ...calc, title: 'Unit 3 Notes' }); await saveBook(notes)
-      expect(await match('page 12 in the math book', notes.id)).toMatchObject({ book: { id: notes.id } })
+      expect(await match('page 12 in the math book', notes.id)).toMatchObject({ error: 'Which book? Say its title or open it from the Library.' })
       expect(await match('page 12 in the math book')).toMatchObject({ error: 'Which book? Say its title or open it from the Library.' })
     } finally {
       await removeBook(physics.id); await removeBook(notes.id); forgetBookData(physics.id); forgetBookData(notes.id)

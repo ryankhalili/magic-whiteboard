@@ -64,6 +64,40 @@ describe('merged voice context and instruction ownership', () => {
     const client = createRealtimeClient({ ...callbacks, ...overrides }); clients.push(client); await client.connect()
     return { client, callbacks, channel: Peer.latest.channel }
   }
+  it('keeps listening during an utterance longer than the idle timeout', async () => {
+    const { client, channel, callbacks } = await start()
+    channel.receive({ type: 'input_audio_buffer.speech_started', item_id: 'long' })
+    await vi.advanceTimersByTimeAsync(95_000)
+    expect(client.isConnected()).toBe(true)
+    expect(track.stop).not.toHaveBeenCalled()
+    expect(callbacks.onNotice).not.toHaveBeenCalledWith(expect.stringContaining('90 seconds'))
+  })
+  it('recovers an empty completed response instead of silently returning to listening', async () => {
+    const { channel, callbacks } = await start()
+    await speak(channel, 'empty', 'Plot an empty three-dimensional axes for now.')
+    await done(channel, 'nothing')
+    expect(callbacks.repairRequest).toHaveBeenCalledOnce()
+    expect(callbacks.applyOperations).toHaveBeenCalledOnce()
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('recovers an explicit undo without treating it as an inferred deletion', async () => {
+    const repair = vi.fn(async () => ({ operations: [{ type: 'undo' as const }], message: '' }))
+    const { channel, callbacks } = await start({ repairRequest: repair })
+    await speak(channel, 'undo', 'No, wait, can you undo that?')
+    await done(channel, 'undo-failure', [command([], 'wrong_function')])
+    expect(callbacks.applyOperations).toHaveBeenCalledExactlyOnceWith([{ type: 'undo' }], expect.any(Function))
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+  it('recovers a self-contained command after interrupting an unfinished one', async () => {
+    const { client, channel, callbacks } = await start(); client.sendText('write x')
+    channel.receive({ type: 'response.created', response: { id: 'old' } })
+    await speak(channel, 'new', 'Plot an empty three-dimensional axes for now.')
+    channel.receive({ type: 'response.done', response: { id: 'old', status: 'cancelled', output: [] } })
+    await vi.advanceTimersByTimeAsync(0)
+    await done(channel, 'new-response', [command([], 'wrong_function')])
+    expect(callbacks.repairRequest).toHaveBeenCalledWith(expect.objectContaining({ instruction: 'Plot an empty three-dimensional axes for now.' }), expect.any(AbortSignal))
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
   it('finishes a spoken question retrieval when the model only opens the book and suppresses duplicate continuation', async () => {
     const { channel, callbacks } = await start()
     await speak(channel, 'question', 'Pull question 2 from chapter 6, please.')

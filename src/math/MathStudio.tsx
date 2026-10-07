@@ -9,10 +9,11 @@ import { validateLatex } from '../board/latex'
 import { validateScientific } from './scientific'
 import './math-studio.css'
 
-type Mode = 'equation' | 'plot' | 'surface' | 'revolution' | 'phase'
+type Mode = 'equation' | 'plot' | 'surface' | 'revolution' | 'phase' | 'axes'
 const presets: Record<Mode, { expression: string; secondary?: string; min: number; max: number }> = {
   equation: { expression: '\\int_0^\\pi \\sin(x)\\,dx', min: -5, max: 5 },
   plot: { expression: 'x^2', min: -5, max: 5 },
+  axes: { expression: '0', min: -10, max: 10 },
   surface: { expression: 'sin(sqrt(x^2+y^2))', min: -6, max: 6 },
   revolution: { expression: 'sqrt(x)', min: 0, max: 4 },
   phase: { expression: 'y', secondary: '-x', min: -3, max: 3 },
@@ -51,8 +52,8 @@ export function MathStudio({ onInsert, onClose }: { onInsert: (op: BoardOperatio
   }, [mode, source, secondary, min, max])
   return <div className="studio-scrim" onPointerDown={event => { if (event.target === event.currentTarget) onClose() }}><section ref={dialog} role="dialog" aria-modal="true" aria-label="Insert math" className="math-studio" onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') onClose() }}>
     <header><div><strong>Insert math</strong><p>Type an expression. The preview updates locally.</p></div><button aria-label="Close math editor" onClick={onClose}><X size={18}/></button></header>
-    <nav aria-label="Math tool">{(['equation', 'plot', 'surface', 'revolution', 'phase'] as Mode[]).map(value => <button key={value} aria-pressed={mode === value} onClick={() => choose(value)}>{{ equation: 'Equation', plot: '2D graph', surface: '3D surface', revolution: 'Revolution', phase: 'Phase portrait' }[value]}</button>)}</nav>
-    <label>{mode === 'equation' ? 'LaTeX expression' : mode === 'phase' ? 'dx/dt' : mode === 'surface' ? 'z = f(x,y)' : mode === 'revolution' ? 'Radius f(x)' : 'Function or equation'}<textarea autoFocus aria-label="Math expression" rows={2} value={source} onChange={e => setSource(e.target.value)} spellCheck={false}/></label>
+    <nav aria-label="Math tool">{(['equation', 'plot', 'axes', 'surface', 'revolution', 'phase'] as Mode[]).map(value => <button key={value} aria-pressed={mode === value} onClick={() => choose(value)}>{{ equation: 'Equation', plot: '2D graph', axes: '3D axes', surface: '3D surface', revolution: 'Revolution', phase: 'Phase portrait' }[value]}</button>)}</nav>
+    {mode !== 'axes' && <label>{mode === 'equation' ? 'LaTeX expression' : mode === 'phase' ? 'dx/dt' : mode === 'surface' ? 'z = f(x,y)' : mode === 'revolution' ? 'Radius f(x)' : 'Function or equation'}<textarea autoFocus aria-label="Math expression" rows={2} value={source} onChange={e => setSource(e.target.value)} spellCheck={false}/></label>}
     {mode === 'equation' && <div className="math-symbols">{[['Integral', '\\int_{}^{} '], ['Fraction', '\\frac{}{}'], ['Square root', '\\sqrt{}'], ['Sum', '\\sum_{}^{} '], ['Pi', '\\pi']].map(([label, token]) => <button key={label} onClick={() => setSource(s => s + token)}>{label}</button>)}</div>}
     {mode === 'phase' && <label>dy/dt<input aria-label="Second equation" value={secondary} onChange={e => setSecondary(e.target.value)}/></label>}
     {mode !== 'equation' && <div className="studio-range"><label>Domain minimum<input aria-label="Domain minimum" type="number" value={min} onChange={e => setMin(e.target.value)}/></label><label>Domain maximum<input aria-label="Domain maximum" type="number" value={max} onChange={e => setMax(e.target.value)}/></label></div>}

@@ -1,4 +1,4 @@
-import { analyzeLibraryText, titleMatch } from './search'
+import { analyzeLibraryText, isStructureQuery, titleMatch } from './search'
 import type { LibraryQuery } from './types'
 
 export type LibraryIntent =
@@ -65,6 +65,7 @@ export function detectLibraryIntent(text: string, state: IntentState): LibraryIn
   // only discard conversational prefixes when checking leftover words.
   const { query } = analyzeLibraryText(text)
   const { leftovers } = analyzeLibraryText(clean)
+  if (query && isStructureQuery(query) && /^(?:pull|show|insert|bring|give|get|open|find|add)\b/.test(clean) && !/\b(?:not|don't|instead|except|and then|solve|summarize)\b/.test(clean)) return { action: 'insert', query }
   if (query && (query.kind === 'page' || query.kind === 'item') && !leftovers.length) return { action: 'insert', query }
   if (query) return null
   const open = OPEN.exec(clean)

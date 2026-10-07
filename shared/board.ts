@@ -47,7 +47,7 @@ export type BoardContext = {
   library?: LibraryContext; placementOptions?: PlacementOption[]
   pendingMath?: { id: string; revision: number; objectIds: string[] }
 }
-export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import' | 'pick'
+export type LibraryAction = 'open_book' | 'close_reference' | 'store_import' | 'board_import' | 'pick' | 'repair_excerpt'
 /** A rendered raster for create_image; src is a data:image/(png|jpeg) base64 URL. */
 export type BoardImage = { src: string; w: number; h: number; mimeType: 'image/png' | 'image/jpeg'; name: string }
 export type BoardOperation = {

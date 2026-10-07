@@ -170,7 +170,7 @@ export function spotForOption(option: PlacementOption, spots: readonly { bounds:
 /** The library request an insert_library operation refers to, or null when it names nothing. */
 export function libraryQueryFromOperation(operation: BoardOperation): LibraryQuery | null {
   const book = typeof operation.book === 'string' && operation.book.trim() ? operation.book.trim().slice(0, 200) : undefined
-  const withBook = (query: LibraryQuery): LibraryQuery => book && !query.book ? { ...query, book } : query
+  const withBook = (query: LibraryQuery): LibraryQuery => book ? { ...query, book } : query
   const page = typeof operation.page === 'string' ? operation.page.trim() : ''
   if (page) {
     const label = page.replace(/^(?:pages?|pgs?\.?|p\.?)\s*/i, '').trim()
@@ -347,6 +347,13 @@ export class BoardController {
           id: assetId, typeName: 'asset', type: 'image', meta: {},
           props: { name: image.name, src: image.src, w: image.w, h: image.h, mimeType: image.mimeType, isAnimated: false },
         })
+        if (operation.target) {
+          const previous = virtual.get(operation.target as TLShapeId)
+          if (!previous || previous.type !== 'image' || !previous.meta.library || previous.isLocked) throw new Error('Select an unlocked textbook excerpt to restore.')
+          const next = { ...previous, x: b.x, y: b.y, props: { ...previous.props, assetId, w: b.w, h: b.h, crop: { x: 0, y: 0, w: 1, h: 1 } }, meta: { ...previous.meta, ...meta } }
+          updates.set(previous.id, next); virtual.set(previous.id, next); touched.add(previous.id)
+          continue
+        }
         const id = createShapeId(), isLocked = operation.locked === true
         const shape: TLCreateShapePartial<TLImageShape> = { id, type: 'image', x: b.x, y: b.y, rotation: 0, isLocked, opacity: 1,
           props: { assetId, w: b.w, h: b.h, altText: image.name }, meta: { ...meta, marginaliaBackground: false } }
@@ -512,7 +519,7 @@ export class BoardController {
       context.lastCreatedIds = context.selectedIds.length ? context.selectedIds : context.lastCreatedIds.filter(id => virtual.has(id))
     }
     return { creates: [...creates.values()], updates: [...updates.values()], deletes: [...deletes], pageDeletes: [...pageDeletes], touched: [...touched], nextLast: context.lastCreatedIds, layers,
-      assets: [...assets.values()].filter(asset => [...creates.values()].some(shape => shape.type === 'image' && shape.props?.assetId === asset.id)),
+      assets: [...assets.values()].filter(asset => [...creates.values(), ...updates.values()].some(shape => shape.type === 'image' && shape.props?.assetId === asset.id)),
       locked: locked.filter(id => creates.has(id)) }
   }
 

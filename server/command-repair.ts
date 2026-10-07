@@ -1,3 +1,4 @@
+import { localHistoryCommand } from '../shared/history'
 import { z } from 'zod'
 import type { Response, ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses'
 import type { BoardCommand, BoardContext, BoardOperation } from '../shared/board'
@@ -42,6 +43,7 @@ function scopeFailure(message: string): never { throw new CommandRecoveryError(m
 export function constrainRepairCommand(command: BoardCommand, request: BoardRepairRequest): BoardCommand {
   const context = request.context as BoardContext
   if (!command.operations.length) return command
+  if (command.operations.length === 1 && localHistoryCommand(request.instruction) === command.operations[0].type) return command
   if (command.operations.some(op => op.type === 'confirm_math' || op.type === 'cancel_math')) {
     return scopeFailure('Please confirm or discard the current preview again. Automatic repair cannot supply your approval.')
   }

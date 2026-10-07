@@ -1,3 +1,5 @@
+import { localHistoryCommand } from '../../shared/history'
+import { excerptRepairOperation } from '../library/excerptRepair'
 import type { BoardContext, BoardOperation, BoardResult } from '../../shared/board'
 import { parseBoardCommand } from '../../shared/tool-command'
 import { apiRequest } from './commands'
@@ -260,7 +262,10 @@ export function createRealtimeClient(options: RealtimeOptions) {
   }
   function resetIdle() {
     clearTimeout(idleTimer)
-    idleTimer = setTimeout(() => { options.onNotice?.('Microphone paused after 90 seconds without speech. Resume it whenever you are ready.'); disconnect() }, 90_000)
+    idleTimer = setTimeout(() => {
+      if (speechActive || responseActive || finishingResponse || recoveryState) { resetIdle(); return }
+      options.onNotice?.('Microphone paused after 90 seconds without speech. Resume it whenever you are ready.'); disconnect()
+    }, 90_000)
   }
   function compactContext(budget = CONTEXT_BYTES) {
     budget -= 64 // reserve space for final omission counts
@@ -399,7 +404,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
       // repair scope. Never replace that intent with the intervening filler.
       return ''
     }
-    if (turn.carriedAmbiguous || !isFiller(instruction) || !turn.carriedFrom) throw new Error('An unfinished instruction was interrupted. Please repeat the complete remaining change so it can be corrected safely.')
+    if (localHistoryCommand(instruction) || /^(?:(?:please|okay|ok|now)[,\s]+)*(?:(?:can|could|would) you\s+)?(?:plot|draw|create|write|insert|pull|show|add)\b/i.test(instruction)) return instruction
+    if (!isFiller(instruction) || turn.carriedAmbiguous || !turn.carriedFrom) throw new Error('An unfinished instruction was interrupted. Please repeat the complete remaining change so it can be corrected safely.')
     const original = turn.carriedFrom
     if (original.applied || original.phase !== 'normal') throw new Error('The earlier instruction is no longer safe to repeat. Please say only the remaining change.')
     turn.repairInstructionSource = original
@@ -488,7 +494,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
         operations = pinned.value
       } else {
         if (contextFingerprint(boardState(captured)) !== contextFingerprint(boardState(options.getContext()))) throw new Error('The board changed during recovery. The correction was discarded; please repeat the instruction.')
-        operations = pinRecoveredCommand(command, captured)
+        operations = pinRecoveredCommand(command, captured, instruction)
       }
       turn.phase = 'repair-attempted'
       const results = await options.applyOperations(operations, stillCurrent)
@@ -654,7 +660,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
           }
           // Final ASR can trail the tool call. For an open-only response, briefly
           // wait for the user's words before deciding whether retrieval is missing.
-          if (operations.length === 1 && operations[0].type === 'library_action' && operations[0].action === 'open_book'
+          if (operations.length === 1 && (operations[0].type === 'insert_library' || operations[0].type === 'library_action' && operations[0].action === 'open_book')
             && !turn.instruction && turn.inputItem && !turn.transcriptionFailed) {
             let timer: ReturnType<typeof setTimeout> | undefined
             const previousReceiver = turn.receiveTranscript
@@ -668,7 +674,8 @@ export function createRealtimeClient(options: RealtimeOptions) {
           }
           const completedOperations = completeLibraryRetrieval(operations, turn.instruction)
           const completingRetrieval = completedOperations !== operations
-          operations = completedOperations
+          const restoringExcerpt = excerptRepairOperation(turn.instruction, turn.context)
+          operations = restoringExcerpt ?? completedOperations
           // Flush pending manual edits before checking the source snapshot. The
           // application callback and applyOperations must keep this step synchronous.
           options.beforeApplyOperations?.()
@@ -705,7 +712,7 @@ export function createRealtimeClient(options: RealtimeOptions) {
             // success needs no board copy: the context item is refreshed right after this output
             output = success ? { results: brief(results) } : { results: brief(results), context: compactContext() }
             if (success) {
-              if (completingRetrieval) turn.libraryRetrievalCompleted = true
+              if (completingRetrieval || restoringExcerpt) turn.libraryRetrievalCompleted = true
               turn.applied = true; refreshContext = true
               if (repairing) turn.phase = 'repaired'
               if (repairing && recoveryState?.phase === 'repairing') setRecovery(null)
@@ -957,6 +964,11 @@ export function createRealtimeClient(options: RealtimeOptions) {
             if (isFatalVoiceError(`${error?.code ?? ''} ${message}`)) { disconnect(); return }
           }
           continuation = false
+        }
+        if (!cancelled && turn === currentTurn && event.response?.status === 'completed' && !turn.applied && !turn.repairUsed
+          && turn.phase === 'normal' && !continuation && !pendingCalls.size && !(event.response?.output ?? []).length && turn.instruction && !isFiller(turn.instruction) && options.repairRequest) {
+          try { await repairExternally(turn, { kind: 'response_incomplete', message: 'The voice response ended without an action or answer.' }) }
+          catch (error) { stopTurn(turn, error instanceof Error ? error.message : 'That instruction could not be completed. Please try again.') }
         }
         if (thisGeneration !== generation) return
         finishingResponse = false; activeResponseId = null

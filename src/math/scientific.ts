@@ -12,6 +12,10 @@ export function scalarField(source: string) {
 }
 export function validateScientific(expression: string, spec: VisualizationSpec): { expression: string; spec: VisualizationSpec } {
   const checked = visualizationSchema.parse(spec)
+  if (checked.type === 'axes') {
+    if ((checked.zMin ?? -10) >= (checked.zMax ?? 10)) throw new Error('Z maximum must exceed Z minimum.')
+    return { expression: '0', spec: checked }
+  }
   if (checked.type === 'revolution') {
     const parsed = validateExpression(expression)
     if (parsed.kind !== 'explicit') throw new Error('A revolution needs a radius function in x, such as sqrt(x).')
@@ -30,6 +34,7 @@ export function scientificMesh(expression: string, spec: VisualizationSpec, rang
   const checked = validateScientific(expression, spec)
   validateDomain(range.xMin, range.xMax, range.yMin, range.yMax)
   if (checked.spec.type === 'phase') throw new Error('Phase portraits use a vector field, not a surface mesh.')
+  if (checked.spec.type === 'axes') return { faces: [], bounds: { min: { x: range.xMin, y: range.yMin, z: checked.spec.zMin ?? -10 }, max: { x: range.xMax, y: range.yMax, z: checked.spec.zMax ?? 10 } } }
   const evaluate = checked.spec.type === 'surface' ? scalarField(checked.expression).evaluate : validateExpression(checked.expression).evaluate
   const steps = 28, vertices: (Vec3 | null)[][] = []
   for (let i = 0; i <= steps; i++) {

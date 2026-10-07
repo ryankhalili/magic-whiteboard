@@ -23,6 +23,18 @@ function workspace(editor = new Editor()) {
 }
 
 describe('scientific expression and parameter boundaries', () => {
+  it('creates empty 3D axes without inventing a plane, with validated Z limits', () => {
+    const mesh = scientificMesh('0', { type: 'axes', zMin: -4, zMax: 8 }, range)
+    expect(mesh.faces).toEqual([])
+    expect(mesh.bounds).toEqual({ min: { x: -2, y: -2, z: -4 }, max: { x: 2, y: 2, z: 8 } })
+    expect(() => validateScientific('0', { type: 'axes', zMin: 10, zMax: 0 })).toThrow('Z maximum')
+    const { controller, editor } = workspace()
+    expect(controller.applyOperations([{ type: 'create_plot', expression: '0', visualization: { type: 'axes' }, ...range }]).ok).toBe(true)
+    const shape = editor.getCurrentPageShapes()[0] as MagicShape
+    const svg = renderToStaticMarkup(createElement('svg', null, createElement(PlotGraphic, { shape })))
+    expect(svg).toContain('3D axes')
+    expect(svg).toContain('data-plot-layer="axis"')
+  })
   it('evaluates a scalar field in both coordinates without changing its sign', () => {
     const field = scalarField('z = x² - 2y + sin(π/2)')
     expect(field.evaluate(3, 7)).toBeCloseTo(-4)
@@ -228,7 +240,7 @@ describe('scientific objects through command, backup and export paths', () => {
     expect(polygon).toContain('stroke-width="4.5"')
   })
 
-  it.each(['surface', 'phase', 'revolution'] as const)('uses identical live and exported SVG content for %s', async type => {
+  it.each(['surface', 'phase', 'revolution', 'axes'] as const)('uses identical live and exported SVG content for %s', async type => {
     const { editor, controller } = workspace()
     const expression = type === 'surface' ? 'x*y' : type === 'phase' ? 'y' : 'sqrt(x)'
     const made = controller.applyOperations([{ type: 'create_plot', expression, visualization: { type, ...(type === 'phase' ? { secondaryExpression: '-x' } : {}) }, ...range }])
@@ -241,7 +253,8 @@ describe('scientific objects through command, backup and export paths', () => {
     expect(exported).not.toMatch(/NaN|Infinity|Unable to draw/)
     expect(exported).toContain(type === 'phase' ? '\\frac{dx}{dt}' : 'data-plot-axis=')
     expect(exported).not.toContain('Sampled surface')
-    if (type !== 'phase') expect(exported).toContain('<polygon')
+    if (type !== 'phase' && type !== 'axes') expect(exported).toContain('<polygon')
+    if (type === 'axes') expect(exported).not.toContain('<polygon')
     const fullExport = await renderShapesToSvg(editor, [shape.id])
     expect(fullExport.svg).toContain(exported)
     expect(fullExport.svg).toContain('viewBox=')

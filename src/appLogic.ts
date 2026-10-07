@@ -32,12 +32,7 @@ export function instructionTooLong(text: string): string | null {
   return `That instruction is ${length.toLocaleString('en-US')} characters long. Shorten it to ${MAX_INSTRUCTION.toLocaleString('en-US')} or fewer and send it again.`
 }
 
-const HISTORY = /^(?:please\s+)?(undo|redo)(?:\s+(?:that|it|this|the last (?:change|step|edit|one)))?(?:\s*,?\s*please)?[.!]*$/i
-/** "undo" or "redo" typed on its own runs on the board, with no model call */
-export function localHistoryCommand(text: string): 'undo' | 'redo' | null {
-  const match = HISTORY.exec(text.trim())
-  return match ? match[1].toLowerCase() as 'undo' | 'redo' : null
-}
+export { localHistoryCommand } from '../shared/history'
 
 // "the graph" is a thing to change; "graph y = x" and "write the derivative" make something new
 const NAMED_THING = /\b(?:the|this|that|my|its|his|her|their|a|an)\s+(?:plot|graph|drawing|sketch|label|list)s?\b/gi
@@ -118,7 +113,7 @@ export function modelLibrary(input: { books: readonly ShelfBook[]; open: ShelfBo
     openBook: open ? { title: bookTitle(open) } : null,
     books: books.slice(0, 20).map(book => ({ title: bookTitle(book), pages: Math.min(100_000, Math.max(0, Math.floor(book.pageCount) || 0)) })),
     pendingImport: pending ? { name: pending.name.slice(0, 240), pages: Math.min(100_000, Math.max(0, Math.floor(pending.pages) || 0)) } : null,
-    ...(open && highlights.length ? { highlights: highlights.slice(0, 3).map(title => title.slice(0, 160)) } : {}),
+    ...(highlights.length ? { highlights: highlights.slice(0, 40).map(title => title.slice(0, 160)) } : {}),
     ...(open && page !== null ? { panelPage: { label: open.labels?.[page]?.slice(0, 40) || null, pageIndex: page } } : {}),
   }
 }

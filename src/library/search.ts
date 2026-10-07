@@ -47,7 +47,7 @@ function escape(text: string) { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&
 
 function bookHint(text: string): { hint?: string; phrase?: string } {
   const patterns = [
-    /\b(?:from|in|of|out of)\s+(?:the|my|our|this)?\s*([a-z0-9][a-z0-9 '&:-]{0,60}?)\s+(?:book|textbook|text)\b/,
+    /\b(?:from|in|of|out of)\s+(?:(?:the|my|our|this)\s+)?((?:(?!\b(?:from|in|of|out of)\b)[a-z0-9 '&:-]){1,60}?)\s+(?:book|textbook|text)\b/,
     /\b(?:the\s+)?([a-z][a-z0-9'-]{2,40})\s+(?:book|textbook)\b/,
     /\b(?:from|in)\s+([a-z][a-z0-9'-]{2,40}(?:\s+(?:volume|vol\.?|book|part)\s*\d+)?)\s*$/,
   ]
@@ -74,6 +74,12 @@ export function analyzeLibraryText(text: string): { query: LibraryQuery | null; 
   const { hint, phrase } = bookHint(clean)
   if (phrase) clean = clean.replace(phrase, ' ').replace(/\s+/g, ' ').trim()
   const book = hint ? { book: hint } : {}
+  // These refer to structure, not an exercise whose number happens to match.
+  if (/\b(?:first|opening|start(?:ing)?)\s+page\b/.test(clean) && /\bchapter\s+\d+\b/.test(clean)) {
+    const chapter = CHAPTER.exec(clean)?.[1]
+    if (chapter) return { query: { kind: 'topic', terms: `first page of chapter ${chapter}`, chapter, ...book, raw }, leftovers: [] }
+  }
+  if (/\b(?:table of contents|contents page)\b/.test(clean)) return { query: { kind: 'topic', terms: 'table of contents', ...book, raw }, leftovers: [] }
   // "exercise 48 in section 5.1", "section 5.1 exercise 48", "exercise 48 from chapter 5"
   const scope: { section?: string; chapter?: string } = {}
   const found = [...clean.matchAll(ITEMS)]
@@ -128,6 +134,10 @@ function cut(text: string, match: RegExpMatchArray): string {
 /** "page 22", "problem 3.2", "the chain rule example from the book"; null when it is not about the library. */
 export function parseLibraryQuery(text: string): LibraryQuery | null {
   return analyzeLibraryText(text).query
+}
+
+export function isStructureQuery(query: LibraryQuery): boolean {
+  return query.kind === 'topic' && (/^first page of chapter \d+$/.test(query.terms) || query.terms === 'table of contents')
 }
 
 const PRIOR: Record<AnchorKind | 'page', number> = {
@@ -460,7 +470,7 @@ export function subjectBooks(hint: string, books: BookRecord[]): BookRecord[] | 
 }
 
 function titleTokens(text: string): string[] {
-  return (String(text ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(word => !['the', 'a', 'an', 'of', 'and', 'book', 'textbook', 'pdf', 'vol', 'volume'].includes(word))
+  return (String(text ?? '').toLowerCase().replace(/\bqm\b/g, 'quantum mechanics').match(/[a-z0-9]+/g) ?? []).filter(word => !['the', 'a', 'an', 'of', 'and', 'book', 'textbook', 'pdf', 'vol', 'volume'].includes(word))
 }
 
 /** How well a spoken book name matches a title, 0..1. */
@@ -476,11 +486,12 @@ export function pickBook(books: BookRecord[], hint?: string, openBookId?: string
   const list = books.filter(book => book && typeof book.id === 'string')
   const open = openBookId ? list.find(book => book.id === openBookId) ?? null : null
   if (hint && hint.trim()) {
+    const exactId = list.find(book => book.id === hint)
+    if (exactId) return { book: exactId, ambiguous: [] }
     const scored = list.map(book => ({ book, score: Math.max(titleMatch(hint, book.title), titleMatch(hint, book.fileName ?? '')) }))
     const top = Math.max(0, ...scored.map(entry => entry.score))
     if (top >= 0.5) {
       const matches = scored.filter(entry => entry.score === top).map(entry => entry.book)
-      if (open && matches.includes(open)) return { book: open, ambiguous: [] }
       if (matches.length === 1) return { book: matches[0], ambiguous: [] }
       return { book: null, ambiguous: matches }
     }
